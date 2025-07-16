@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "876132148030",
+    "project_id": "edupro-8c4fd",
+    "storage_bucket": "edupro-8c4fd.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:876132148030:android:4999d69c88109fe2a3026f",
+        "android_client_info": {
+          "package_name": "com.example.edupro"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA9RT-c6pmIuLVx8EizFD_a3_82ffRUbTs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
