@@ -2,18 +2,18 @@
 import 'package:flutter/material.dart';
 import '../widgets/sidebar_menu.dart';
 import '../widgets/config_menu.dart' as config;
-import '../widgets/config_header.dart';
+import 'dart:math' show max;
 
 class User {
   final String nombre;
   final String correo;
-  List<String> permisos;
+  final Set<String> permisos;
 
   User({
     required this.nombre,
     required this.correo,
-    this.permisos = const [],
-  });
+    Set<String>? permisos,
+  }) : permisos = permisos ?? <String>{};
 }
 
 class GestionDeAccesoScreen extends StatefulWidget {
@@ -24,11 +24,17 @@ class GestionDeAccesoScreen extends StatefulWidget {
 }
 
 class _GestionDeAccesoScreenState extends State<GestionDeAccesoScreen> {
+  // ✅ Colores iguales a Colegios / Configuración
+  static const Color _kEduProBlue = Color(0xFF0D47A1);
+  static const Color _kPageBg = Color(0xFFF0F0F0);
+  static const Color _kCardBg = Color(0xFFF7F2FA);
+
   final List<User> _usuarios = [
     User(nombre: 'Carlos Pérez', correo: 'carlos.perez@ejemplo.com'),
     User(nombre: 'Laura Gómez', correo: 'laura.gomez@ejemplo.com'),
     User(nombre: 'David Martín', correo: 'david.martin@ejemplo.com'),
   ];
+
   late List<User> _filtrados;
   final TextEditingController _searchController = TextEditingController();
 
@@ -45,6 +51,31 @@ class _GestionDeAccesoScreenState extends State<GestionDeAccesoScreen> {
     'Notificaciones',
   ];
 
+  final Map<String, List<String>> _rolePresets = {
+    'Administrador': [
+      'Panel principal',
+      'Colegios',
+      'Freelancers',
+      'Pagos & Facturación',
+      'Cuenta & Perfil',
+      'Gestión de Accesos',
+      'Preferencias del Sistema',
+      'Branding & Apariencia',
+      'Seguridad',
+      'Notificaciones',
+    ],
+    'Profesor': [
+      'Panel principal',
+      'Colegios',
+      'Colegios', // doble no importa (Set lo elimina)
+      'Cuenta & Perfil',
+    ],
+    'Contable': [
+      'Panel principal',
+      'Pagos & Facturación',
+    ],
+  };
+
   @override
   void initState() {
     super.initState();
@@ -52,21 +83,60 @@ class _GestionDeAccesoScreenState extends State<GestionDeAccesoScreen> {
     _searchController.addListener(_filtrar);
   }
 
+  @override
+  void dispose() {
+    _searchController.removeListener(_filtrar);
+    _searchController.dispose();
+    super.dispose();
+  }
+
   void _filtrar() {
-    final q = _searchController.text.toLowerCase();
+    final q = _searchController.text.trim().toLowerCase();
     setState(() {
-      _filtrados = _usuarios.where((u) =>
-        u.nombre.toLowerCase().contains(q) ||
-        u.correo.toLowerCase().contains(q)
-      ).toList();
+      if (q.isEmpty) {
+        _filtrados = List.from(_usuarios);
+      } else {
+        _filtrados = _usuarios.where((u) {
+          return u.nombre.toLowerCase().contains(q) ||
+              u.correo.toLowerCase().contains(q) ||
+              u.permisos.any((p) => p.toLowerCase().contains(q));
+        }).toList();
+      }
     });
+  }
+
+  PreferredSizeWidget _buildTopBar({required bool isMobile}) {
+    return AppBar(
+      backgroundColor: _kEduProBlue,
+      elevation: 0,
+      toolbarHeight: 64,
+      automaticallyImplyLeading: isMobile,
+      iconTheme: const IconThemeData(color: Colors.white),
+      title: const SizedBox.shrink(),
+      actions: const [
+        Center(
+          child: Padding(
+            padding: EdgeInsets.only(right: 24),
+            child: Text(
+              'Configuración General',
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   void _mostrarFormularioAgregar() {
     String nombre = '', correo = '';
     showDialog(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (ctx) => AlertDialog(
         title: const Text('Añadir usuario'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -77,24 +147,41 @@ class _GestionDeAccesoScreenState extends State<GestionDeAccesoScreen> {
             ),
             TextField(
               decoration: const InputDecoration(labelText: 'Correo'),
+              keyboardType: TextInputType.emailAddress,
               onChanged: (v) => correo = v,
             ),
           ],
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(ctx),
             child: const Text('Cancelar'),
           ),
           ElevatedButton(
             onPressed: () {
-              if (nombre.isNotEmpty && correo.isNotEmpty) {
-                setState(() {
-                  _usuarios.add(User(nombre: nombre, correo: correo));
-                  _filtrados = List.from(_usuarios);
-                });
-                Navigator.pop(context);
+              if (nombre.trim().isEmpty || correo.trim().isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Completa nombre y correo')),
+                );
+                return;
               }
+              final exists = _usuarios.any(
+                (u) => u.correo.toLowerCase() == correo.toLowerCase(),
+              );
+              if (exists) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                      content: Text('Ya existe un usuario con ese correo')),
+                );
+                return;
+              }
+
+              setState(() {
+                _usuarios.add(User(
+                    nombre: nombre.trim(), correo: correo.trim()));
+                _filtrados = List.from(_usuarios);
+              });
+              Navigator.pop(ctx);
             },
             child: const Text('Guardar'),
           ),
@@ -103,16 +190,16 @@ class _GestionDeAccesoScreenState extends State<GestionDeAccesoScreen> {
     );
   }
 
-  void _eliminarUsuario(int index) {
-    final u = _filtrados[index];
+  void _confirmEliminar(User u) {
     showDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('¿Eliminar usuario?'),
-        content: Text('¿Deseas eliminar a ${u.nombre}?'),
+      builder: (ctx) => AlertDialog(
+        title: const Text('Eliminar usuario'),
+        content: Text(
+            '¿Seguro que deseas eliminar a ${u.nombre}? Esta acción no se puede deshacer.'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(ctx),
             child: const Text('Cancelar'),
           ),
           ElevatedButton(
@@ -122,64 +209,128 @@ class _GestionDeAccesoScreenState extends State<GestionDeAccesoScreen> {
                 _usuarios.removeWhere((x) => x.correo == u.correo);
                 _filtrados = List.from(_usuarios);
               });
-              Navigator.pop(context);
+              Navigator.pop(ctx);
             },
             child: const Text('Eliminar'),
-          ),
+          )
         ],
       ),
     );
   }
 
   void _editarPermisos(User user) {
+    final temp = <String>{...user.permisos};
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (_) => StatefulBuilder(
-        builder: (ctx, setSheetState) {
+      builder: (ctx) {
+        return StatefulBuilder(builder: (ctx2, setSheetState) {
+          void togglePerm(String perm, bool enabled) {
+            setSheetState(() {
+              if (enabled) temp.add(perm);
+              else temp.remove(perm);
+            });
+          }
+
+          void applyPreset(String presetName) {
+            final preset = _rolePresets[presetName] ?? [];
+            setSheetState(() {
+              temp
+                ..clear()
+                ..addAll(preset);
+            });
+          }
+
           return Padding(
-            padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
+            padding:
+                EdgeInsets.only(bottom: MediaQuery.of(ctx2).viewInsets.bottom),
             child: SizedBox(
-              height: 450,
+              height: MediaQuery.of(ctx2).size.height * 0.78,
               child: Column(
                 children: [
                   Padding(
                     padding: const EdgeInsets.all(16),
-                    child: Text(
-                      'Permisos de ${user.nombre}',
-                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Permisos de ${user.nombre}',
+                            style: const TextStyle(
+                                fontSize: 18, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.pop(ctx2),
+                          icon: const Icon(Icons.close),
+                        )
+                      ],
                     ),
                   ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          const Text('Presets: ',
+                              style: TextStyle(fontWeight: FontWeight.w600)),
+                          const SizedBox(width: 8),
+                          ..._rolePresets.keys.map(
+                            (k) => Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: OutlinedButton(
+                                onPressed: () => applyPreset(k),
+                                child: Text(k,
+                                    style: const TextStyle(fontSize: 12)),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Divider(height: 1),
                   Expanded(
                     child: ListView(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
                       children: _availablePermissions.map((perm) {
-                        final has = user.permisos.contains(perm);
+                        final has = temp.contains(perm);
                         return CheckboxListTile(
                           title: Text(perm),
                           value: has,
-                          onChanged: (v) => setSheetState(() {
-                            setState(() {
-                              if (v == true) user.permisos.add(perm);
-                              else user.permisos.remove(perm);
-                            });
-                          }),
+                          activeColor: _kEduProBlue,
+                          onChanged: (v) => togglePerm(perm, v ?? false),
                         );
                       }).toList(),
                     ),
                   ),
                   Padding(
                     padding: const EdgeInsets.all(16),
-                    child: ElevatedButton(
-                      onPressed: () => Navigator.pop(ctx),
-                      child: const Text('Guardar cambios'),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: () {
+                          setState(() {
+                            user.permisos
+                              ..clear()
+                              ..addAll(temp);
+                          });
+                          Navigator.pop(ctx2);
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _kEduProBlue,
+                        ),
+                        child: const Text('Guardar cambios'),
+                      ),
                     ),
                   ),
                 ],
               ),
             ),
           );
-        },
-      ),
+        });
+      },
     );
   }
 
@@ -187,16 +338,32 @@ class _GestionDeAccesoScreenState extends State<GestionDeAccesoScreen> {
     return Padding(
       padding: const EdgeInsets.all(24),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          const Text(
+            'Gestión de Accesos & Roles',
+            style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 16),
           Row(
             children: [
               Expanded(
                 child: TextField(
                   controller: _searchController,
-                  decoration: const InputDecoration(
-                    hintText: 'Buscar usuario...',
-                    prefixIcon: Icon(Icons.search),
-                    border: OutlineInputBorder(),
+                  decoration: InputDecoration(
+                    hintText: 'Buscar usuario, correo o permiso...',
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon: _searchController.text.isEmpty
+                        ? null
+                        : IconButton(
+                            icon: const Icon(Icons.clear),
+                            onPressed: () {
+                              _searchController.clear();
+                              _filtrados = List.from(_usuarios);
+                              setState(() {});
+                            },
+                          ),
+                    border: const OutlineInputBorder(),
                   ),
                 ),
               ),
@@ -205,38 +372,98 @@ class _GestionDeAccesoScreenState extends State<GestionDeAccesoScreen> {
                 onPressed: _mostrarFormularioAgregar,
                 icon: const Icon(Icons.person_add),
                 label: const Text('Añadir'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: _kEduProBlue,
+                ),
+              ),
+              const SizedBox(width: 8),
+              PopupMenuButton<String>(
+                tooltip: 'Acciones masivas',
+                icon: const Icon(Icons.more_vert),
+                onSelected: (v) {
+                  if (v == 'export') {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Exportando lista...')),
+                    );
+                  } else if (v == 'import') {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                          content: Text('Importar (no implementado)')),
+                    );
+                  }
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'export', child: Text('Exportar CSV')),
+                  PopupMenuItem(value: 'import', child: Text('Importar CSV')),
+                ],
               ),
             ],
           ),
           const SizedBox(height: 20),
           Expanded(
-            child: ListView.builder(
-              itemCount: _filtrados.length,
-              itemBuilder: (_, i) {
-                final u = _filtrados[i];
-                return Card(
-                  child: ListTile(
-                    leading: const CircleAvatar(child: Icon(Icons.person)),
-                    title: Text(u.nombre),
-                    subtitle: Text(u.correo),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.security),
-                          tooltip: 'Permisos',
-                          onPressed: () => _editarPermisos(u),
+            child: _filtrados.isEmpty
+                ? const Center(child: Text('No se encontraron usuarios'))
+                : ListView.builder(
+                    itemCount: _filtrados.length,
+                    itemBuilder: (_, i) {
+                      final u = _filtrados[i];
+                      final initial =
+                          u.nombre.trim().isNotEmpty ? u.nombre.trim()[0] : '?';
+
+                      return Card(
+                        margin: const EdgeInsets.symmetric(vertical: 6),
+                        child: ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: _kEduProBlue.withOpacity(0.12),
+                            foregroundColor: _kEduProBlue,
+                            child: Text(initial),
+                          ),
+                          title: Text(u.nombre),
+                          subtitle: Text(u.correo),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (u.permisos.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 8),
+                                  child: GestureDetector(
+                                    onTap: () => _editarPermisos(u),
+                                    child: Chip(
+                                      label: Text('${u.permisos.length} permisos'),
+                                      backgroundColor:
+                                          _kEduProBlue.withOpacity(0.08),
+                                    ),
+                                  ),
+                                ),
+                              PopupMenuButton<String>(
+                                onSelected: (action) {
+                                  if (action == 'perms') _editarPermisos(u);
+                                  if (action == 'delete') _confirmEliminar(u);
+                                },
+                                itemBuilder: (_) => [
+                                  const PopupMenuItem(
+                                    value: 'perms',
+                                    child: ListTile(
+                                      leading: Icon(Icons.security),
+                                      title: Text('Permisos'),
+                                    ),
+                                  ),
+                                  const PopupMenuItem(
+                                    value: 'delete',
+                                    child: ListTile(
+                                      leading:
+                                          Icon(Icons.delete, color: Colors.red),
+                                      title: Text('Eliminar'),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
                         ),
-                        IconButton(
-                          icon: const Icon(Icons.delete, color: Colors.red),
-                          onPressed: () => _eliminarUsuario(i),
-                        ),
-                      ],
-                    ),
+                      );
+                    },
                   ),
-                );
-              },
-            ),
           ),
         ],
       ),
@@ -247,7 +474,7 @@ class _GestionDeAccesoScreenState extends State<GestionDeAccesoScreen> {
   Widget build(BuildContext context) {
     final isMobile = MediaQuery.of(context).size.width < 800;
     final currentRoute =
-        ModalRoute.of(context)!.settings.name ?? '/gestion-accesos';
+        ModalRoute.of(context)?.settings.name ?? '/gestion-accesos';
 
     void _handleNavigation(String route) {
       if (route != currentRoute) {
@@ -255,49 +482,61 @@ class _GestionDeAccesoScreenState extends State<GestionDeAccesoScreen> {
       }
     }
 
-    if (isMobile) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('Gestión de Accesos')),
-        drawer: Drawer(
-          child: SidebarMenu(
-            currentRoute: currentRoute,
-            onItemSelected: _handleNavigation,
-          ),
+    // Card wrapper (para que se vea igual al layout de Configuración)
+    Widget wrappedContent() {
+      return Card(
+        color: _kCardBg,
+        margin: EdgeInsets.symmetric(
+          horizontal: isMobile ? 16 : 24,
+          vertical: isMobile ? 16 : 24,
         ),
-        body: _buildContent(),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        elevation: 2,
+        child: _buildContent(),
       );
     }
 
-    // Escritorio: header + sidebar + submenú + contenido
     return Scaffold(
-      body: Column(
-        children: [
-          // 1) Banda azul fija arriba
-          const ConfigHeader(title: 'Configuración General'),
-
-          // 2) Resto de la pantalla
-          Expanded(
-            child: Row(
-              children: [
-                // 2.1) Menú lateral
-                SidebarMenu(
+      backgroundColor: _kPageBg,
+      appBar: _buildTopBar(isMobile: isMobile),
+      drawer: isMobile
+          ? Drawer(
+              child: Container(
+                color: _kEduProBlue,
+                child: SidebarMenu(
                   currentRoute: currentRoute,
                   onItemSelected: _handleNavigation,
                 ),
-
-                // 2.2) Submenú justo debajo del header
-                config.ConfigMenu(
-                  selectedKey: 'gestion-accesos',
-                  onItemSelected: _handleNavigation,
+              ),
+            )
+          : null,
+      body: isMobile
+          ? wrappedContent()
+          : Row(
+              children: [
+                // Menú lateral global (azul)
+                Container(
+                  width: 260,
+                  color: _kEduProBlue,
+                  child: SidebarMenu(
+                    currentRoute: currentRoute,
+                    onItemSelected: _handleNavigation,
+                  ),
                 ),
 
-                // 2.3) Contenido a la derecha
-                Expanded(child: _buildContent()),
+                // Submenú de Configuración (blanco)
+                SizedBox(
+                  width: 280,
+                  child: config.ConfigMenu(
+                    selectedKey: 'gestion-accesos',
+                    onItemSelected: _handleNavigation,
+                  ),
+                ),
+
+                // Contenido
+                Expanded(child: wrappedContent()),
               ],
             ),
-          ),
-        ],
-      ),
     );
   }
 }

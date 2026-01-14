@@ -3,22 +3,23 @@ import 'package:edupro/models/escuela.dart';
 
 class PlanificacionDocenteScreen extends StatelessWidget {
   final Escuela escuela;
-  const PlanificacionDocenteScreen({Key? key, required this.escuela}) : super(key: key);
 
-  static const Color primaryColor = Color(0xFF1A5276);
+  const PlanificacionDocenteScreen({
+    Key? key,
+    required this.escuela,
+  }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Planificación Docente'),
-        backgroundColor: primaryColor,
-        automaticallyImplyLeading: true,
+        title: const Text('Planificación docente'),
+        centerTitle: true,
       ),
       body: Center(
         child: Text(
-          'Planificación docente de ${escuela.nombre}',
-          style: const TextStyle(fontSize: 18),
+          'Aquí irá la planificación docente de ${escuela.nombre ?? ''}',
+          textAlign: TextAlign.center,
         ),
       ),
     );

@@ -1,1 +1,55 @@
-{"hosting":{"public":"build/web","ignore":["firebase.json","**/.*","**/node_modules/**"],"rewrites":[{"source":"/alum/**","destination":"/index.html"},{"source":"**","destination":"/index.html"}]},"flutter":{"platforms":{"android":{"default":{"projectId":"edupro-8c4fd","appId":"1:876132148030:android:4999d69c88109fe2a3026f","fileOutput":"android/app/google-services.json"}},"dart":{"lib/firebase_options.dart":{"projectId":"edupro-8c4fd","configurations":{"android":"1:876132148030:android:4999d69c88109fe2a3026f","ios":"1:876132148030:ios:1d1979b772e447e4a3026f","web":"1:876132148030:web:fb552569ce10b7f0a3026f"}}}}}}
+{
+  "hosting": {
+    "public": "build/web",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "/alum/**",
+        "destination": "/index.html"
+      },
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  },
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "edupro-8c4fd",
+          "appId": "1:876132148030:android:4999d69c88109fe2a3026f",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "edupro-8c4fd",
+          "configurations": {
+            "android": "1:876132148030:android:4999d69c88109fe2a3026f",
+            "ios": "1:876132148030:ios:1d1979b772e447e4a3026f",
+            "web": "1:876132148030:web:fb552569ce10b7f0a3026f"
+          }
+        }
+      }
+    }
+  },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "disallowLegacyRuntimeConfig": true,
+      "ignore": [
+        "node_modules",
+        ".git",
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        "*.local"
+      ]
+    }
+  ]
+}

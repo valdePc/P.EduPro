@@ -1,25 +1,32 @@
 import 'package:flutter/material.dart';
 import 'package:edupro/models/escuela.dart';
+import 'package:edupro/calendario/models/user_role.dart';
+import 'package:edupro/calendario/ui/calendario_screen.dart';
+import 'package:edupro/utils/school_utils.dart' show normalizeSchoolIdFromEscuela;
 
-class CalendarioScreen extends StatelessWidget {
+class DocentesCalendarioScreen extends StatelessWidget {
   final Escuela escuela;
-  const CalendarioScreen({Key? key, required this.escuela}) : super(key: key);
+  final String userUid;
 
-  static const Color primaryColor = Color(0xFF1A5276);
+  const DocentesCalendarioScreen({
+    super.key,
+    required this.escuela,
+    required this.userUid,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final schoolId = normalizeSchoolIdFromEscuela(escuela);
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Calendario'),
-        backgroundColor: primaryColor,
-        automaticallyImplyLeading: true,
+        title: Text('Calendario • ${escuela.nombre}'),
       ),
-      body: Center(
-        child: Text(
-          'Calendario de ${escuela.nombre}',
-          style: const TextStyle(fontSize: 18),
-        ),
+      body: CalendarioScreen(
+        schoolId: schoolId,
+        role: UserRole.teacher,
+        userUid: userUid,
+        hideAppBar: true,
       ),
     );
   }

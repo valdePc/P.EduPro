@@ -23,7 +23,8 @@ class _ColocarCalificacionesScreenState extends State<ColocarCalificacionesScree
   @override
   void initState() {
     super.initState();
-    grados = widget.escuela.grados;                  // Lista de grados desde el modelo Escuela
+    List<String> grados = widget.escuela.grados ?? [];
+                // Lista de grados desde el modelo Escuela
     estudiantes = Estudiante.getAll();               // Carga todos los estudiantes
   }
 
