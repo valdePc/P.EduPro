@@ -89,7 +89,13 @@ List<String> filtrarGradosPorNivel({
 
 class RegistroEquipoScreen extends StatefulWidget {
   final Escuela escuela;
-  const RegistroEquipoScreen({super.key, required this.escuela});
+  final String? schoolIdOverride; // ✅ NUEVO
+
+  const RegistroEquipoScreen({
+    super.key,
+    required this.escuela,
+    this.schoolIdOverride, // ✅ NUEVO
+  });
 
   @override
   State<RegistroEquipoScreen> createState() => _RegistroEquipoScreenState();

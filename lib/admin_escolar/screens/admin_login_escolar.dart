@@ -10,6 +10,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:edupro/models/escuela.dart';
 import 'package:edupro/utils/school_utils.dart' show normalizeSchoolIdFromEscuela;
 import 'package:edupro/admin_escolar/screens/A_pizarra.dart';
+import 'package:edupro/admin_escolar/screens/registro_equipo_screen.dart';
+
+enum _AuthMode { login, register }
 
 class AdminLoginEscolarScreen extends StatefulWidget {
   final Escuela escuela;
@@ -22,16 +25,19 @@ class AdminLoginEscolarScreen extends StatefulWidget {
 class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
   final _userCtrl = TextEditingController(); // correo
   final _passCtrl = TextEditingController();
+  final _codeCtrl = TextEditingController(); // código para registro
 
   final _db = FirebaseFirestore.instance;
 
   bool _loading = false;
   bool _obscure = true;
 
-bool _looksLikeEmail(String s) {
-  final v = s.trim();
-  return v.contains('@') && v.contains('.');
-}
+  _AuthMode _mode = _AuthMode.login;
+
+  bool _looksLikeEmail(String s) {
+    final v = s.trim();
+    return v.contains('@') && v.contains('.');
+  }
 
   // ------------------------------------------------------------
   // BYPASS TEMPORAL (SOLO DEV): activar con --dart-define
@@ -42,7 +48,6 @@ bool _looksLikeEmail(String s) {
   bool get _devBypassEnabled => !kReleaseMode && _devBypassDefine;
 
   Future<void> _devQuickAccess() async {
-    // Opcional: intenta cargar schoolData para evitar estados raros
     try {
       await _resolveSchoolIdAndLoad();
     } catch (_) {}
@@ -76,7 +81,9 @@ bool _looksLikeEmail(String s) {
     }
   }
 
+  // ------------------------------------------------------------
   // Resolver school doc real
+  // ------------------------------------------------------------
   bool _init = false;
   bool _schoolLoading = true;
 
@@ -96,6 +103,7 @@ bool _looksLikeEmail(String s) {
   void dispose() {
     _userCtrl.dispose();
     _passCtrl.dispose();
+    _codeCtrl.dispose();
     super.dispose();
   }
 
@@ -129,14 +137,12 @@ bool _looksLikeEmail(String s) {
     final s = (url ?? '').trim();
     if (s.isEmpty) return null;
 
-    // Intenta por URI
     final uri = Uri.tryParse(s);
     if (uri != null && uri.pathSegments.isNotEmpty) {
       final last = uri.pathSegments.last.trim();
       if (last.isNotEmpty) return last;
     }
 
-    // Fallback regex: último segmento después de /
     final m = RegExp(r'/([^/?#]+)$').firstMatch(s);
     if (m != null) return m.group(1)?.trim();
 
@@ -144,7 +150,6 @@ bool _looksLikeEmail(String s) {
   }
 
   String? _schoolIdFromLinks(Escuela e) {
-    // Prioridad: adminLink, luego prof/alum (por si alguno tiene el código)
     final candidates = <String?>[
       _extractSchoolIdFromUrl(e.adminLink),
       _extractSchoolIdFromUrl(e.profLink),
@@ -181,8 +186,7 @@ bool _looksLikeEmail(String s) {
       alt,
     ]);
 
-    _schoolId =
-        _schoolIdCandidates.isNotEmpty ? _schoolIdCandidates.first : primary;
+    _schoolId = _schoolIdCandidates.isNotEmpty ? _schoolIdCandidates.first : primary;
 
     await _resolveSchoolIdAndLoad();
   }
@@ -193,7 +197,6 @@ bool _looksLikeEmail(String s) {
     try {
       String chosen = _schoolId;
 
-      // Busca el primer doc que exista
       for (final candidate in _schoolIdCandidates) {
         final d = await _db.collection('schools').doc(candidate).get();
         if (d.exists) {
@@ -209,17 +212,146 @@ bool _looksLikeEmail(String s) {
       _schoolData = schoolDoc.data();
 
       // Prefill del correo admin si existe
-final raw = (_schoolData?['adminEmail'] ?? '').toString().trim();
-if (_looksLikeEmail(raw)) {
-  _userCtrl.text = raw;
-}
-
+      final raw = (_schoolData?['adminEmail'] ?? '').toString().trim();
+      if (_looksLikeEmail(raw)) {
+        _userCtrl.text = raw;
+      }
     } catch (_) {
       // no rompas el login
     } finally {
       if (mounted) setState(() => _schoolLoading = false);
     }
   }
+
+  bool _schoolActive() {
+    final v = _schoolData?['active'];
+    return v == null ? true : (v == true);
+  }
+
+  void _switchMode(_AuthMode m) {
+    if (!mounted) return;
+    setState(() => _mode = m);
+  }
+
+  // ------------------------------------------------------------
+  // ✅ Para leer el código en modo Registro, intenta auth anónimo
+  // (Sirve si tus Rules requieren request.auth != null)
+  // ------------------------------------------------------------
+  Future<void> _ensureAnonAuthForRegistro() async {
+    final auth = FirebaseAuth.instance;
+    if (auth.currentUser != null) return;
+
+    try {
+      await auth.signInAnonymously();
+    } on FirebaseAuthException catch (e) {
+      // Si no está habilitado Anonymous, no rompas el flujo.
+      // Igual puede funcionar si tus rules permiten lectura pública.
+      if (e.code == 'operation-not-allowed') {
+        // Lo avisaremos solo si luego falla la lectura.
+      }
+    } catch (_) {}
+  }
+
+  // ------------------------------------------------------------
+  // ✅ Lee la contraseña EXACTA como se guardó en A_registro:
+  // schools/{schoolId}/config/registro.password
+  // - prueba en todos los candidates (porque a veces se guarda en otro id)
+  // - si la encuentra, fija _schoolId a ese candidato
+  // ------------------------------------------------------------
+  Future<String> _loadRegistroPasswordAny() async {
+    await _ensureAnonAuthForRegistro();
+
+    // probamos en este orden: el resuelto primero, luego el resto
+    final ordered = _uniqueInOrder([_schoolId, ..._schoolIdCandidates]);
+
+    for (final sid in ordered) {
+      final d = await _db
+          .collection('schools')
+          .doc(sid)
+          .collection('config')
+          .doc('registro')
+          .get();
+
+      final pass = (d.data()?['password'] ?? '').toString().trim();
+      if (pass.isNotEmpty) {
+        // ✅ importante: usa el mismo schoolId donde realmente está el código
+        _schoolId = sid;
+        return pass; // EXACTO, case-sensitive
+      }
+    }
+
+    return '';
+  }
+
+  // ------------------------------------------------------------
+  // ✅ Ir a registro SOLO si código correcto
+  // ------------------------------------------------------------
+Future<void> _goToRegistro() async {
+  if (_schoolLoading || _loading) return;
+
+  setState(() => _loading = true);
+  try {
+    await _resolveSchoolIdAndLoad();
+
+    if (!_schoolDocFound) {
+      _toast('No se encontró el colegio.');
+      return;
+    }
+    if (!_schoolActive()) {
+      _toast('Este colegio está inactivo.');
+      return;
+    }
+
+    final entered = _codeCtrl.text.trim(); // exacto como lo escribió
+    if (entered.isEmpty) {
+      _toast('Escribe el código del colegio.');
+      return;
+    }
+
+    String expected = '';
+    try {
+      expected = await _loadRegistroPasswordAny();
+    } on FirebaseException catch (e) {
+      if (e.code == 'permission-denied') {
+        _toast(
+          'No tengo permiso para leer el código de registro.\n'
+          'Solución rápida: habilita Anonymous Auth o ajusta Rules para permitir leer '
+          'schools/{id}/config/registro.',
+        );
+        return;
+      }
+      _toast('Error leyendo el código: ${e.code}');
+      return;
+    } catch (e) {
+      _toast('No se pudo verificar el código: $e');
+      return;
+    }
+
+    if (expected.isEmpty) {
+      _toast('Aún no se ha generado el código de registro para este colegio.');
+      return;
+    }
+
+    if (entered != expected) {
+      _toast('Código incorrecto.');
+      return;
+    }
+
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (_) => RegistroEquipoScreen(
+          escuela: widget.escuela,
+          schoolIdOverride: _schoolId,
+        ),
+      ),
+    );
+  } finally {
+    if (mounted) setState(() => _loading = false);
+  }
+}
+
 
   // ------------------------------------------------------------
   // Autorización: solo admins del colegio
@@ -232,16 +364,13 @@ if (_looksLikeEmail(raw)) {
         (_schoolData?['adminEmail'] ?? '').toString().trim().toLowerCase();
     final adminUid = (_schoolData?['adminUid'] ?? '').toString().trim();
 
-    // 0) Si ni siquiera existe el doc del colegio => no autorizamos.
     if (!_schoolDocFound) return false;
 
-    // 1) Admin principal por uid/email
     if (adminUid.isNotEmpty && uid == adminUid) return true;
     if (adminEmail.isNotEmpty && email.isNotEmpty && email == adminEmail) {
       return true;
     }
 
-    // 2) Subcolección admins: schools/{schoolId}/admins/{uid}
     try {
       final d = await _db
           .collection('schools')
@@ -257,7 +386,6 @@ if (_looksLikeEmail(raw)) {
       }
     } catch (_) {}
 
-    // 3) Backup: buscar por email en admins (por si el docId no es uid)
     if (email.isNotEmpty) {
       try {
         final q = await _db
@@ -284,7 +412,6 @@ if (_looksLikeEmail(raw)) {
       await FirebaseAuth.instance.signOut();
     } catch (_) {}
 
-    // Evita “auto-login” con Google cacheado (solo mobile)
     if (!kIsWeb) {
       try {
         final gs = GoogleSignIn.instance;
@@ -325,7 +452,6 @@ if (_looksLikeEmail(raw)) {
 
     setState(() => _loading = true);
     try {
-      // Refresca schoolData por si cambiaron adminEmail
       await _resolveSchoolIdAndLoad();
 
       final cred = await FirebaseAuth.instance.signInWithEmailAndPassword(
@@ -335,10 +461,7 @@ if (_looksLikeEmail(raw)) {
 
       final user = cred.user ?? FirebaseAuth.instance.currentUser;
       if (user == null) {
-        throw FirebaseAuthException(
-          code: 'no-user',
-          message: 'No se obtuvo usuario.',
-        );
+        throw FirebaseAuthException(code: 'no-user', message: 'No se obtuvo usuario.');
       }
 
       await _ensureAuthorizedOrThrow(user);
@@ -359,7 +482,7 @@ if (_looksLikeEmail(raw)) {
   }
 
   // ------------------------------------------------------------
-  // Google login (Web: popup / Mobile: google_sign_in.instance)
+  // Google login
   // ------------------------------------------------------------
   String _friendlyAuthError(FirebaseAuthException e) {
     switch (e.code) {
@@ -385,14 +508,12 @@ if (_looksLikeEmail(raw)) {
   Future<UserCredential> _signInWithGoogle() async {
     final auth = FirebaseAuth.instance;
 
-    // Web: popup nativo de Firebase
     if (kIsWeb) {
       final provider = GoogleAuthProvider()
         ..setCustomParameters({'prompt': 'select_account'});
       return await auth.signInWithPopup(provider);
     }
 
-    // Mobile: API nueva google_sign_in (singleton)
     final gs = GoogleSignIn.instance;
     await gs.initialize();
 
@@ -408,50 +529,43 @@ if (_looksLikeEmail(raw)) {
     }
 
     if (idToken == null) {
-      throw FirebaseAuthException(
-        code: 'missing-id-token',
-        message: 'Google no devolvió idToken.',
-      );
+      throw FirebaseAuthException(code: 'missing-id-token', message: 'Google no devolvió idToken.');
     }
 
     final credential = GoogleAuthProvider.credential(
       idToken: idToken,
-      accessToken: accessToken, // puede ser null
+      accessToken: accessToken,
     );
 
     return await auth.signInWithCredential(credential);
   }
 
-Future<void> _loginGoogle() async {
-  setState(() => _loading = true);
+  Future<void> _loginGoogle() async {
+    setState(() => _loading = true);
 
-  try {
-    // ✅ En Web, el popup debe dispararse "pegado" al click, sin awaits antes.
-    final cred = await _signInWithGoogle();
+    try {
+      final cred = await _signInWithGoogle();
+      await _resolveSchoolIdAndLoad();
 
-    // Ahora sí, refresca config del colegio (opcional, pero útil)
-    await _resolveSchoolIdAndLoad();
+      final user = cred.user ?? FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        throw FirebaseAuthException(code: 'no-user', message: 'No se obtuvo usuario de Google.');
+      }
 
-    final user = cred.user ?? FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      throw FirebaseAuthException(code: 'no-user', message: 'No se obtuvo usuario de Google.');
+      await _ensureAuthorizedOrThrow(user);
+      _goToPizarra();
+    } on FirebaseAuthException catch (e) {
+      if (e.code == 'not-authorized') {
+        _toast('Acceso denegado: ese Google no está autorizado para este colegio.');
+      } else {
+        _toast('Google login falló: ${_friendlyAuthError(e)}');
+      }
+    } catch (e) {
+      _toast('Google login falló: $e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
     }
-
-    await _ensureAuthorizedOrThrow(user);
-    _goToPizarra();
-  } on FirebaseAuthException catch (e) {
-    if (e.code == 'not-authorized') {
-      _toast('Acceso denegado: ese Google no está autorizado para este colegio.');
-    } else {
-      _toast('Google login falló: ${_friendlyAuthError(e)}');
-    }
-  } catch (e) {
-    _toast('Google login falló: $e');
-  } finally {
-    if (mounted) setState(() => _loading = false);
   }
-}
-
 
   // ------------------------------------------------------------
   // UI
@@ -460,10 +574,9 @@ Future<void> _loginGoogle() async {
   Widget build(BuildContext context) {
     final azul = const Color.fromARGB(255, 21, 101, 192);
 
-final rawAdminEmail = (_schoolData?['adminEmail'] ?? '').toString().trim();
-final adminEmail = _looksLikeEmail(rawAdminEmail) ? rawAdminEmail : '';
-final configured = adminEmail.isNotEmpty;
-
+    final rawAdminEmail = (_schoolData?['adminEmail'] ?? '').toString().trim();
+    final adminEmail = _looksLikeEmail(rawAdminEmail) ? rawAdminEmail : '';
+    final configured = adminEmail.isNotEmpty;
 
     final String statusText;
     final Color statusBg;
@@ -491,6 +604,8 @@ final configured = adminEmail.isNotEmpty;
       statusFg = Colors.green.shade900;
     }
 
+    final bool canInteract = !_loading && !_schoolLoading && _schoolDocFound;
+
     return Scaffold(
       backgroundColor: const Color.fromARGB(255, 244, 248, 245),
       body: Center(
@@ -508,8 +623,7 @@ final configured = adminEmail.isNotEmpty;
                     child: Image.asset(
                       'assets/logo.png',
                       fit: BoxFit.contain,
-                      errorBuilder: (_, __, ___) =>
-                          const Icon(Icons.school, size: 64),
+                      errorBuilder: (_, __, ___) => const Icon(Icons.school, size: 64),
                     ),
                   ),
                   const SizedBox(height: 10),
@@ -524,6 +638,65 @@ final configured = adminEmail.isNotEmpty;
                     style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
                   ),
                   const SizedBox(height: 12),
+
+                  // selector de modo
+                  Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade100,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.grey.shade300),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: GestureDetector(
+                            onTap: () => _switchMode(_AuthMode.login),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              decoration: BoxDecoration(
+                                color: _mode == _AuthMode.login ? azul : Colors.transparent,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Text(
+                                'Iniciar sesión',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  color: _mode == _AuthMode.login ? Colors.white : Colors.black87,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: GestureDetector(
+                            onTap: () => _switchMode(_AuthMode.register),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              decoration: BoxDecoration(
+                                color: _mode == _AuthMode.register ? azul : Colors.transparent,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Text(
+                                'Registro',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  color: _mode == _AuthMode.register ? Colors.white : Colors.black87,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 12),
+
+                  // estado del colegio
                   Container(
                     width: double.infinity,
                     padding: const EdgeInsets.all(10),
@@ -541,122 +714,174 @@ final configured = adminEmail.isNotEmpty;
                     ),
                   ),
                   const SizedBox(height: 14),
-                  TextField(
-                    controller: _userCtrl,
-                    textInputAction: TextInputAction.next,
-                    keyboardType: TextInputType.emailAddress,
-                    decoration: const InputDecoration(
-                      labelText: 'Correo',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.mail),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _passCtrl,
-                    obscureText: _obscure,
-                    onSubmitted: (_) {
-                      if (!_loading) _loginEmailPassword();
-                    },
-                    decoration: InputDecoration(
-                      labelText: 'Contraseña',
-                      border: const OutlineInputBorder(),
-                      prefixIcon: const Icon(Icons.lock),
-                      suffixIcon: IconButton(
-                        onPressed: () => setState(() => _obscure = !_obscure),
-                        icon: Icon(_obscure ? Icons.visibility : Icons.visibility_off),
+
+                  // MODO LOGIN
+                  if (_mode == _AuthMode.login) ...[
+                    TextField(
+                      controller: _userCtrl,
+                      textInputAction: TextInputAction.next,
+                      keyboardType: TextInputType.emailAddress,
+                      decoration: const InputDecoration(
+                        labelText: 'Correo',
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.mail),
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 14),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: azul,
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                      ),
-                      onPressed: (_loading || _schoolLoading || !_schoolDocFound)
-                          ? null
-                          : _loginEmailPassword,
-                      child: Text(
-                        _loading ? 'Entrando...' : 'Entrar',
-                        style: const TextStyle(fontWeight: FontWeight.w800),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: const [
-                      Expanded(child: Divider()),
-                      Padding(
-                        padding: EdgeInsets.symmetric(horizontal: 10),
-                        child: Text('o'),
-                      ),
-                      Expanded(child: Divider()),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: (_loading || _schoolLoading || !_schoolDocFound)
-                          ? null
-                          : _loginGoogle,
-                      icon: const Icon(Icons.login),
-                      label: Text(_loading ? 'Cargando...' : 'Continuar con Google'),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  const Text(
-                    'Solo pueden entrar correos autorizados para este colegio.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 12, height: 1.2),
-                  ),
-                  Visibility(
-                    visible: _devBypassEnabled,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const SizedBox(height: 12),
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            color: Colors.red.shade50,
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.red.shade200),
-                          ),
-                          child: Row(
-                            children: const [
-                              Icon(Icons.warning_amber_rounded,
-                                  size: 18, color: Colors.red),
-                              SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  'Modo DEV: acceso rápido habilitado',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w800,
-                                    color: Colors.red,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _passCtrl,
+                      obscureText: _obscure,
+                      onSubmitted: (_) {
+                        if (!_loading) _loginEmailPassword();
+                      },
+                      decoration: InputDecoration(
+                        labelText: 'Contraseña',
+                        border: const OutlineInputBorder(),
+                        prefixIcon: const Icon(Icons.lock),
+                        suffixIcon: IconButton(
+                          onPressed: () => setState(() => _obscure = !_obscure),
+                          icon: Icon(_obscure ? Icons.visibility : Icons.visibility_off),
                         ),
-                        const SizedBox(height: 10),
-                        SizedBox(
-                          width: double.infinity,
-                          child: OutlinedButton.icon(
-                            onPressed: _loading ? null : _devQuickAccess,
-                            icon: const Icon(Icons.bolt),
-                            label: const Text('Acceso rápido (DEV)'),
-                          ),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: azul,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
                         ),
+                        onPressed: canInteract ? _loginEmailPassword : null,
+                        child: Text(
+                          _loading ? 'Entrando...' : 'Entrar',
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: const [
+                        Expanded(child: Divider()),
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 10),
+                          child: Text('o'),
+                        ),
+                        Expanded(child: Divider()),
                       ],
                     ),
-                  ),
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: canInteract ? _loginGoogle : null,
+                        icon: const Icon(Icons.login),
+                        label: Text(_loading ? 'Cargando...' : 'Continuar con Google'),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    const Text(
+                      'Solo pueden entrar correos autorizados para este colegio.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 12, height: 1.2),
+                    ),
+
+                    // DEV bypass solo en login
+                    Visibility(
+                      visible: _devBypassEnabled,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const SizedBox(height: 12),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: Colors.red.shade50,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: Colors.red.shade200),
+                            ),
+                            child: Row(
+                              children: const [
+                                Icon(Icons.warning_amber_rounded, size: 18, color: Colors.red),
+                                SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Modo DEV: acceso rápido habilitado',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w800,
+                                      color: Colors.red,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              onPressed: _loading ? null : _devQuickAccess,
+                              icon: const Icon(Icons.bolt),
+                              label: const Text('Acceso rápido (DEV)'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+
+                  // MODO REGISTRO
+                  if (_mode == _AuthMode.register) ...[
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.blueGrey.shade50,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.blueGrey.shade100),
+                      ),
+                      child: const Text(
+                        'Para registrarte necesitas el CÓDIGO del colegio.\n'
+                        'Ese código lo genera la administración.',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _codeCtrl,
+                      textInputAction: TextInputAction.done,
+                      decoration: const InputDecoration(
+                        labelText: 'Código del colegio',
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.vpn_key),
+                      ),
+                      onSubmitted: (_) {
+                        if (!_loading) _goToRegistro();
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: azul,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                        ),
+                        onPressed: canInteract ? _goToRegistro : null,
+                        child: Text(
+                          _loading ? 'Verificando...' : 'Continuar a registro',
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextButton(
+                      onPressed: () => _switchMode(_AuthMode.login),
+                      child: const Text('Ya tengo cuenta • Iniciar sesión'),
+                    ),
+                  ],
                 ],
               ),
             ),

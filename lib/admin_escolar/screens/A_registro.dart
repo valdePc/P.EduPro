@@ -11,7 +11,15 @@ import 'A_grados.dart';
 
 class ARegistro extends StatefulWidget {
   final Escuela escuela;
-  const ARegistro({super.key, required this.escuela});
+
+  // ✅ IMPORTANTE: para usar el schoolId real que resolviste en el login
+  final String? schoolIdOverride;
+
+  const ARegistro({
+    super.key,
+    required this.escuela,
+    this.schoolIdOverride,
+  });
 
   @override
   State<ARegistro> createState() => _ARegistroState();
@@ -40,15 +48,24 @@ class _ARegistroState extends State<ARegistro> {
   @override
   void initState() {
     super.initState();
-    _schoolId = normalizeSchoolIdFromEscuela(widget.escuela);
 
+    // ✅ 1) usa override si viene; si no, calcula como antes
+    final override = (widget.schoolIdOverride ?? '').trim();
+    _schoolId = override.isNotEmpty
+        ? override
+        : normalizeSchoolIdFromEscuela(widget.escuela);
+
+    // ✅ 2) todo en "schools"
     _ref = _db
-        .collection('escuelas')
+        .collection('schools')
         .doc(_schoolId)
         .collection('config')
         .doc('registro');
 
-    _gradosCol = _db.collection('escuelas').doc(_schoolId).collection('grados');
+    _gradosCol = _db
+        .collection('schools')
+        .doc(_schoolId)
+        .collection('grados');
 
     _passCtrl.addListener(() {
       if (_hydrated) _dirty = true;
@@ -107,6 +124,16 @@ class _ARegistroState extends State<ARegistro> {
     );
   }
 
+  String _friendlyFirestoreError(Object e) {
+    if (e is FirebaseException) {
+      if (e.code == 'permission-denied') {
+        return 'Permiso denegado por Rules. Falta permitir: schools/$_schoolId/config/registro';
+      }
+      return '${e.code}: ${e.message ?? e.toString()}';
+    }
+    return e.toString();
+  }
+
   Future<void> _save({bool showOkSnack = true}) async {
     final pass = _passCtrl.text.trim();
 
@@ -143,7 +170,7 @@ class _ARegistroState extends State<ARegistro> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error guardando: $e')),
+        SnackBar(content: Text('Error guardando: ${_friendlyFirestoreError(e)}')),
       );
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -173,6 +200,16 @@ class _ARegistroState extends State<ARegistro> {
         body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
           stream: _ref.snapshots(),
           builder: (context, snap) {
+            if (snap.hasError) {
+              return Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  'Error leyendo config: ${_friendlyFirestoreError(snap.error!)}',
+                  style: const TextStyle(color: Colors.red),
+                ),
+              );
+            }
+
             final data = snap.data?.data() ?? {};
 
             if (!_hydrated && snap.hasData) {
@@ -206,7 +243,6 @@ class _ARegistroState extends State<ARegistro> {
                       'Aquí defines la contraseña que usará el personal encargado de inscribir alumnos.\n'
                       '⚠️ Esta NO es la del Admin, es solo para Registro.',
                 ),
-
                 const SizedBox(height: 14),
 
                 _SectionCard(
@@ -221,11 +257,13 @@ class _ARegistroState extends State<ARegistro> {
                           labelText: 'Contraseña',
                           hintText: 'Ej: REG-2026-A',
                           border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12)),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
                           suffixIcon: IconButton(
                             tooltip: _showPass ? 'Ocultar' : 'Mostrar',
                             icon: Icon(
-                                _showPass ? Icons.visibility_off : Icons.visibility),
+                              _showPass ? Icons.visibility_off : Icons.visibility,
+                            ),
                             onPressed: () => setState(() => _showPass = !_showPass),
                           ),
                         ),
@@ -289,7 +327,7 @@ class _ARegistroState extends State<ARegistro> {
                           }
                           if (s.hasError) {
                             return Text(
-                              'Error cargando grados: ${s.error}',
+                              'Error cargando grados: ${_friendlyFirestoreError(s.error!)}',
                               style: const TextStyle(color: Colors.red),
                             );
                           }
@@ -316,12 +354,13 @@ class _ARegistroState extends State<ARegistro> {
                               final name = (d.data()['name'] ?? '—').toString();
                               return Container(
                                 padding: const EdgeInsets.symmetric(
-                                    horizontal: 10, vertical: 6),
+                                  horizontal: 10,
+                                  vertical: 6,
+                                ),
                                 decoration: BoxDecoration(
                                   color: _orange.withOpacity(0.12),
                                   borderRadius: BorderRadius.circular(999),
-                                  border: Border.all(
-                                      color: _orange.withOpacity(0.25)),
+                                  border: Border.all(color: _orange.withOpacity(0.25)),
                                 ),
                                 child: Text(
                                   name,
@@ -340,7 +379,8 @@ class _ARegistroState extends State<ARegistro> {
                             backgroundColor: _orange,
                             padding: const EdgeInsets.symmetric(vertical: 14),
                             shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12)),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
                           ),
                           onPressed: _openGrados,
                           icon: const Icon(Icons.add),
@@ -397,7 +437,8 @@ class _ARegistroState extends State<ARegistro> {
                       backgroundColor: _blue,
                       padding: const EdgeInsets.symmetric(vertical: 14),
                       shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                     ),
                     onPressed: _saving ? null : _save,
                     icon: _saving
