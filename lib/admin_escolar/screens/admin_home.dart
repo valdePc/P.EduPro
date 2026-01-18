@@ -7,7 +7,7 @@ import 'package:edupro/admin_escolar/widgets/admin_shell.dart';
 import 'A_pizarra.dart';
 import 'A_calendarioacademico.dart';
 import 'A_reporteyanalisis.dart';
-import 'A_seguimientodecumplimiento.dart';
+import 'package:edupro/admin_escolar/screens/A_MonitoreoDocentes.dart';
 import 'A_notificacionesyrecomendacion.dart';
 
 // ✅ IMPORTA la pantalla real de Gestión de Maestros
@@ -51,18 +51,19 @@ class _AdminHomeState extends State<AdminHome> {
 
       ACalendarioAcademico(escuela: widget.escuela),
       AReporteYAnalisis(escuela: widget.escuela),
-      ASeguimientoDeCumplimiento(escuela: widget.escuela),
+      AMonitoreoDocentes(escuela: widget.escuela),
       ANotificacionesYRecomendacion(escuela: widget.escuela),
     ];
 
-    final navItems = <NavItem>[
-      NavItem(label: 'Pizarra General', icon: Icons.dashboard, page: pages[0]),
-      NavItem(label: 'Gestión de Maestros', icon: Icons.people, page: pages[1]),
-      NavItem(label: 'Calendario Académico', icon: Icons.calendar_today, page: pages[2]),
-      NavItem(label: 'Reportes & Análisis', icon: Icons.bar_chart, page: pages[3]),
-      NavItem(label: 'Seguimiento', icon: Icons.track_changes, page: pages[4]),
-      NavItem(label: 'Notificaciones', icon: Icons.notifications, page: pages[5]),
-    ];
+final pages = [
+  APizarra(...),
+  AGestionDeMaestros(...),
+  ACalendarioAcademico(...),
+  AReporteYAnalisis(...),
+  AMonitoreoDocentes(escuela: escuela), // <- ESTE ES EL CLAVO
+  ANotificacionesYRecomendacion(...),
+];
+
 
     return AdminShell(
       pages: pages,

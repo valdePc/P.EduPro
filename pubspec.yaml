@@ -44,3 +44,6 @@ flutter:
 
   assets:
     - assets/logo.png
+    - assets/LogoAdmin.png
+    - assets/LogoAlumnos.png
+    - assets/LogoDocentes.png

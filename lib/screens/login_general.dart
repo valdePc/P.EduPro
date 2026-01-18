@@ -31,39 +31,52 @@ class _LoginGeneralScreenState extends State<LoginGeneralScreen> {
     return role.trim().toLowerCase() == 'superadmin'; // ✅ solo minúscula
   }
 
-  Future<void> _finishAuthAndEnter(User? user) async {
-    final uid = user?.uid;
-    if (uid == null) {
-      await FirebaseAuth.instance.signOut();
-      if (!mounted) return;
-      setState(() => _error = 'No se pudo obtener UID del usuario.');
-      return;
-    }
-
-    final doc =
-        await FirebaseFirestore.instance.collection('users').doc(uid).get();
-
-    if (!doc.exists) {
-      await FirebaseAuth.instance.signOut();
-      if (!mounted) return;
-      setState(() => _error = 'Tu usuario no tiene perfil en /users/$uid');
-      return;
-    }
-
-    final data = doc.data()!;
-    final enabled = data['enabled'] == true;
-    final role = (data['role'] ?? '').toString();
-
-    if (!enabled || !_isSuperAdminRole(role)) {
-      await FirebaseAuth.instance.signOut();
-      if (!mounted) return;
-      setState(() => _error = 'No tienes permisos de superadmin (enabled/role).');
-      return;
-    }
-
+Future<void> _finishAuthAndEnter(User? user) async {
+  final uid = user?.uid;
+  if (uid == null) {
+    await FirebaseAuth.instance.signOut();
     if (!mounted) return;
-    Navigator.pushReplacementNamed(context, '/panel');
+    setState(() => _error = 'No se pudo obtener UID del usuario.');
+    return;
   }
+
+  final fs = FirebaseFirestore.instance;
+
+  // ✅ intenta /users primero
+  DocumentSnapshot<Map<String, dynamic>> doc =
+      await fs.collection('users').doc(uid).get();
+
+  // ✅ fallback: /Users (U mayúscula)
+  if (!doc.exists) {
+    doc = await fs.collection('Users').doc(uid).get();
+  }
+
+  if (!doc.exists) {
+    await FirebaseAuth.instance.signOut();
+    if (!mounted) return;
+    setState(() => _error =
+        'Tu usuario no tiene perfil en /users/$uid ni en /Users/$uid');
+    return;
+  }
+
+  final data = doc.data()!;
+  final enabled = data['enabled'] == true;
+  final role = (data['role'] ?? '').toString().trim();
+
+  if (!enabled || !_isSuperAdminRole(role)) {
+    await FirebaseAuth.instance.signOut();
+    if (!mounted) return;
+
+    // ✅ mensaje más útil para depurar
+    setState(() => _error =
+        'Sin permisos. enabled=$enabled, role="$role" (requiere superadmin).');
+    return;
+  }
+
+  if (!mounted) return;
+  Navigator.pushReplacementNamed(context, '/panel');
+}
+
 
   Future<void> _loginEmailPass() async {
     setState(() {

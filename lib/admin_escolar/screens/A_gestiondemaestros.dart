@@ -1,10 +1,6 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cloud_functions/cloud_functions.dart';
-import 'package:crypto/crypto.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -24,12 +20,15 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
-  // Si tus functions están en otra región, usa:
-  // final FirebaseFunctions _functions = FirebaseFunctions.instanceFor(region: 'us-central1');
-  final FirebaseFunctions _functions = FirebaseFunctions.instance;
+  // ✅ Nuevo flujo: el docente se REGISTRA SOLO (Auth real)
+  // Admin aquí SOLO gestiona (aprobar/bloquear/editar/eliminar).
+  static const String _statusPending = 'pending';
+  static const String _statusActive = 'active';
+  static const String _statusBlocked = 'blocked';
 
   String _search = '';
   String? _filterSubject;
+  String? _filterStatus; // null => todos
   bool _loading = false;
 
   List<Map<String, dynamic>> _teachers = [];
@@ -38,7 +37,6 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
   List<String> _availableSubjects = [];
   List<String> _availableGrades = [];
 
-  // Por si A_grados usa otra normalización
   late final String _schoolIdPrimary;
   late final String _schoolIdAlt;
   late final List<String> _catalogSchoolIds;
@@ -114,47 +112,6 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
   }
 
   // ------------------------------------------------------------
-  //  LoginKey robusto (sin acentos) + único
-  // ------------------------------------------------------------
-  String _stripAccents(String s) {
-    const from = 'ÁÀÂÄÃáàâäãÉÈÊËéèêëÍÌÎÏíìîïÓÒÔÖÕóòôöõÚÙÛÜúùûüÑñ';
-    const to = 'AAAAAaaaaaEEEEeeeeIIIIiiiiOOOOOoooooUUUUuuuuNn';
-    for (int i = 0; i < from.length; i++) {
-      s = s.replaceAll(from[i], to[i]);
-    }
-    return s;
-  }
-
-  String _normalizeTeacherLoginKey(String name) {
-    // “Juan Pérez” -> “juan perez”
-    final cleaned = _stripAccents(name).trim().toLowerCase();
-    return cleaned.replaceAll(RegExp(r'\s+'), ' ');
-  }
-
-  Future<String> _makeUniqueLoginKey(String base) async {
-    var candidate = base;
-
-    for (int i = 0; i < 20; i++) {
-      final snap = await _db
-          .collection('schools')
-          .doc(_teachersSchoolId)
-          .collection('teachers')
-          .where('loginKey', isEqualTo: candidate)
-          .limit(1)
-          .get();
-
-      if (snap.docs.isEmpty) return candidate;
-
-      // si existe, agrega 2 dígitos (ej: "juan perez 27")
-      final n = _rng().nextInt(90) + 10;
-      candidate = '$base $n';
-    }
-
-    // fallback súper raro
-    return '${base}_${DateTime.now().millisecondsSinceEpoch % 10000}';
-  }
-
-  // ------------------------------------------------------------
   //  Helpers
   // ------------------------------------------------------------
   List<String> _normalizeStringList(dynamic raw) {
@@ -188,6 +145,37 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
     if (g.isEmpty) return const [];
     if (g.contains(',')) return _parseCommaList(g);
     return [g];
+  }
+
+  String _normalizeStatus(dynamic raw) {
+    final s = (raw ?? '').toString().trim().toLowerCase();
+    if (s == _statusBlocked) return _statusBlocked;
+    if (s == _statusPending || s == 'pending_approval') return _statusPending;
+    return _statusActive;
+  }
+
+  Color _statusColor(String status) {
+    switch (status) {
+      case _statusPending:
+        return Colors.orange.shade700;
+      case _statusBlocked:
+        return Colors.red.shade700;
+      case _statusActive:
+      default:
+        return Colors.green.shade700;
+    }
+  }
+
+  String _statusLabel(String status) {
+    switch (status) {
+      case _statusPending:
+        return 'Pendiente';
+      case _statusBlocked:
+        return 'Bloqueado';
+      case _statusActive:
+      default:
+        return 'Activo';
+    }
   }
 
   void _syncFilterWithAvailableSubjects() {
@@ -225,7 +213,7 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
     if (input.isEmpty) return input;
 
     final buf = StringBuffer();
-    final re = RegExp(r'\S+|\s+'); // palabras o espacios
+    final re = RegExp(r'\S+|\s+');
 
     for (final m in re.allMatches(input)) {
       final token = m.group(0) ?? '';
@@ -265,31 +253,79 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
     });
   }
 
-  Random _rng() {
-    try {
-      return Random.secure();
-    } catch (_) {
-      return Random();
-    }
-  }
-
-  String _generateTempPassword({int length = 10}) {
-    const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789@#%';
-    final r = _rng();
-    return List.generate(length, (_) => chars[r.nextInt(chars.length)]).join();
-  }
-
-  String _sha256(String input) => sha256.convert(utf8.encode(input)).toString();
-
   void _snack(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------
+  //  (Opcional) Directorio: solo para búsquedas/sugerencias
+  //  *No toca passwords, no toca Auth.*
+  // ------------------------------------------------------------
+  Future<void> _upsertTeacherDirectoryFromData({
+    required String teacherId,
+    required Map<String, dynamic> data,
+  }) async {
+    final loginKey = (data['loginKey'] ?? '').toString().trim();
+    final name = (data['name'] ?? '').toString().trim();
+    final status = _normalizeStatus(data['status']);
+    final emailLower = (data['emailLower'] ?? data['email'] ?? '').toString().trim().toLowerCase();
+
+    await _db
+        .collection('schools')
+        .doc(_teachersSchoolId)
+        .collection('teacher_directory')
+        .doc(teacherId)
+        .set({
+      'teacherId': teacherId,
+      'schoolId': _teachersSchoolId,
+      if (loginKey.isNotEmpty) 'loginKey': loginKey,
+      if (name.isNotEmpty) 'name': name,
+      'status': status,
+      'statusLower': status,
+      'statusLabel': _statusLabel(status),
+      if (emailLower.isNotEmpty) 'emailLower': emailLower,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 
   // ------------------------------------------------------------
   //  Resolve teachers schoolId
   // ------------------------------------------------------------
   Future<void> _resolveTeachersSchoolId() async {
+    // 1) PRIORIDAD: si el usuario tiene schoolId en /users, úsalo para evitar permission-denied
+    try {
+      final uid = _auth.currentUser?.uid;
+      if (uid != null) {
+        DocumentSnapshot<Map<String, dynamic>> u = await _db.collection('users').doc(uid).get();
+        if (!u.exists) {
+          u = await _db.collection('Users').doc(uid).get();
+        }
+
+        final data = u.data();
+        if (data != null) {
+          final enabled = (data['enabled'] != false);
+          final role = (data['role'] ?? '').toString().toLowerCase();
+          final sid = (data['schoolId'] ?? '').toString().trim();
+
+          if (enabled && sid.isNotEmpty && role != 'superadmin') {
+            setState(() {
+              _teachersSchoolId = sid;
+              _teachers = [];
+            });
+            await _loadTeachersOnce();
+            return;
+          }
+        }
+      }
+    } catch (_) {}
+
+    // 2) Fallback por tu normalización vieja
     if (_schoolIdPrimary == _schoolIdAlt) {
       await _loadTeachersOnce();
       return;
@@ -297,8 +333,19 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
 
     setState(() => _loading = true);
     try {
-      final q1 = await _db.collection('escuelas').doc(_schoolIdPrimary).collection('teachers').limit(1).get();
-      final q2 = await _db.collection('schools').doc(_schoolIdAlt).collection('teachers').limit(1).get();
+      final q1 = await _db
+          .collection('schools')
+          .doc(_schoolIdPrimary)
+          .collection('teachers')
+          .limit(1)
+          .get();
+
+      final q2 = await _db
+          .collection('schools')
+          .doc(_schoolIdAlt)
+          .collection('teachers')
+          .limit(1)
+          .get();
 
       final primaryHas = q1.docs.isNotEmpty;
       final altHas = q2.docs.isNotEmpty;
@@ -322,74 +369,7 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
   }
 
   // ------------------------------------------------------------
-  //  Cloud Function: crear cuenta de maestro (Firebase Auth)
-  // ------------------------------------------------------------
-  Future<Map<String, dynamic>> _createTeacherAuthAccount({
-    required String teacherName,
-    required String loginKey,
-    required String tempPassword,
-  }) async {
-    final callable = _functions.httpsCallable('createTeacherAccount');
-    final res = await callable.call(<String, dynamic>{
-      'schoolId': _teachersSchoolId,
-      'teacherName': teacherName.trim(),
-      'loginKey': loginKey,
-      'tempPassword': tempPassword,
-    });
-
-    return Map<String, dynamic>.from(res.data as Map);
-  }
-
-  Future<void> _showCredentialsDialog({
-    required String userLoginKey,
-    required String email,
-    required String tempPassword,
-  }) async {
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Acceso del maestro creado'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Comparte estos datos con el maestro:'),
-            const SizedBox(height: 12),
-            SelectableText('Usuario: $userLoginKey'),
-            const SizedBox(height: 6),
-            SelectableText('Correo (interno): $email'),
-            const SizedBox(height: 6),
-            SelectableText('Contraseña provisional: $tempPassword'),
-            const SizedBox(height: 12),
-            const Text(
-              'Recomendación: que el maestro cambie su contraseña al primer inicio.',
-              style: TextStyle(fontSize: 12),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              await Clipboard.setData(
-                ClipboardData(
-                  text: 'Usuario: $userLoginKey\nCorreo: $email\nClave: $tempPassword',
-                ),
-              );
-              if (ctx.mounted) Navigator.pop(ctx);
-            },
-            child: const Text('Copiar y cerrar'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cerrar'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ------------------------------------------------------------
-  //  Catalogs: Grados (A_grados) + Asignaturas (A_asignaturas)
+  //  Catalogs: Grados + Asignaturas
   // ------------------------------------------------------------
   Future<void> _loadCatalogsOnce() async {
     setState(() => _loading = true);
@@ -451,7 +431,7 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
       } catch (_) {}
     }
 
-    // 2) top-level (si existiera): /subjects, /asignaturas, etc. filtrando por schoolId/escuelaId...
+    // 2) top-level (si existiera): /subjects, /asignaturas, etc. filtrando por schoolId...
     for (final col in _subjectCollectionsCandidates) {
       for (final f in _topLevelSchoolFieldsToTry) {
         try {
@@ -485,9 +465,8 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
     _catalogSubs.clear();
 
     for (final sid in _catalogSchoolIds) {
-      final schoolDoc = _db.collection('escuelas').doc(sid);
+      final schoolDoc = _db.collection('schools').doc(sid);
 
-      // doc fields (subjects/asignaturas) y grades/grados
       _catalogSubs.add(
         schoolDoc.snapshots().listen((snap) {
           if (!mounted) return;
@@ -518,7 +497,6 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
         }),
       );
 
-      // grades realtime
       _catalogSubs.add(
         schoolDoc.collection('grados').snapshots().listen((snap) {
           if (!mounted) return;
@@ -535,7 +513,6 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
         }),
       );
 
-      // subjects realtime: escuchamos varias subcolecciones candidatas
       for (final col in _subjectCollectionsCandidates) {
         _catalogSubs.add(
           schoolDoc.collection(col).snapshots().listen((snap) {
@@ -557,7 +534,7 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
   }
 
   // ------------------------------------------------------------
-  //  Teachers CRUD
+  //  Teachers CRUD (SOLO gestión)
   // ------------------------------------------------------------
   Future<void> _loadTeachersOnce() async {
     if (!mounted) return;
@@ -596,6 +573,11 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
     final selected = _filterSubject;
 
     return _teachers.where((t) {
+      final status = _normalizeStatus(t['status']);
+      if (_filterStatus != null && _filterStatus!.isNotEmpty) {
+        if (status != _filterStatus) return false;
+      }
+
       if (selected != null && selected.isNotEmpty) {
         if (!_teacherSubjects(t).contains(selected)) return false;
       }
@@ -603,13 +585,15 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
 
       final name = (t['name'] ?? '').toString().toLowerCase();
       final phone = (t['phone'] ?? '').toString().toLowerCase();
-      final email = (t['email'] ?? '').toString().toLowerCase();
+      final loginKey = (t['loginKey'] ?? '').toString().toLowerCase();
+      final email = (t['emailLower'] ?? t['email'] ?? '').toString().toLowerCase();
 
       final gradesText = _teacherGrades(t).join(', ').toLowerCase();
       final subjectsText = _teacherSubjects(t).join(', ').toLowerCase();
 
       return name.contains(q) ||
           phone.contains(q) ||
+          loginKey.contains(q) ||
           email.contains(q) ||
           gradesText.contains(q) ||
           subjectsText.contains(q);
@@ -708,30 +692,28 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
     );
   }
 
-  Future<void> _openEditDialog({Map<String, dynamic>? teacher}) async {
-    final isNew = teacher == null;
-
-    final nombreCtrl = TextEditingController(text: (teacher?['name'] ?? '').toString());
+  Future<void> _openEditDialog({required Map<String, dynamic> teacher}) async {
+    final nombreCtrl = TextEditingController(text: (teacher['name'] ?? '').toString());
     _attachNameFormatter(nombreCtrl);
 
-    // ✅ letras + espacios (incluye acentos/ñ). SIN números/signos.
     final nameInputFormatters = <TextInputFormatter>[
       FilteringTextInputFormatter.allow(RegExp(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ\s]")),
       LengthLimitingTextInputFormatter(80),
     ];
 
-    // Multi
-    List<String> selectedGrades = teacher != null ? _teacherGrades(teacher) : [];
-    List<String> selectedSubjects = teacher != null ? _teacherSubjects(teacher) : [];
+    final emailCtrl = TextEditingController(
+      text: (teacher['email'] ?? '').toString().trim(),
+    );
 
-    // Teléfono bonito
-    String dialCode = (teacher?['phoneDialCode'] ?? '+1').toString();
+    List<String> selectedGrades = _teacherGrades(teacher);
+    List<String> selectedSubjects = _teacherSubjects(teacher);
+
+    String dialCode = (teacher['phoneDialCode'] ?? '+1').toString();
     if (!_dialCodes.contains(dialCode)) dialCode = '+1';
 
-    final phoneLocalCtrl = TextEditingController(text: (teacher?['phoneLocal'] ?? '').toString().trim());
+    final phoneLocalCtrl = TextEditingController(text: (teacher['phoneLocal'] ?? '').toString().trim());
 
-    // compat si solo existe phone como "+1XXXXXXXX"
-    final rawPhone = (teacher?['phone'] ?? '').toString().trim();
+    final rawPhone = (teacher['phone'] ?? '').toString().trim();
     if (phoneLocalCtrl.text.isEmpty && rawPhone.startsWith('+') && rawPhone.length > 2) {
       for (final dc in _dialCodes) {
         if (rawPhone.startsWith(dc)) {
@@ -742,23 +724,19 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
       }
     }
 
-    String status = (teacher?['status'] ?? 'pending').toString();
-
-    // Contraseña provisional (solo al crear)
-    String tempPasswordPlain = _generateTempPassword(length: 10);
+    String status = _normalizeStatus(teacher['status'] ?? _statusPending);
 
     await showDialog<void>(
       context: context,
       builder: (dlgCtx) => AlertDialog(
-        title: Text(isNew ? 'Crear maestro' : 'Editar maestro'),
+        title: const Text('Editar maestro'),
         content: StatefulBuilder(
           builder: (ctx, st) => SizedBox(
-            width: 640,
+            width: 680,
             child: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // ------------------ NOMBRE ------------------
                   TextField(
                     controller: nombreCtrl,
                     inputFormatters: nameInputFormatters,
@@ -767,46 +745,22 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
                       labelText: 'Nombre completo',
                       border: OutlineInputBorder(),
                       hintText: 'Ej: Juan Pérez',
+                      prefixIcon: Icon(Icons.badge_outlined),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: emailCtrl,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: const InputDecoration(
+                      labelText: 'Correo (referencia)',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.email_outlined),
+                      hintText: 'Ej: profe@gmail.com',
                     ),
                   ),
                   const SizedBox(height: 12),
 
-                  // ------------------ CONTRASEÑA PROVISIONAL (solo crear) ------------------
-                  if (isNew) ...[
-                    TextField(
-                      readOnly: true,
-                      controller: TextEditingController(text: tempPasswordPlain),
-                      decoration: InputDecoration(
-                        labelText: 'Contraseña provisional',
-                        border: const OutlineInputBorder(),
-                        prefixIcon: const Icon(Icons.lock),
-                        suffixIcon: Wrap(
-                          spacing: 0,
-                          children: [
-                            IconButton(
-                              tooltip: 'Regenerar',
-                              icon: const Icon(Icons.refresh),
-                              onPressed: () {
-                                st(() => tempPasswordPlain = _generateTempPassword(length: 10));
-                              },
-                            ),
-                            IconButton(
-                              tooltip: 'Copiar',
-                              icon: const Icon(Icons.copy),
-                              onPressed: () async {
-                                await Clipboard.setData(ClipboardData(text: tempPasswordPlain));
-                                if (!mounted) return;
-                                _snack('Contraseña copiada');
-                              },
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                  ],
-
-                  // ------------------ GRADOS (popup multi-check) ------------------
                   InkWell(
                     onTap: () async {
                       final picked = await _openMultiSelectDialog(
@@ -831,7 +785,6 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
                   ),
                   const SizedBox(height: 12),
 
-                  // ------------------ ASIGNATURAS (popup multi-check) ------------------
                   InkWell(
                     onTap: () async {
                       final picked = await _openMultiSelectDialog(
@@ -856,7 +809,6 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
                   ),
                   const SizedBox(height: 12),
 
-                  // ------------------ TELÉFONO BONITO ------------------
                   Row(
                     children: [
                       SizedBox(
@@ -892,13 +844,12 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
                   ),
                   const SizedBox(height: 12),
 
-                  // ------------------ ESTADO ------------------
                   DropdownButtonFormField<String>(
                     value: status,
                     items: const [
-                      DropdownMenuItem(value: 'pending', child: Text('Pendiente')),
-                      DropdownMenuItem(value: 'active', child: Text('Activo')),
-                      DropdownMenuItem(value: 'blocked', child: Text('Bloqueado')),
+                      DropdownMenuItem(value: _statusPending, child: Text('Pendiente')),
+                      DropdownMenuItem(value: _statusActive, child: Text('Activo')),
+                      DropdownMenuItem(value: _statusBlocked, child: Text('Bloqueado')),
                     ],
                     onChanged: (v) => st(() => status = v ?? status),
                     decoration: const InputDecoration(
@@ -907,26 +858,18 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
                     ),
                   ),
 
-                  if (!isNew) ...[
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: TextEditingController(text: (teacher?['loginKey'] ?? '—').toString()),
-                      readOnly: true,
-                      decoration: const InputDecoration(
-                        labelText: 'Usuario (loginKey)',
-                        border: OutlineInputBorder(),
-                      ),
+                  const SizedBox(height: 12),
+
+                  TextField(
+                    controller: TextEditingController(text: (teacher['loginKey'] ?? '—').toString()),
+                    readOnly: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Usuario (loginKey)',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.person_outline),
+                      helperText: 'El docente se registra solo. Aquí solo gestionas.',
                     ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: TextEditingController(text: (teacher?['email'] ?? '—').toString()),
-                      readOnly: true,
-                      decoration: const InputDecoration(
-                        labelText: 'Correo del maestro',
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                  ],
+                  ),
                 ],
               ),
             ),
@@ -938,32 +881,28 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
             onPressed: () async {
               final rawName = nombreCtrl.text;
 
-              if (isNew && rawName.trim().isEmpty) {
-                _snack('Para crear el maestro, escribe el Nombre completo.');
+              if (rawName.trim().isEmpty) {
+                _snack('Escribe el Nombre completo.');
+                return;
+              }
+
+              final emailRaw = emailCtrl.text.trim();
+              final email = emailRaw.toLowerCase();
+              final emailOk = email.isEmpty || RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(email);
+              if (!emailOk) {
+                _snack('Correo inválido.');
+                return;
+              }
+
+              final teacherId = (teacher['__id'] ?? '').toString().trim();
+              if (teacherId.isEmpty) {
+                _snack('No se encontró el ID del maestro.');
                 return;
               }
 
               setState(() => _loading = true);
-
-              String? createdEmail;
-              String? createdUid;
-              String tempPasswordToShow = tempPasswordPlain;
-              String createdLoginKeyToShow = '';
-
               try {
                 final safeName = _titleCasePreserveSpaces(rawName).trim();
-
-                // ✅ loginKey robusto y único (sin acentos)
-                String loginKey;
-                if (isNew) {
-                  final base = _normalizeTeacherLoginKey(safeName);
-                  loginKey = await _makeUniqueLoginKey(base);
-                } else {
-                  // al editar: conserva el loginKey si existe; si no existe, créalo
-                  final existing = (teacher?['loginKey'] ?? '').toString().trim();
-                  loginKey = existing.isNotEmpty ? existing : _normalizeTeacherLoginKey(safeName);
-                }
-                createdLoginKeyToShow = loginKey;
 
                 final gradesFinal = selectedGrades
                     .map((e) => e.trim())
@@ -984,78 +923,43 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
 
                 final payload = <String, dynamic>{
                   'name': safeName,
-                  'loginKey': loginKey,
-
-                  // compat + nuevo
                   'grade': gradesFinal.isNotEmpty ? gradesFinal.first : '',
                   'grades': gradesFinal,
                   'subjects': subjectsFinal,
-
                   'status': status,
-
+                  'statusLower': status,
+                  'statusLabel': _statusLabel(status),
                   'phone': phoneFull,
                   'phoneDialCode': dialCode,
                   'phoneLocal': phoneLocal,
-
+                  if (email.isNotEmpty) 'email': email,
+                  if (email.isNotEmpty) 'emailLower': email,
+                  'updatedAt': FieldValue.serverTimestamp(),
                   'lastEditedAt': FieldValue.serverTimestamp(),
                 };
 
-                final existingDocId = teacher?['__id']?.toString();
+                await _db
+                    .collection('schools')
+                    .doc(_teachersSchoolId)
+                    .collection('teachers')
+                    .doc(teacherId)
+                    .set(payload, SetOptions(merge: true));
 
-                if (isNew) {
-                  // 🔐 Creamos Auth con la contraseña generada (en Cloud Function)
-                  final created = await _createTeacherAuthAccount(
-                    teacherName: safeName,
-                    loginKey: loginKey,
-                    tempPassword: tempPasswordPlain,
-                  );
+                // Best-effort: mantener directorio sincronizado (si lo usas)
+                try {
+                  await _upsertTeacherDirectoryFromData(teacherId: teacherId, data: {
+                    ...teacher,
+                    ...payload,
+                  });
+                } catch (_) {}
 
-                  createdEmail = (created['email'] ?? '').toString();
-                  createdUid = (created['uid'] ?? '').toString();
+                if (!mounted) return;
+                setState(() {
+                  final idx = _teachers.indexWhere((t) => t['__id'] == teacherId);
+                  if (idx >= 0) _teachers[idx] = {..._teachers[idx], ...payload};
+                });
 
-                  if (createdUid == null || createdUid!.isEmpty) {
-                    throw Exception('La Cloud Function no devolvió uid.');
-                  }
-                  if (createdEmail == null || createdEmail!.isEmpty) {
-                    throw Exception('La Cloud Function no devolvió email.');
-                  }
-
-                  // si la function devolvió otra pass, usamos esa para mostrar
-                  final fromFnPass = (created['tempPassword'] ?? '').toString().trim();
-                  if (fromFnPass.isNotEmpty) tempPasswordToShow = fromFnPass;
-
-                  payload['email'] = createdEmail;
-                  payload['authUid'] = createdUid;
-                  payload['mustChangePassword'] = true;
-                  payload['createdByUid'] = _auth.currentUser?.uid;
-                  payload['createdAt'] = FieldValue.serverTimestamp();
-
-                  // Guardamos SOLO hash + last4 (seguro). No texto plano.
-                  payload['tempPasswordHash'] = _sha256(tempPasswordToShow);
-                  payload['tempPasswordLast4'] = tempPasswordToShow.length >= 4
-                      ? tempPasswordToShow.substring(tempPasswordToShow.length - 4)
-                      : tempPasswordToShow;
-                  payload['tempPasswordSetAt'] = FieldValue.serverTimestamp();
-
-                  // ✅ Guardar teacher con docId = authUid (evita desorden)
-                  await _saveTeacher(payload, docId: createdUid);
-                } else {
-                  payload['updatedAt'] = FieldValue.serverTimestamp();
-
-                  // ✅ En edición: NO cambies docId si ya existe. Si el doc era el uid, se conserva.
-                  await _saveTeacher(payload, docId: existingDocId);
-                }
-
-                if (mounted) Navigator.pop(dlgCtx);
-
-                // Mostrar credenciales SOLO al crear
-                if (isNew && createdEmail != null && createdEmail!.isNotEmpty) {
-                  await _showCredentialsDialog(
-                    userLoginKey: createdLoginKeyToShow,
-                    email: createdEmail!,
-                    tempPassword: tempPasswordToShow,
-                  );
-                }
+                if (dlgCtx.mounted) Navigator.pop(dlgCtx);
               } catch (e) {
                 _snack('Error: $e');
               } finally {
@@ -1067,29 +971,6 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
         ],
       ),
     );
-  }
-
-  Future<void> _saveTeacher(Map<String, dynamic> teacher, {String? docId}) async {
-    final coll = _db.collection('schools').doc(_teachersSchoolId).collection('teachers');
-
-    String id;
-    if (docId == null || docId.isEmpty) {
-      final ref = coll.doc();
-      id = ref.id;
-      await ref.set(teacher, SetOptions(merge: true));
-    } else {
-      id = docId;
-      await coll.doc(id).set(teacher, SetOptions(merge: true));
-    }
-
-    final row = Map<String, dynamic>.from(teacher)..['__id'] = id;
-
-    if (!mounted) return;
-    setState(() {
-      final idx = _teachers.indexWhere((t) => t['__id'] == id);
-      if (idx >= 0) _teachers[idx] = row;
-      else _teachers.insert(0, row);
-    });
   }
 
   Future<void> _deleteTeacher(String docId) async {
@@ -1110,6 +991,12 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
     setState(() => _loading = true);
     try {
       await _db.collection('schools').doc(_teachersSchoolId).collection('teachers').doc(docId).delete();
+
+      // best-effort limpiar directorio
+      try {
+        await _db.collection('schools').doc(_teachersSchoolId).collection('teacher_directory').doc(docId).delete();
+      } catch (_) {}
+
       if (!mounted) return;
       setState(() => _teachers.removeWhere((t) => t['__id'] == docId));
     } finally {
@@ -1123,8 +1010,21 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
     try {
       await _db.collection('schools').doc(_teachersSchoolId).collection('teachers').doc(docId).update({
         'status': status,
+        'statusLower': status,
+        'statusLabel': _statusLabel(status),
         'statusChangedAt': FieldValue.serverTimestamp(),
+        if (status == _statusActive) 'approvedAt': FieldValue.serverTimestamp(),
       });
+
+      // mantener teacher_directory
+      try {
+        await _db.collection('schools').doc(_teachersSchoolId).collection('teacher_directory').doc(docId).set({
+          'status': status,
+          'statusLower': status,
+          'statusLabel': _statusLabel(status),
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      } catch (_) {}
 
       if (!mounted) return;
       setState(() {
@@ -1144,72 +1044,115 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
 
     final rows = _filteredTeachers;
     if (rows.isEmpty) {
-      return const Center(child: Text('No hay maestros. Usa "Agregar maestro".'));
+      return const Center(child: Text('No hay maestros registrados todavía.'));
     }
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(12),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: DataTable(
-          columns: const [
-            DataColumn(label: Text('Nombre')),
-            DataColumn(label: Text('Grados')),
-            DataColumn(label: Text('Correo')),
-            DataColumn(label: Text('Teléfono')),
-            DataColumn(label: Text('Asignaturas')),
-            DataColumn(label: Text('Estado')),
-            DataColumn(label: Text('Acciones')),
-          ],
-          rows: rows.map((t) {
-            final id = (t['__id'] ?? '').toString();
+      child: Card(
+        elevation: 2,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(12),
+          scrollDirection: Axis.horizontal,
+          child: DataTable(
+            headingRowHeight: 52,
+            headingRowColor: MaterialStatePropertyAll(Colors.indigo.shade50),
+            columns: const [
+              DataColumn(label: Text('Nombre')),
+              DataColumn(label: Text('Usuario')),
+              DataColumn(label: Text('Grados')),
+              DataColumn(label: Text('Teléfono')),
+              DataColumn(label: Text('Asignaturas')),
+              DataColumn(label: Text('Estado')),
+              DataColumn(label: Text('Acciones')),
+            ],
+            rows: rows.map((t) {
+              final id = (t['__id'] ?? '').toString();
 
-            final grades = _teacherGrades(t);
-            final gradesText = grades.isEmpty ? '—' : grades.join(', ');
+              final grades = _teacherGrades(t);
+              final gradesText = grades.isEmpty ? '—' : grades.join(', ');
 
-            final subjects = _teacherSubjects(t);
-            final subjectsText = subjects.isEmpty ? '—' : subjects.join(', ');
+              final subjects = _teacherSubjects(t);
+              final subjectsText = subjects.isEmpty ? '—' : subjects.join(', ');
 
-            final status = (t['status'] ?? '—').toString();
-            final email = (t['email'] ?? '—').toString();
-            final phone = (t['phone'] ?? '—').toString();
+              final status = _normalizeStatus(t['status']);
+              final phone = (t['phone'] ?? '—').toString();
+              final loginKey = (t['loginKey'] ?? '—').toString();
 
-            return DataRow(cells: [
-              DataCell(Text((t['name'] ?? '—').toString())),
-              DataCell(SizedBox(width: 240, child: Text(gradesText, overflow: TextOverflow.ellipsis))),
-              DataCell(SizedBox(width: 260, child: Text(email, overflow: TextOverflow.ellipsis))),
-              DataCell(Text(phone)),
-              DataCell(SizedBox(width: 360, child: Text(subjectsText, overflow: TextOverflow.ellipsis))),
-              DataCell(Text(status)),
-              DataCell(Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.edit),
-                    tooltip: 'Editar',
-                    onPressed: () => _openEditDialog(teacher: t),
+              return DataRow(cells: [
+                DataCell(Text((t['name'] ?? '—').toString())),
+                DataCell(Text(loginKey)),
+                DataCell(SizedBox(width: 220, child: Text(gradesText, overflow: TextOverflow.ellipsis))),
+                DataCell(Text(phone)),
+                DataCell(SizedBox(width: 360, child: Text(subjectsText, overflow: TextOverflow.ellipsis))),
+                DataCell(
+                  Chip(
+                    label: Text(
+                      _statusLabel(status),
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                    ),
+                    backgroundColor: _statusColor(status),
                   ),
-                  PopupMenuButton<String>(
-                    onSelected: (v) async {
-                      if (v == 'delete') return _deleteTeacher(id);
-                      if (v == 'block') return _setTeacherStatus(id, 'blocked');
-                      if (v == 'activate') return _setTeacherStatus(id, 'active');
-                      if (v == 'pending') return _setTeacherStatus(id, 'pending');
-                    },
-                    itemBuilder: (_) => const [
-                      PopupMenuItem(value: 'activate', child: Text('Activar')),
-                      PopupMenuItem(value: 'block', child: Text('Bloquear')),
-                      PopupMenuItem(value: 'pending', child: Text('Pendiente')),
-                      PopupMenuItem(
-                        value: 'delete',
-                        child: Text('Eliminar', style: TextStyle(color: Colors.red)),
-                      ),
-                    ],
-                  ),
-                ],
-              )),
-            ]);
-          }).toList(),
+                ),
+                DataCell(Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.edit),
+                      tooltip: 'Editar',
+                      onPressed: () => _openEditDialog(teacher: t),
+                    ),
+                    PopupMenuButton<String>(
+                      onSelected: (v) async {
+                        if (v == 'delete') return _deleteTeacher(id);
+                        if (v == 'approve') return _setTeacherStatus(id, _statusActive);
+                        if (v == 'block') return _setTeacherStatus(id, _statusBlocked);
+                        if (v == 'pending') return _setTeacherStatus(id, _statusPending);
+                      },
+                      itemBuilder: (_) => const [
+                        PopupMenuItem(value: 'approve', child: Text('Aprobar (Activar)')),
+                        PopupMenuItem(value: 'pending', child: Text('Marcar Pendiente')),
+                        PopupMenuItem(value: 'block', child: Text('Bloquear')),
+                        PopupMenuItem(
+                          value: 'delete',
+                          child: Text('Eliminar', style: TextStyle(color: Colors.red)),
+                        ),
+                      ],
+                    ),
+                  ],
+                )),
+              ]);
+            }).toList(),
+          ),
         ),
+      ),
+    );
+  }
+
+  Widget _headerBar() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Colors.indigo.shade900, Colors.indigo.shade700],
+        ),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.school, color: Colors.white),
+          const SizedBox(width: 10),
+          const Expanded(
+            child: Text(
+              'Gestión de Maestros',
+              style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700),
+            ),
+          ),
+          TextButton.icon(
+            onPressed: _loading ? null : _loadTeachersOnce,
+            icon: const Icon(Icons.refresh, color: Colors.white),
+            label: const Text('Actualizar', style: TextStyle(color: Colors.white)),
+          ),
+        ],
       ),
     );
   }
@@ -1217,51 +1160,70 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.grey.shade100,
       appBar: AppBar(
-        automaticallyImplyLeading: false,
-        leading: const SizedBox.shrink(),
-        leadingWidth: 0,
-        title: const SizedBox.shrink(),
-        backgroundColor: Colors.blue.shade900,
-        elevation: 0,
+        automaticallyImplyLeading: true,
+        backgroundColor: Colors.indigo.shade900,
+        title: const Text('Maestros'),
+        actions: [
+          IconButton(
+            tooltip: 'Actualizar',
+            onPressed: _loading ? null : _loadTeachersOnce,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
       ),
       body: Column(
         children: [
+          _headerBar(),
           Padding(
             padding: const EdgeInsets.all(12),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    decoration: const InputDecoration(
-                      prefixIcon: Icon(Icons.search),
-                      hintText: 'Buscar por nombre, grado(s), asignatura(s), correo o teléfono',
-                      border: OutlineInputBorder(),
+            child: Card(
+              elevation: 1,
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        decoration: const InputDecoration(
+                          prefixIcon: Icon(Icons.search),
+                          hintText: 'Buscar por nombre, usuario, teléfono, correo, grados o asignaturas',
+                          border: OutlineInputBorder(),
+                        ),
+                        onChanged: (v) => setState(() => _search = v),
+                      ),
                     ),
-                    onChanged: (v) => setState(() => _search = v),
-                  ),
+                    const SizedBox(width: 12),
+                    DropdownButton<String?>(
+                      value: _filterStatus,
+                      hint: const Text('Estado'),
+                      items: const [
+                        DropdownMenuItem<String?>(value: null, child: Text('Todos')),
+                        DropdownMenuItem<String?>(value: _statusPending, child: Text('Pendiente')),
+                        DropdownMenuItem<String?>(value: _statusActive, child: Text('Activo')),
+                        DropdownMenuItem<String?>(value: _statusBlocked, child: Text('Bloqueado')),
+                      ],
+                      onChanged: (v) => setState(() => _filterStatus = v),
+                    ),
+                    const SizedBox(width: 12),
+                    if (_availableSubjects.isNotEmpty)
+                      DropdownButton<String?>(
+                        value: (_filterSubject != null && _availableSubjects.contains(_filterSubject))
+                            ? _filterSubject
+                            : null,
+                        hint: const Text('Asignatura'),
+                        items: <DropdownMenuItem<String?>>[
+                          const DropdownMenuItem<String?>(value: null, child: Text('Todas')),
+                          ..._availableSubjects.map((s) => DropdownMenuItem<String?>(value: s, child: Text(s))),
+                        ],
+                        onChanged: (v) => setState(() => _filterSubject = v),
+                      ),
+                  ],
                 ),
-                const SizedBox(width: 12),
-                if (_availableSubjects.isNotEmpty)
-                  DropdownButton<String?>(
-                    value: (_filterSubject != null && _availableSubjects.contains(_filterSubject)) ? _filterSubject : null,
-                    hint: const Text('Filtrar asignatura'),
-                    items: <DropdownMenuItem<String?>>[
-                      const DropdownMenuItem<String?>(value: null, child: Text('Todas')),
-                      ..._availableSubjects.map((s) => DropdownMenuItem<String?>(value: s, child: Text(s))),
-                    ],
-                    onChanged: (v) => setState(() => _filterSubject = v),
-                  ),
-                const SizedBox(width: 12),
-                ElevatedButton.icon(
-                  icon: const Icon(Icons.person_add),
-                  label: const Text('Agregar maestro'),
-                  onPressed: _loading ? null : () => _openEditDialog(),
-                ),
-              ],
+              ),
             ),
           ),
-          const Divider(height: 1),
           Expanded(child: _buildList()),
         ],
       ),

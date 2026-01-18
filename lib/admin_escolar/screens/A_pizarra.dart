@@ -8,7 +8,6 @@ import 'package:edupro/models/escuela.dart';
 // Pantallas destino
 import 'package:edupro/admin_escolar/screens/A_calendarioacademico.dart';
 import 'package:edupro/admin_escolar/screens/A_reporteyanalisis.dart';
-import 'package:edupro/admin_escolar/screens/A_seguimientodecumplimiento.dart';
 import 'package:edupro/admin_escolar/screens/A_notificacionesyrecomendacion.dart';
 import 'package:edupro/admin_escolar/screens/A_usuarios.dart';
 import 'package:edupro/admin_escolar/screens/A_planificacionacademica.dart';
@@ -18,6 +17,7 @@ import 'package:edupro/admin_escolar/screens/A_grados.dart';
 import 'package:edupro/admin_escolar/screens/A_reuniones.dart';
 import 'package:edupro/admin_escolar/screens/A_registro.dart';
 import 'package:edupro/admin_escolar/screens/A_chat_administracion_screen.dart';
+import 'package:edupro/admin_escolar/screens/A_MonitoreoDocentes.dart';
 
 // Wrapper de asignaturas (pantalla)
 import 'package:edupro/admin_escolar/screens/A_asignaturas.dart';
@@ -487,12 +487,12 @@ class APizarra extends StatelessWidget {
               _menuTile(
                 context: context,
                 icon: Icons.track_changes,
-                label: 'Seguimiento de Cumplimiento',
+                label: 'Monitoreo de Docentes',
                 onTap: () {
                   if (onNavigate != null) {
                     onNavigate!(4);
                   } else {
-                    _navigate(context, ASeguimientoDeCumplimiento(escuela: escuela));
+                    _navigate(context, AMonitoreoDocentes(escuela: escuela));
                   }
                 },
               ),

@@ -23,15 +23,10 @@ class AdminLoginEscolarScreen extends StatefulWidget {
 }
 
 class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
-  final _userCtrl = TextEditingController(); // correo
-  final _passCtrl = TextEditingController();
   final _codeCtrl = TextEditingController(); // código para registro
-
   final _db = FirebaseFirestore.instance;
 
   bool _loading = false;
-  bool _obscure = true;
-
   _AuthMode _mode = _AuthMode.login;
 
   bool _looksLikeEmail(String s) {
@@ -101,8 +96,6 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
 
   @override
   void dispose() {
-    _userCtrl.dispose();
-    _passCtrl.dispose();
     _codeCtrl.dispose();
     super.dispose();
   }
@@ -210,12 +203,6 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
       final schoolDoc = await _db.collection('schools').doc(_schoolId).get();
       _schoolDocFound = schoolDoc.exists;
       _schoolData = schoolDoc.data();
-
-      // Prefill del correo admin si existe
-      final raw = (_schoolData?['adminEmail'] ?? '').toString().trim();
-      if (_looksLikeEmail(raw)) {
-        _userCtrl.text = raw;
-      }
     } catch (_) {
       // no rompas el login
     } finally {
@@ -244,10 +231,8 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
     try {
       await auth.signInAnonymously();
     } on FirebaseAuthException catch (e) {
-      // Si no está habilitado Anonymous, no rompas el flujo.
-      // Igual puede funcionar si tus rules permiten lectura pública.
       if (e.code == 'operation-not-allowed') {
-        // Lo avisaremos solo si luego falla la lectura.
+        // Si no está habilitado Anonymous, no rompas el flujo.
       }
     } catch (_) {}
   }
@@ -255,13 +240,12 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
   // ------------------------------------------------------------
   // ✅ Lee la contraseña EXACTA como se guardó en A_registro:
   // schools/{schoolId}/config/registro.password
-  // - prueba en todos los candidates (porque a veces se guarda en otro id)
+  // - prueba en todos los candidates
   // - si la encuentra, fija _schoolId a ese candidato
   // ------------------------------------------------------------
   Future<String> _loadRegistroPasswordAny() async {
     await _ensureAnonAuthForRegistro();
 
-    // probamos en este orden: el resuelto primero, luego el resto
     final ordered = _uniqueInOrder([_schoolId, ..._schoolIdCandidates]);
 
     for (final sid in ordered) {
@@ -274,7 +258,6 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
 
       final pass = (d.data()?['password'] ?? '').toString().trim();
       if (pass.isNotEmpty) {
-        // ✅ importante: usa el mismo schoolId donde realmente está el código
         _schoolId = sid;
         return pass; // EXACTO, case-sensitive
       }
@@ -286,72 +269,71 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
   // ------------------------------------------------------------
   // ✅ Ir a registro SOLO si código correcto
   // ------------------------------------------------------------
-Future<void> _goToRegistro() async {
-  if (_schoolLoading || _loading) return;
+  Future<void> _goToRegistro() async {
+    if (_schoolLoading || _loading) return;
 
-  setState(() => _loading = true);
-  try {
-    await _resolveSchoolIdAndLoad();
-
-    if (!_schoolDocFound) {
-      _toast('No se encontró el colegio.');
-      return;
-    }
-    if (!_schoolActive()) {
-      _toast('Este colegio está inactivo.');
-      return;
-    }
-
-    final entered = _codeCtrl.text.trim(); // exacto como lo escribió
-    if (entered.isEmpty) {
-      _toast('Escribe el código del colegio.');
-      return;
-    }
-
-    String expected = '';
+    setState(() => _loading = true);
     try {
-      expected = await _loadRegistroPasswordAny();
-    } on FirebaseException catch (e) {
-      if (e.code == 'permission-denied') {
-        _toast(
-          'No tengo permiso para leer el código de registro.\n'
-          'Solución rápida: habilita Anonymous Auth o ajusta Rules para permitir leer '
-          'schools/{id}/config/registro.',
-        );
+      await _resolveSchoolIdAndLoad();
+
+      if (!_schoolDocFound) {
+        _toast('No se encontró el colegio.');
         return;
       }
-      _toast('Error leyendo el código: ${e.code}');
-      return;
-    } catch (e) {
-      _toast('No se pudo verificar el código: $e');
-      return;
-    }
+      if (!_schoolActive()) {
+        _toast('Este colegio está inactivo.');
+        return;
+      }
 
-    if (expected.isEmpty) {
-      _toast('Aún no se ha generado el código de registro para este colegio.');
-      return;
-    }
+      final entered = _codeCtrl.text.trim();
+      if (entered.isEmpty) {
+        _toast('Escribe el código del colegio.');
+        return;
+      }
 
-    if (entered != expected) {
-      _toast('Código incorrecto.');
-      return;
-    }
+      String expected = '';
+      try {
+        expected = await _loadRegistroPasswordAny();
+      } on FirebaseException catch (e) {
+        if (e.code == 'permission-denied') {
+          _toast(
+            'No tengo permiso para leer el código de registro.\n'
+            'Solución rápida: habilita Anonymous Auth o ajusta Rules para permitir leer '
+            'schools/{id}/config/registro.',
+          );
+          return;
+        }
+        _toast('Error leyendo el código: ${e.code}');
+        return;
+      } catch (e) {
+        _toast('No se pudo verificar el código: $e');
+        return;
+      }
 
-    if (!mounted) return;
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(
-        builder: (_) => RegistroEquipoScreen(
-          escuela: widget.escuela,
-          schoolIdOverride: _schoolId,
+      if (expected.isEmpty) {
+        _toast('Aún no se ha generado el código de registro para este colegio.');
+        return;
+      }
+
+      if (entered != expected) {
+        _toast('Código incorrecto.');
+        return;
+      }
+
+      if (!mounted) return;
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => RegistroEquipoScreen(
+            escuela: widget.escuela,
+            schoolIdOverride: _schoolId,
+          ),
         ),
-      ),
-    );
-  } finally {
-    if (mounted) setState(() => _loading = false);
+      );
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
-}
-
 
   // ------------------------------------------------------------
   // Autorización: solo admins del colegio
@@ -367,9 +349,7 @@ Future<void> _goToRegistro() async {
     if (!_schoolDocFound) return false;
 
     if (adminUid.isNotEmpty && uid == adminUid) return true;
-    if (adminEmail.isNotEmpty && email.isNotEmpty && email == adminEmail) {
-      return true;
-    }
+    if (adminEmail.isNotEmpty && email.isNotEmpty && email == adminEmail) return true;
 
     try {
       final d = await _db
@@ -431,53 +411,6 @@ Future<void> _goToRegistro() async {
         code: 'not-authorized',
         message: 'Este usuario no tiene permisos para esta escuela.',
       );
-    }
-  }
-
-  // ------------------------------------------------------------
-  // Login email/pass
-  // ------------------------------------------------------------
-  Future<void> _loginEmailPassword() async {
-    final email = _userCtrl.text.trim().toLowerCase();
-    final pass = _passCtrl.text;
-
-    if (email.isEmpty || !email.contains('@')) {
-      _toast('Escribe un correo válido.');
-      return;
-    }
-    if (pass.trim().length < 6) {
-      _toast('Contraseña inválida.');
-      return;
-    }
-
-    setState(() => _loading = true);
-    try {
-      await _resolveSchoolIdAndLoad();
-
-      final cred = await FirebaseAuth.instance.signInWithEmailAndPassword(
-        email: email,
-        password: pass,
-      );
-
-      final user = cred.user ?? FirebaseAuth.instance.currentUser;
-      if (user == null) {
-        throw FirebaseAuthException(code: 'no-user', message: 'No se obtuvo usuario.');
-      }
-
-      await _ensureAuthorizedOrThrow(user);
-      _goToPizarra();
-    } on FirebaseAuthException catch (e) {
-      if (e.code == 'user-not-found' || e.code == 'wrong-password') {
-        _toast('Correo o contraseña incorrectos.');
-      } else if (e.code == 'not-authorized') {
-        _toast('Acceso denegado: este correo no está autorizado para este colegio.');
-      } else {
-        _toast('${e.code}${e.message != null ? ' — ${e.message}' : ''}');
-      }
-    } catch (e) {
-      _toast('Login falló: $e');
-    } finally {
-      if (mounted) setState(() => _loading = false);
     }
   }
 
@@ -593,13 +526,14 @@ Future<void> _goToRegistro() async {
       statusBg = Colors.red.shade50;
       statusFg = Colors.red.shade900;
     } else if (!configured) {
+      // OJO: aunque no haya adminEmail, igual puede autorizar por schools/{id}/admins
       statusText =
           'Este colegio aún no tiene adminEmail configurado.\n'
-          'Ve a ColeAdmin → “Acceso principal”.';
+          'Aún así, pueden entrar admins autorizados por lista.';
       statusBg = Colors.orange.shade50;
       statusFg = Colors.orange.shade900;
     } else {
-      statusText = 'Correo autorizado: $adminEmail';
+      statusText = 'Correo Autorizado: $adminEmail';
       statusBg = Colors.green.shade50;
       statusFg = Colors.green.shade900;
     }
@@ -621,7 +555,7 @@ Future<void> _goToRegistro() async {
                   SizedBox(
                     height: 90,
                     child: Image.asset(
-                      'assets/logo.png',
+                      'assets/LogoAdmin.png',
                       fit: BoxFit.contain,
                       errorBuilder: (_, __, ___) => const Icon(Icons.school, size: 64),
                     ),
@@ -684,7 +618,9 @@ Future<void> _goToRegistro() async {
                                 textAlign: TextAlign.center,
                                 style: TextStyle(
                                   fontWeight: FontWeight.w800,
-                                  color: _mode == _AuthMode.register ? Colors.white : Colors.black87,
+                                  color: _mode == _AuthMode.register
+                                      ? Colors.white
+                                      : Colors.black87,
                                 ),
                               ),
                             ),
@@ -715,73 +651,26 @@ Future<void> _goToRegistro() async {
                   ),
                   const SizedBox(height: 14),
 
-                  // MODO LOGIN
+                  // MODO LOGIN (SOLO GOOGLE)
                   if (_mode == _AuthMode.login) ...[
-                    TextField(
-                      controller: _userCtrl,
-                      textInputAction: TextInputAction.next,
-                      keyboardType: TextInputType.emailAddress,
-                      decoration: const InputDecoration(
-                        labelText: 'Correo',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.mail),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _passCtrl,
-                      obscureText: _obscure,
-                      onSubmitted: (_) {
-                        if (!_loading) _loginEmailPassword();
-                      },
-                      decoration: InputDecoration(
-                        labelText: 'Contraseña',
-                        border: const OutlineInputBorder(),
-                        prefixIcon: const Icon(Icons.lock),
-                        suffixIcon: IconButton(
-                          onPressed: () => setState(() => _obscure = !_obscure),
-                          icon: Icon(_obscure ? Icons.visibility : Icons.visibility_off),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 14),
                     SizedBox(
                       width: double.infinity,
-                      child: ElevatedButton(
+                      child: ElevatedButton.icon(
                         style: ElevatedButton.styleFrom(
                           backgroundColor: azul,
                           padding: const EdgeInsets.symmetric(vertical: 14),
                         ),
-                        onPressed: canInteract ? _loginEmailPassword : null,
-                        child: Text(
-                          _loading ? 'Entrando...' : 'Entrar',
+                        onPressed: canInteract ? _loginGoogle : null,
+                        icon: const Icon(Icons.g_mobiledata, size: 28),
+                        label: Text(
+                          _loading ? 'Cargando...' : 'Continuar con Google',
                           style: const TextStyle(fontWeight: FontWeight.w800),
                         ),
                       ),
                     ),
                     const SizedBox(height: 10),
-                    Row(
-                      children: const [
-                        Expanded(child: Divider()),
-                        Padding(
-                          padding: EdgeInsets.symmetric(horizontal: 10),
-                          child: Text('o'),
-                        ),
-                        Expanded(child: Divider()),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton.icon(
-                        onPressed: canInteract ? _loginGoogle : null,
-                        icon: const Icon(Icons.login),
-                        label: Text(_loading ? 'Cargando...' : 'Continuar con Google'),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
                     const Text(
-                      'Solo pueden entrar correos autorizados para este colegio.',
+                      'Solo Personal Autorizado.',
                       textAlign: TextAlign.center,
                       style: TextStyle(fontSize: 12, height: 1.2),
                     ),
@@ -803,7 +692,8 @@ Future<void> _goToRegistro() async {
                             ),
                             child: Row(
                               children: const [
-                                Icon(Icons.warning_amber_rounded, size: 18, color: Colors.red),
+                                Icon(Icons.warning_amber_rounded,
+                                    size: 18, color: Colors.red),
                                 SizedBox(width: 8),
                                 Expanded(
                                   child: Text(
@@ -832,7 +722,7 @@ Future<void> _goToRegistro() async {
                     ),
                   ],
 
-                  // MODO REGISTRO
+                  // MODO REGISTRO (SE MANTIENE INTACTO)
                   if (_mode == _AuthMode.register) ...[
                     Container(
                       width: double.infinity,
@@ -843,8 +733,8 @@ Future<void> _goToRegistro() async {
                         border: Border.all(color: Colors.blueGrey.shade100),
                       ),
                       child: const Text(
-                        'Para registrarte necesitas el CÓDIGO del colegio.\n'
-                        'Ese código lo genera la administración.',
+                        'Ingrese el CÓDIGO que le proporciono la administración,\n'
+                        'para acceder a este espacio.',
                         style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
                       ),
                     ),
@@ -875,11 +765,6 @@ Future<void> _goToRegistro() async {
                           style: const TextStyle(fontWeight: FontWeight.w800),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 10),
-                    TextButton(
-                      onPressed: () => _switchMode(_AuthMode.login),
-                      child: const Text('Ya tengo cuenta • Iniciar sesión'),
                     ),
                   ],
                 ],

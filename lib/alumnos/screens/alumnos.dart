@@ -651,7 +651,7 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
                           backgroundColor: Colors.white,
                           child: Padding(
                             padding: const EdgeInsets.all(6),
-                            child: Image.asset('assets/logo.png'),
+                            child: Image.asset('assets/LogoAlumnos.png'),
                           ),
                         ),
                       ),
