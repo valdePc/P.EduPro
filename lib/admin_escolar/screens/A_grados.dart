@@ -28,17 +28,22 @@ class _AGradosState extends State<AGrados> {
   // ✅ grados unificados (misma fuente para maestros/estudiantes)
   late final CollectionReference<Map<String, dynamic>> _gradosCol;
 
-  @override
-  void initState() {
-    super.initState();
-    _schoolId = normalizeSchoolIdFromEscuela(widget.escuela);
+@override
+void initState() {
+  super.initState();
 
-    // escuelas/{schoolId}/grados
-    _gradosCol = FirebaseFirestore.instance
-        .collection('escuelas')
-        .doc(_schoolId)
-        .collection('grados');
-  }
+  final rawId = normalizeSchoolIdFromEscuela(widget.escuela); // puede venir "31WY4FV3" o "eduproapp_admin_31WY4FV3"
+
+  final schoolDocId = rawId.startsWith('eduproapp_admin_')
+      ? rawId
+      : 'eduproapp_admin_$rawId';
+
+  _gradosCol = FirebaseFirestore.instance
+      .collection('schools')
+      .doc(schoolDocId)
+      .collection('grados');
+}
+
 
   @override
   void dispose() {

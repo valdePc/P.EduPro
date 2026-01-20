@@ -49,7 +49,12 @@ class _DocentesScreenState extends State<DocentesScreen> {
   @override
   void initState() {
     super.initState();
-    _schoolId = _cleanSchoolId(normalizeSchoolIdFromEscuela(widget.escuela));
+
+    // ✅ MISMA lógica que en crear_cuenta_docente.dart (prefijo incluido)
+    final rawId = normalizeSchoolIdFromEscuela(widget.escuela);
+    _schoolId = _cleanSchoolId(
+      rawId.startsWith('eduproapp_admin_') ? rawId : 'eduproapp_admin_$rawId',
+    );
 
     _loadActiveTeachers();
 
@@ -85,19 +90,14 @@ class _DocentesScreenState extends State<DocentesScreen> {
   // Firestore no permite "/" en docId
   String _cleanSchoolId(String v) => v.trim().replaceAll('/', '_');
 
+  // ✅ Privado (detalles)
   CollectionReference<Map<String, dynamic>> get _teachersColl =>
       _db.collection('schools').doc(_schoolId).collection('teachers');
 
-  // ✅ Si la tienes, esta es la recomendada para NO exponer datos sensibles.
+  // ✅ PUBLIC (tu captura muestra: teachers_public)
+  // Aquí debe vivir el statusLower active/blocked
   CollectionReference<Map<String, dynamic>> get _teachersPublicColl =>
-      _db.collection('schools').doc(_schoolId).collection('teacher_directory');
-
-  // ✅ Fuente para login (y aquí vive active/blocked)
-  CollectionReference<Map<String, dynamic>> get _teacherDirectoryColl =>
-      _db.collection('schools').doc(_schoolId).collection('teacher_directory');
-
-  DocumentReference<Map<String, dynamic>> _userRef(String uid) =>
-      _db.collection('users').doc(uid);
+      _db.collection('schools').doc(_schoolId).collection('teachers_public');
 
   // -------------------------------
   // Normalización
@@ -139,7 +139,9 @@ class _DocentesScreenState extends State<DocentesScreen> {
   String _sha1Hex(String s) => sha1.convert(utf8.encode(s)).toString();
 
   // -------------------------------
-  // Cargar docentes activos (SOLO active)
+  // Cargar docentes activos (NO depende solo de where)
+  // - Trae hasta 600 recientes y filtra "active" en cliente
+  // - Así no te deja fuera docs sin statusLower
   // -------------------------------
   Future<void> _loadActiveTeachers() async {
     if (!mounted) return;
@@ -149,26 +151,12 @@ class _DocentesScreenState extends State<DocentesScreen> {
     });
 
     try {
-      Future<QuerySnapshot<Map<String, dynamic>>> queryActive(
-        CollectionReference<Map<String, dynamic>> coll,
-      ) async {
-        return await coll.where('statusLower', isEqualTo: 'active').limit(400).get();
-      }
-
-      QuerySnapshot<Map<String, dynamic>> snap;
-
-      // ✅ 1) teacher_directory (fuente real)
-      try {
-        snap = await queryActive(_teacherDirectoryColl);
-      } catch (_) {
-        // ✅ fallback: teachers_public (si existe y es público)
-        snap = await queryActive(_teachersPublicColl);
-      }
+      final snap = await _teachersPublicColl.limit(600).get();
 
       final list = snap.docs
           .map(_TeacherOption.fromDoc)
-          .where((t) => t.statusLower == 'active')
           .where((t) => t.name.trim().isNotEmpty)
+          .where((t) => t.statusLower == 'active')
           .toList();
 
       list.sort((a, b) => _norm(a.name).compareTo(_norm(b.name)));
@@ -208,7 +196,7 @@ class _DocentesScreenState extends State<DocentesScreen> {
       final email = _norm(_canonUserInput(t.emailLower));
 
       final matchName = name.startsWith(q) || name.contains(q);
-      final matchUser = user.startsWith(q) || user.contains(q);
+      final matchUser = user.isNotEmpty && (user.startsWith(q) || user.contains(q));
       final matchEmail = email.isNotEmpty && (email.startsWith(q) || email.contains(q));
 
       var matchPhone = false;
@@ -258,6 +246,46 @@ class _DocentesScreenState extends State<DocentesScreen> {
   }
 
   // -------------------------------
+  // ✅ Si NO aparece en la lista, busca directo en Firestore
+  // (evita que “está activo pero no sale” te rompa el login)
+  // -------------------------------
+  Future<_TeacherOption?> _findTeacherServerSide(String input) async {
+    final qRaw = input.trim();
+    if (qRaw.isEmpty) return null;
+
+    final q = _canonUserInput(qRaw);
+    final qLower = q.toLowerCase();
+
+    QuerySnapshot<Map<String, dynamic>> snap;
+
+    // 1) Por emailLower
+    if (qLower.contains('@')) {
+      snap = await _teachersPublicColl
+          .where('emailLower', isEqualTo: qLower)
+          .limit(1)
+          .get();
+      if (snap.docs.isNotEmpty) return _TeacherOption.fromDoc(snap.docs.first);
+    }
+
+    // 2) Por loginKey
+    snap = await _teachersPublicColl.where('loginKey', isEqualTo: qLower).limit(1).get();
+    if (snap.docs.isNotEmpty) return _TeacherOption.fromDoc(snap.docs.first);
+
+    // 3) Por name exacto (si tu data guarda el name tal cual)
+    snap = await _teachersPublicColl.where('name', isEqualTo: qRaw).limit(1).get();
+    if (snap.docs.isNotEmpty) return _TeacherOption.fromDoc(snap.docs.first);
+
+    // 4) Teléfono (phoneHash)
+    if (_looksLikePhone(qRaw)) {
+      final ph = _sha1Hex(_phoneDigitsForHash(qRaw));
+      snap = await _teachersPublicColl.where('phoneHash', isEqualTo: ph).limit(1).get();
+      if (snap.docs.isNotEmpty) return _TeacherOption.fromDoc(snap.docs.first);
+    }
+
+    return null;
+  }
+
+  // -------------------------------
   // VAPID / Push
   // -------------------------------
   Future<String?> _loadWebVapidKey() async {
@@ -271,113 +299,99 @@ class _DocentesScreenState extends State<DocentesScreen> {
     }
   }
 
-Future<void> _registerPushTeacher() async {
-  try {
-    final user = _auth.currentUser;
-    if (user == null) return;
-    if (_schoolId.trim().isEmpty) return;
-
-    // 1) Permisos de notificaciones (best effort)
+  Future<void> _registerPushTeacher() async {
     try {
-      await FirebaseMessaging.instance.requestPermission();
-    } catch (_) {}
+      final user = _auth.currentUser;
+      if (user == null) return;
+      if (_schoolId.trim().isEmpty) return;
 
-    // 2) Obtener token
-    String? token;
-
-    if (kIsWeb) {
-      final vapid = await _loadWebVapidKey();
       try {
-        token = await FirebaseMessaging.instance.getToken(
-          vapidKey: (vapid == null || vapid.isEmpty) ? null : vapid,
-        );
-      } catch (e) {
-        if (kDebugMode) debugPrint('FCM Web token error: $e');
-        return;
-      }
-    } else {
-      token = await FirebaseMessaging.instance.getToken();
-    }
+        await FirebaseMessaging.instance.requestPermission();
+      } catch (_) {}
 
-    token = token?.trim();
-    if (token == null || token.isEmpty) return;
+      String? token;
 
-    // 3) Guardar token en members/{uid} SIN merge.
-    final membersRef = _db
-        .collection('schools')
-        .doc(_schoolId)
-        .collection('members')
-        .doc(user.uid);
-
-    try {
-      final existing = await membersRef.get();
-
-      if (!existing.exists) {
-        // ✅ CREATE: solo keys permitidas por reglas
-        await membersRef.set({
-          'uid': user.uid,
-          'role': 'teacher',
-          'audience': 'teachers',
-          'tokens': [token],
-          'updatedAt': FieldValue.serverTimestamp(),
-        }); // <- sin merge
+      if (kIsWeb) {
+        final vapid = await _loadWebVapidKey();
+        try {
+          token = await FirebaseMessaging.instance.getToken(
+            vapidKey: (vapid == null || vapid.isEmpty) ? null : vapid,
+          );
+        } catch (e) {
+          if (kDebugMode) debugPrint('FCM Web token error: $e');
+          return;
+        }
       } else {
-        // ✅ UPDATE: solo tokens + updatedAt (como dicen tus reglas)
-        await membersRef.update({
-          'tokens': FieldValue.arrayUnion([token]),
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
+        token = await FirebaseMessaging.instance.getToken();
+      }
+
+      token = token?.trim();
+      if (token == null || token.isEmpty) return;
+
+      final membersRef = _db
+          .collection('schools')
+          .doc(_schoolId)
+          .collection('members')
+          .doc(user.uid);
+
+      try {
+        final existing = await membersRef.get();
+
+        if (!existing.exists) {
+          await membersRef.set({
+            'uid': user.uid,
+            'role': 'teacher',
+            'audience': 'teachers',
+            'tokens': [token],
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+        } else {
+          await membersRef.update({
+            'tokens': FieldValue.arrayUnion([token]),
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+        }
+      } catch (e) {
+        if (kDebugMode) debugPrint('Error guardando members token: $e');
+      }
+
+      try {
+        await FirebaseMessaging.instance.subscribeToTopic('school_$_schoolId');
+        await FirebaseMessaging.instance.subscribeToTopic('school_${_schoolId}_teachers');
+      } catch (e) {
+        if (kDebugMode) debugPrint('Error suscribiendo topics: $e');
       }
     } catch (e) {
-      // Si falla por permisos, NO tumbamos el login
-      if (kDebugMode) debugPrint('Error guardando members token: $e');
+      if (kDebugMode) debugPrint('Error registrando push: $e');
     }
-
-    // 4) Topics (best effort)
-    try {
-      await FirebaseMessaging.instance.subscribeToTopic('school_$_schoolId');
-      await FirebaseMessaging.instance
-          .subscribeToTopic('school_${_schoolId}_teachers');
-    } catch (e) {
-      if (kDebugMode) debugPrint('Error suscribiendo topics: $e');
-    }
-
-    if (kDebugMode) {
-      debugPrint('Push registrado para teacher uid=${user.uid} school=$_schoolId');
-    }
-  } catch (e) {
-    if (kDebugMode) debugPrint('Error registrando push: $e');
   }
-}
 
   // -------------------------------
-  // LOGIN con GOOGLE (revisar bloqueo en teacher_directory)
+  // LOGIN con GOOGLE (VALIDA EN teachers_public)
   // -------------------------------
-Future<UserCredential> _signInWithGoogle() async {
-  if (kIsWeb) {
-    final provider = GoogleAuthProvider();
-    provider.setCustomParameters({'prompt': 'select_account'});
-    return await _auth.signInWithPopup(provider);
-  } else {
-    final GoogleSignIn googleSignIn = GoogleSignIn.instance;
+  Future<UserCredential> _signInWithGoogle() async {
+    if (kIsWeb) {
+      final provider = GoogleAuthProvider();
+      provider.setCustomParameters({'prompt': 'select_account'});
+      return await _auth.signInWithPopup(provider);
+    } else {
+      final GoogleSignIn googleSignIn = GoogleSignIn.instance;
+      await googleSignIn.initialize();
 
-    await googleSignIn.initialize();
+      final account = await googleSignIn.authenticate();
+      final auth = await account.authentication;
 
-    final account = await googleSignIn.authenticate();
-    final auth = await account.authentication;
+      if (auth.idToken == null || auth.idToken!.isEmpty) {
+        throw Exception('Google no devolvió idToken.');
+      }
 
-    if (auth.idToken == null || auth.idToken!.isEmpty) {
-      throw Exception('Google no devolvió idToken.');
+      final credential = GoogleAuthProvider.credential(
+        idToken: auth.idToken,
+      );
+
+      return await _auth.signInWithCredential(credential);
     }
-
-    final credential = GoogleAuthProvider.credential(
-      idToken: auth.idToken,
-      // ✅ NO accessToken en v7.2.0
-    );
-
-    return await _auth.signInWithCredential(credential);
   }
-}
 
   Future<void> _onLoginWithGoogle() async {
     FocusScope.of(context).unfocus();
@@ -391,8 +405,16 @@ Future<UserCredential> _signInWithGoogle() async {
     try {
       if (!_formKey.currentState!.validate()) return;
 
+      // ✅ REFRESH antes de intentar (tu caso: activaste y “no sale”)
+      await _loadActiveTeachers();
+
       final inputUser = _usernameCtrl.text.trim();
-      final teacherOpt = _pickTeacherFromInput(inputUser);
+
+      // 1) intenta por lista
+      var teacherOpt = _pickTeacherFromInput(inputUser);
+
+      // 2) si no lo encuentra, busca directo en Firestore (server)
+      teacherOpt ??= await _findTeacherServerSide(inputUser);
 
       if (teacherOpt == null) {
         setState(() {
@@ -402,23 +424,39 @@ Future<UserCredential> _signInWithGoogle() async {
         return;
       }
 
-      // 🔒 Si por alguna razón aparece bloqueado, no permitimos login.
-      if (teacherOpt.statusLower != 'active') {
+      // ✅ Validación REAL: teachers_public (donde está active/blocked)
+      final tdSnap = await _teachersPublicColl.doc(teacherOpt.id).get();
+      if (!tdSnap.exists) {
         setState(() {
           _invalidLogin = true;
-          _errorMessage =
-              'Tu cuenta está bloqueada o pendiente de aprobación por la administración.';
+          _errorMessage = 'No estás registrado en docentes públicos.';
         });
         return;
       }
 
-      // ✅ teacherOpt.emailLower debe existir para empatar con Google
-      final expectedEmail = teacherOpt.emailLower.trim().toLowerCase();
+      final td = tdSnap.data() ?? {};
+      final tdStatusRaw =
+          (td['statusLower'] ?? td['status'] ?? '').toString().trim().toLowerCase();
+      final tdStatus = (tdStatusRaw == 'activo' || tdStatusRaw == 'activa')
+          ? 'active'
+          : tdStatusRaw;
+
+      if (tdStatus != 'active') {
+        setState(() {
+          _invalidLogin = true;
+          _errorMessage = 'Tu cuenta no está activa. La administración debe aprobarla.';
+        });
+        return;
+      }
+
+      final expectedEmail =
+          (td['emailLower'] ?? teacherOpt.emailLower).toString().trim().toLowerCase();
+
       if (expectedEmail.isEmpty) {
         setState(() {
           _invalidLogin = true;
           _errorMessage =
-              'Tu cuenta no tiene correo registrado. Pide a administración que agregue tu correo en teacher_directory.';
+              'Tu cuenta no tiene correo registrado. Pide a administración que agregue tu correo.';
         });
         return;
       }
@@ -444,62 +482,30 @@ Future<UserCredential> _signInWithGoogle() async {
         return;
       }
 
-      // 2) Validar que el correo del Google sea el mismo del teacher_directory
+      // 2) Validar correo contra teachers_public
       if (_canonUserInput(googleEmail) != _canonUserInput(expectedEmail)) {
         await _auth.signOut();
         setState(() {
           _invalidLogin = true;
           _errorMessage =
-              'Ese Google (${googleEmail}) no coincide con el correo registrado del docente (${expectedEmail}).';
+              'Ese Google ($googleEmail) no coincide con el correo registrado ($expectedEmail).';
         });
         return;
       }
 
-      // 3) Bootstrap users/{uid}
-      final ref = _userRef(user.uid);
-      final snap = await ref.get();
-
-      final displayName = teacherOpt.name.trim().isNotEmpty
-          ? teacherOpt.name.trim()
-          : (user.displayName ?? user.email ?? 'Docente');
-
-      final safeUserData = <String, dynamic>{
-        'uid': user.uid,
-        'role': 'teacher',
-        'schoolId': _schoolId,
-        'teacherDocId': teacherOpt.id,
-        'displayName': displayName,
-        'email': googleEmail,
-        'status': 'active',
-        'authProvider': 'google',
-        'updatedAt': FieldValue.serverTimestamp(),
-        'lastLoginAt': FieldValue.serverTimestamp(),
-      };
-
-      if (!snap.exists) {
-        await ref.set({
-          ...safeUserData,
-          'createdAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-      } else {
-        await ref.set(safeUserData, SetOptions(merge: true));
-      }
-
-      // 4) Vincular uid y proveedor en teachers (best effort)
+      // 3) Vincular uid (best effort)
       try {
         await _teachersColl.doc(teacherOpt.id).set({
           'authUid': user.uid,
           'authProvider': 'google',
           'authLinkedAt': FieldValue.serverTimestamp(),
           'updatedAt': FieldValue.serverTimestamp(),
-          // mantenemos emailLower por consistencia
           'emailLower': expectedEmail,
         }, SetOptions(merge: true));
       } catch (_) {}
 
-      // 5) Vincular también en teacher_directory (best effort)
       try {
-        await _teacherDirectoryColl.doc(teacherOpt.id).set({
+        await _teachersPublicColl.doc(teacherOpt.id).set({
           'authUid': user.uid,
           'authProvider': 'google',
           'updatedAt': FieldValue.serverTimestamp(),
@@ -604,7 +610,9 @@ Future<UserCredential> _signInWithGoogle() async {
                         focusNode: _usernameFocus,
                         displayStringForOption: (opt) => opt.name,
                         optionsBuilder: (TextEditingValue value) {
-                          if (_loadingTeachers) return const Iterable<_TeacherOption>.empty();
+                          if (_loadingTeachers) {
+                            return const Iterable<_TeacherOption>.empty();
+                          }
                           final q = value.text.trim();
                           if (q.isEmpty) return const Iterable<_TeacherOption>.empty();
                           return _filterOptions(q);
@@ -643,9 +651,8 @@ Future<UserCredential> _signInWithGoogle() async {
                                 ],
                               ),
                             ),
-                            validator: (v) => (v == null || v.trim().isEmpty)
-                                ? 'Escriba su nombre'
-                                : null,
+                            validator: (v) =>
+                                (v == null || v.trim().isEmpty) ? 'Escriba su nombre' : null,
                             onFieldSubmitted: (_) => _loading ? null : _onLoginWithGoogle(),
                           );
                         },
@@ -681,7 +688,6 @@ Future<UserCredential> _signInWithGoogle() async {
                           );
                         },
                       ),
-
                       if (_loadingTeachers) ...[
                         const SizedBox(height: 10),
                         const Row(
@@ -723,7 +729,6 @@ Future<UserCredential> _signInWithGoogle() async {
                           ),
                         ),
                       ],
-
                       if (_selectedTeacher != null) ...[
                         const SizedBox(height: 12),
                         Container(
@@ -746,14 +751,15 @@ Future<UserCredential> _signInWithGoogle() async {
                               ),
                               IconButton(
                                 tooltip: 'Quitar selección',
-                                onPressed: _loading ? null : () => setState(() => _selectedTeacher = null),
+                                onPressed: _loading
+                                    ? null
+                                    : () => setState(() => _selectedTeacher = null),
                                 icon: const Icon(Icons.close),
                               ),
                             ],
                           ),
                         ),
                       ],
-
                       if (_invalidLogin && (_errorMessage ?? '').trim().isNotEmpty) ...[
                         const SizedBox(height: 12),
                         Container(
@@ -782,10 +788,7 @@ Future<UserCredential> _signInWithGoogle() async {
                           ),
                         ),
                       ],
-
                       const SizedBox(height: 18),
-
-                      // ✅ BOTÓN GOOGLE (sustituye login normal)
                       SizedBox(
                         width: double.infinity,
                         height: 48,
@@ -811,7 +814,6 @@ Future<UserCredential> _signInWithGoogle() async {
                               : const Text('Iniciar con Google'),
                         ),
                       ),
-
                       const SizedBox(height: 6),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -820,7 +822,6 @@ Future<UserCredential> _signInWithGoogle() async {
                             onPressed: _onCreateAccount,
                             child: const Text('Crear cuenta'),
                           ),
-                          // ya no tiene sentido recuperar contraseña si no la usamos
                           const SizedBox(width: 10),
                         ],
                       ),
@@ -843,9 +844,9 @@ class _TeacherOption {
   final String loginKey;
   final String phoneHash;
 
-  final String authEmail; // se mantiene por compatibilidad
-  final String emailLower; // CORREO REAL (clave para Google)
-  final String statusLower; // active / blocked / inactive
+  final String authEmail;
+  final String emailLower;
+  final String statusLower;
 
   const _TeacherOption({
     required this.id,

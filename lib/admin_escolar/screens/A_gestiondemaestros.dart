@@ -294,6 +294,65 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
     }, SetOptions(merge: true));
   }
 
+  // LO HICE YOOOOO
+
+  Future<void> _setTeacherStatus(String docId, String status) async {
+  if (!mounted) return;
+  setState(() => _loading = true);
+
+  final payload = <String, dynamic>{
+    'status': status,
+    'statusLower': status,
+    'statusLabel': _statusLabel(status),
+    'statusChangedAt': FieldValue.serverTimestamp(),
+    if (status == _statusActive) 'approvedAt': FieldValue.serverTimestamp(),
+
+    // ✅ opcional pero MUY útil para el login
+    'isActive': status == _statusActive,
+    'updatedAt': FieldValue.serverTimestamp(),
+  };
+
+  try {
+    final schoolDoc = _db.collection('schools').doc(_teachersSchoolId);
+
+    final batch = _db.batch();
+
+    // teachers
+    batch.set(
+      schoolDoc.collection('teachers').doc(docId),
+      payload,
+      SetOptions(merge: true),
+    );
+
+    // teacher_directory
+    batch.set(
+      schoolDoc.collection('teacher_directory').doc(docId),
+      payload,
+      SetOptions(merge: true),
+    );
+
+    // ✅ teachers_public
+    batch.set(
+      schoolDoc.collection('teachers_public').doc(docId),
+      payload,
+      SetOptions(merge: true),
+    );
+
+    await batch.commit();
+
+    if (!mounted) return;
+    setState(() {
+      final idx = _teachers.indexWhere((t) => t['__id'] == docId);
+      if (idx >= 0) _teachers[idx] = {..._teachers[idx], ...payload};
+    });
+  } catch (e) {
+    _snack('Error actualizando estado: $e');
+  } finally {
+    if (mounted) setState(() => _loading = false);
+  }
+}
+
+
   // ------------------------------------------------------------
   //  Resolve teachers schoolId
   // ------------------------------------------------------------
@@ -953,6 +1012,21 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
                   });
                 } catch (_) {}
 
+try {
+  await _db
+      .collection('schools')
+      .doc(_teachersSchoolId)
+      .collection('teachers_public')
+      .doc(teacherId)
+      .set({
+        ...payload,
+        'isActive': status == _statusActive,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+} catch (_) {}
+
+
+
                 if (!mounted) return;
                 setState(() {
                   final idx = _teachers.indexWhere((t) => t['__id'] == teacherId);
@@ -999,38 +1073,6 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
 
       if (!mounted) return;
       setState(() => _teachers.removeWhere((t) => t['__id'] == docId));
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  Future<void> _setTeacherStatus(String docId, String status) async {
-    if (!mounted) return;
-    setState(() => _loading = true);
-    try {
-      await _db.collection('schools').doc(_teachersSchoolId).collection('teachers').doc(docId).update({
-        'status': status,
-        'statusLower': status,
-        'statusLabel': _statusLabel(status),
-        'statusChangedAt': FieldValue.serverTimestamp(),
-        if (status == _statusActive) 'approvedAt': FieldValue.serverTimestamp(),
-      });
-
-      // mantener teacher_directory
-      try {
-        await _db.collection('schools').doc(_teachersSchoolId).collection('teacher_directory').doc(docId).set({
-          'status': status,
-          'statusLower': status,
-          'statusLabel': _statusLabel(status),
-          'updatedAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-      } catch (_) {}
-
-      if (!mounted) return;
-      setState(() {
-        final idx = _teachers.indexWhere((t) => t['__id'] == docId);
-        if (idx >= 0) _teachers[idx]['status'] = status;
-      });
     } finally {
       if (mounted) setState(() => _loading = false);
     }
