@@ -1,12 +1,9 @@
 // lib/alumnos/screens/alumnos.dart
-import 'dart:convert';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:crypto/crypto.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
 import 'package:edupro/models/escuela.dart';
 import 'package:edupro/utils/school_utils.dart' show normalizeSchoolIdFromEscuela;
@@ -17,15 +14,35 @@ import 'perfil_secundaria_screen.dart';
 
 enum _Nivel { inicial, primaria, secundaria }
 
-class _GradeItem {
-  final String name;
-  final _Nivel? nivel; // puede ser null si el doc no trae "nivel"
-  final bool hasExplicitNivel;
-  const _GradeItem({
-    required this.name,
-    required this.nivel,
-    required this.hasExplicitNivel,
+class _AlumnoItem {
+  final String id;
+  final String nombres;
+  final String apellidos;
+  final String grado;
+  final String? nivelDb;
+  final String matricula;
+
+  const _AlumnoItem({
+    required this.id,
+    required this.nombres,
+    required this.apellidos,
+    required this.grado,
+    required this.nivelDb,
+    required this.matricula,
   });
+
+  String get displayName {
+    final base = '${apellidos.trim()}, ${nombres.trim()}'.trim();
+    final num = matricula.trim();
+    return num.isEmpty ? base : '$base  •  #$num';
+  }
+}
+
+String _step = '';
+
+Future<T> _guard<T>(String step, Future<T> Function() fn) async {
+  _step = step;
+  return await fn();
 }
 
 class AlumnosScreen extends StatefulWidget {
@@ -39,79 +56,74 @@ class AlumnosScreen extends StatefulWidget {
 class _AlumnosScreenState extends State<AlumnosScreen> {
   late final String _schoolId;
 
-  final _nombresCtrl = TextEditingController();
-  final _apellidosCtrl = TextEditingController();
-  final _numeroCtrl = TextEditingController(); // número de lista
-  final _contrasenaCtrl = TextEditingController();
-
-  bool _showPassword = false;
+  // ----- UI / estados -----
+  bool _loading = false; // botón principal (google / entrar)
+  bool _loadingList = false; // leyendo alumnos permitidos
   String? _errorText;
-  bool _loading = false;
 
-  _Nivel _nivelSel = _Nivel.primaria;
-  String? _gradoSel;
+  // 2 pasos:
+  // 1) Google + permisos -> carga _alumnosAll
+  // 2) Selección alumno (si hay varios) + entrar
+  bool _accessReady = false; // true cuando ya cargamos alumnos permitidos
 
-  // Fallback solo si no hay grados en Firestore
-  final List<String> _gradosFallbackRD = const [
-    'Inicial 1',
-    'Inicial 2',
-    '1ro Primaria',
-    '2do Primaria',
-    '3ro Primaria',
-    '4to Primaria',
-    '5to Primaria',
-    '6to Primaria',
-    '1ro Secundaria',
-    '2do Secundaria',
-    '3ro Secundaria',
-    '4to Secundaria',
-    '5to Secundaria',
-    '6to Secundaria',
-  ];
+  // Filtros
+  String? _gradoSel; // null = sin filtro
+  _AlumnoItem? _alumnoSel;
+
+  TextEditingController? _nameCtrl;
+
+  // Data
+  List<String> _catalogoGrados = []; // SOLO para mapa de nivel; NO para mostrar al padre
+  final Map<String, _Nivel> _nivelPorGradoKey = {};
+  List<_AlumnoItem> _alumnosAll = [];
+
+  // Permisos por correo
+  Set<String> _allowedIds = <String>{};
+
+  // ---------------- Firestore refs ----------------
+  CollectionReference<Map<String, dynamic>> get _gradosCol =>
+      FirebaseFirestore.instance.collection('schools').doc(_schoolId).collection('grados');
+
+  CollectionReference<Map<String, dynamic>> get _alumnosCol =>
+      FirebaseFirestore.instance.collection('schools').doc(_schoolId).collection('alumnos');
+
+  CollectionReference<Map<String, dynamic>> get _estudiantesLegacyCol =>
+      FirebaseFirestore.instance.collection('schools').doc(_schoolId).collection('estudiantes');
+
+  CollectionReference<Map<String, dynamic>> get _alumnosLoginCol =>
+      FirebaseFirestore.instance.collection('schools').doc(_schoolId).collection('alumnos_login');
+
+  DocumentReference<Map<String, dynamic>> get _usersDoc =>
+      FirebaseFirestore.instance.collection('users').doc(FirebaseAuth.instance.currentUser?.uid ?? '__no_uid__');
 
   @override
   void initState() {
     super.initState();
-    _schoolId = normalizeSchoolIdFromEscuela(widget.escuela);
+    final raw = normalizeSchoolIdFromEscuela(widget.escuela);
+    _schoolId = _ensureSchoolDocId(raw);
+
+    // Carga catálogo SOLO para mapear nivel por grado (no para mostrar al tutor).
+    _cargarCatalogoGrados();
   }
 
-  @override
-  void dispose() {
-    _nombresCtrl.dispose();
-    _apellidosCtrl.dispose();
-    _numeroCtrl.dispose();
-    _contrasenaCtrl.dispose();
-    super.dispose();
+  // ---------------- Helpers ----------------
+  String _ensureSchoolDocId(String rawId) {
+    final id = rawId.trim();
+    if (id.isEmpty) return id;
+    return id.startsWith('eduproapp_admin_') ? id : 'eduproapp_admin_$id';
   }
 
-  // -------------------- Normalizadores --------------------
-  String _onlyLettersSpaces(String s) =>
-      s.replaceAll(RegExp(r"[^a-zA-ZñÑáéíóúÁÉÍÓÚüÜ\s'-]"), '');
-
-  String _normalizeName(String input) {
-    final cleaned =
-        _onlyLettersSpaces(input).trim().replaceAll(RegExp(r'\s+'), ' ');
-    if (cleaned.isEmpty) return '';
-    return cleaned
-        .split(' ')
-        .map((w) =>
-            w.isEmpty ? '' : w[0].toUpperCase() + w.substring(1).toLowerCase())
-        .join(' ');
-  }
-
-  String _nameKey(String input) {
-    return input
+  String _key(String s) {
+    return s
         .toLowerCase()
         .trim()
         .replaceAll(RegExp(r'\s+'), ' ')
-        .replaceAll(RegExp(r"[^a-z0-9ñáéíóúü ]"), '');
+        .replaceAll(RegExp(r'[^\w\sñáéíóúü]'), '');
   }
 
-  // -------------------- Nivel desde grados --------------------
   _Nivel? _nivelFromAny(dynamic raw) {
     if (raw == null) return null;
 
-    // numérico (por si algún día guardas 0/1/2)
     if (raw is int) {
       if (raw == 0) return _Nivel.inicial;
       if (raw == 1) return _Nivel.primaria;
@@ -121,165 +133,250 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
 
     final s = raw.toString().toLowerCase().trim();
     if (s.isEmpty) return null;
-
     if (s.startsWith('ini')) return _Nivel.inicial;
     if (s.startsWith('pri')) return _Nivel.primaria;
     if (s.startsWith('sec')) return _Nivel.secundaria;
-
-    // variantes
     if (s.contains('inicial')) return _Nivel.inicial;
     if (s.contains('primaria')) return _Nivel.primaria;
     if (s.contains('secundaria')) return _Nivel.secundaria;
-
     return null;
   }
 
-  // Heurística solo para fallback viejo (no confíes en esto si tus nombres son "5to A")
-  _Nivel _nivelPorNombreFallback(String gradoName) {
-    final g = gradoName.toLowerCase();
-    if (g.contains('inicial')) return _Nivel.inicial;
-    if (g.contains('primaria')) return _Nivel.primaria;
-    if (g.contains('secundaria')) return _Nivel.secundaria;
-    return _Nivel.primaria; // mejor default que secundaria
+  _Nivel _nivelFallbackPorGrado(String grado) {
+    final g = grado.toLowerCase();
+    if (g.contains('ini')) return _Nivel.inicial;
+    if (g.contains('sec')) return _Nivel.secundaria;
+    return _Nivel.primaria;
   }
 
-  // -------------------- Password (plano o hash) --------------------
-  String _sha256Hex(String input) =>
-      sha256.convert(utf8.encode(input)).toString();
-  String _md5Hex(String input) => md5.convert(utf8.encode(input)).toString();
-
-  bool _looksLikeHexOfLen(String s, int len) {
-    final t = s.trim().toLowerCase();
-    if (t.length != len) return false;
-    return RegExp(r'^[0-9a-f]+$').hasMatch(t);
+  Future<void> _setError(String msg) async {
+    if (!mounted) return;
+    setState(() => _errorText = msg);
   }
 
-  String _firstString(Map<String, dynamic> data, List<String> keys) {
-    for (final k in keys) {
-      if (data.containsKey(k) && data[k] != null) {
-        final v = data[k].toString().trim();
-        if (v.isNotEmpty) return v;
+  Set<String> _extractStudentIds(Map<String, dynamic> data) {
+    dynamic raw =
+        data['studentIds'] ?? data['studentsIds'] ?? data['alumnoIds'] ?? data['alumnosIds'];
+    if (raw is List) {
+      return raw.map((e) => e.toString().trim()).where((x) => x.isNotEmpty).toSet();
+    }
+    return <String>{};
+  }
+
+  // ---------------- Cargar grados (para mapa de nivel) ----------------
+  Future<void> _cargarCatalogoGrados() async {
+    try {
+      final snap = await _gradosCol.get();
+
+      final grados = <String>{};
+      final mapa = <String, _Nivel>{};
+
+      for (final d in snap.docs) {
+        final m = d.data();
+        final name = (m['name'] ?? m['grado'] ?? m['nombre'] ?? '').toString().trim();
+        if (name.isEmpty) continue;
+
+        grados.add(name);
+
+        final nivel = _nivelFromAny(m['nivel'] ?? m['level'] ?? m['nivelIndex']);
+        if (nivel != null) {
+          mapa[_key(name)] = nivel;
+        }
       }
+
+      final list = grados.toList()
+        ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+
+      if (!mounted) return;
+      setState(() {
+        _catalogoGrados = list;
+        _nivelPorGradoKey
+          ..clear()
+          ..addAll(mapa);
+      });
+    } catch (_) {
+      // silencioso
     }
-    return '';
   }
 
-  bool _passwordMatches(Map<String, dynamic> data, String input) {
-    final inPass = input.trim();
+  // ---------------- Cargar alumnos permitidos ----------------
+  Future<void> _cargarAlumnosPermitidos(Set<String> allowedIds) async {
+    if (_loadingList) return;
 
-    final plain = _firstString(data, const [
-      'password',
-      'contrasena',
-      'clave',
-      'pass',
-    ]);
-
-    final hashField = _firstString(data, const [
-      'passwordHash',
-      'passHash',
-      'hash',
-    ]);
-
-    // 1) Si hay hash explícito
-    if (hashField.isNotEmpty) {
-      final h = hashField.toLowerCase();
-      if (_looksLikeHexOfLen(h, 64)) return _sha256Hex(inPass) == h;
-      if (_looksLikeHexOfLen(h, 32)) return _md5Hex(inPass) == h;
-      return false;
-    }
-
-    // 2) Si el password guardado "parece hash"
-    if (plain.isNotEmpty) {
-      final p = plain.toLowerCase();
-      if (_looksLikeHexOfLen(p, 64)) return _sha256Hex(inPass) == p;
-      if (_looksLikeHexOfLen(p, 32)) return _md5Hex(inPass) == p;
-      // 3) plano vs plano
-      return plain == inPass;
-    }
-
-    return false;
-  }
-
-  // -------------------- Firestore refs --------------------
-  CollectionReference<Map<String, dynamic>> get _gradosCol => FirebaseFirestore
-      .instance
-      .collection('escuelas')
-      .doc(_schoolId)
-      .collection('grados');
-
-  CollectionReference<Map<String, dynamic>> get _estudiantesCol =>
-      FirebaseFirestore.instance
-          .collection('escuelas')
-          .doc(_schoolId)
-          .collection('estudiantes');
-
-  // -------------------- Auth helpers (Camino B) --------------------
-  String _studentEmailFor(String studentDocId) {
-    // Email sintético estable
-    final safeSchool = _schoolId.replaceAll(RegExp(r'[^a-zA-Z0-9\-_]'), '_');
-    return 'student_$studentDocId@$safeSchool.edupro';
-  }
-
-  Future<UserCredential> _signInOrCreateStudentAuth({
-    required String studentDocId,
-    required String password,
-  }) async {
-    final auth = FirebaseAuth.instance;
-    final email = _studentEmailFor(studentDocId);
+    setState(() {
+      _loadingList = true;
+      _errorText = null;
+    });
 
     try {
-      return await auth.signInWithEmailAndPassword(
-        email: email,
-        password: password,
-      );
-    } on FirebaseAuthException catch (e) {
-      // Si no existe, lo creamos (solo después de validar contra Firestore)
-      if (e.code == 'user-not-found') {
-        return await auth.createUserWithEmailAndPassword(
-          email: email,
-          password: password,
-        );
+      final out = <_AlumnoItem>[];
+
+      for (final id in allowedIds) {
+        if (id.trim().isEmpty) continue;
+
+        DocumentSnapshot<Map<String, dynamic>> s = await _alumnosCol.doc(id).get();
+        if (!s.exists) {
+          s = await _estudiantesLegacyCol.doc(id).get();
+        }
+        if (!s.exists) continue;
+
+        final m = s.data() ?? {};
+        final nombres = (m['nombres'] ?? '').toString().trim();
+        final apellidos = (m['apellidos'] ?? '').toString().trim();
+        final grado = (m['grado'] ?? '').toString().trim();
+        final nivel = (m['nivel'] ?? m['level'] ?? m['nivelIndex']);
+        final matricula =
+            (m['matricula'] ?? m['numero'] ?? m['numeroLista'] ?? '').toString().trim();
+
+        out.add(_AlumnoItem(
+          id: s.id,
+          nombres: nombres,
+          apellidos: apellidos,
+          grado: grado,
+          nivelDb: nivel == null ? null : nivel.toString().trim(),
+          matricula: matricula,
+        ));
       }
-      // Password incorrecto en Auth (si lo cambiaron)
-      if (e.code == 'wrong-password') {
-        throw Exception(
-          'Tu contraseña cambió o tu cuenta está desincronizada. Pide al admin que regenere tu acceso.',
+
+      out.sort((a, b) {
+        final aa = '${a.apellidos} ${a.nombres}'.toLowerCase();
+        final bb = '${b.apellidos} ${b.nombres}'.toLowerCase();
+        return aa.compareTo(bb);
+      });
+
+      if (!mounted) return;
+      setState(() => _alumnosAll = out);
+    } on FirebaseException catch (e) {
+      if (e.code == 'permission-denied') {
+        await _setError(
+          'Permiso denegado leyendo alumnos permitidos.\n'
+          'Verifica rules para leer schools/{schoolId}/alumnos/{alumnoId} y alumnos_login.',
         );
+      } else {
+        await _setError('Error cargando alumnos: ${e.code}');
       }
-      throw Exception('Auth error (${e.code}).');
+    } catch (e) {
+      await _setError('Error cargando alumnos: $e');
+    } finally {
+      if (mounted) setState(() => _loadingList = false);
     }
   }
 
-  Future<void> _upsertUserProfile({
-    required String uid,
-    required String studentDocId,
-    required String displayName,
-    required String grado,
-  }) async {
-    final usersRef = FirebaseFirestore.instance.collection('users').doc(uid);
-
-    await usersRef.set({
-      'role': 'student',
-      'schoolId': _schoolId,
-      'enabled': true,
-      'displayName': displayName,
-      'estudianteId': studentDocId,
-      'grado': grado,
-      'lastLoginAt': FieldValue.serverTimestamp(),
-      'createdAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-
-    // Amarra el estudiante al uid (opcional pero MUY recomendado)
-    await _estudiantesCol.doc(studentDocId).set({
-      'authUid': uid,
-      'lastLoginAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+  // ✅ Grados SOLO desde los alumnos permitidos (privacidad)
+  List<String> _gradosDesdeAlumnos() {
+    final s = <String>{};
+    for (final a in _alumnosAll) {
+      final g = a.grado.trim();
+      if (g.isNotEmpty) s.add(g);
+    }
+    final list = s.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return list;
   }
 
-  // -------------------- Navegación por nivel --------------------
+  List<_AlumnoItem> _alumnosVisibles(String queryText) {
+    final gradoKeySel = _key(_gradoSel ?? '');
+    final q = _key(queryText);
+
+    Iterable<_AlumnoItem> base = _alumnosAll;
+
+    if ((_gradoSel ?? '').trim().isNotEmpty) {
+      base = base.where((a) => _key(a.grado) == gradoKeySel);
+    }
+
+    if (q.isNotEmpty) {
+      base = base.where((a) {
+        final k1 = _key('${a.nombres} ${a.apellidos}');
+        final k2 = _key('${a.apellidos} ${a.nombres}');
+        return k1.contains(q) || k2.contains(q);
+      });
+    }
+
+    return base.take(60).toList();
+  }
+
+  Future<_AlumnoItem?> _seleccionarAlumnoModal() async {
+    return showModalBottomSheet<_AlumnoItem>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) {
+        final ctrl = TextEditingController();
+        return StatefulBuilder(
+          builder: (ctx, setLocal) {
+            final q = ctrl.text;
+            final list = _alumnosVisibles(q);
+
+            return SafeArea(
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 16,
+                  right: 16,
+                  top: 8,
+                  bottom: 16 + MediaQuery.of(ctx).viewInsets.bottom,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: ctrl,
+                      autofocus: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Buscar alumno',
+                        prefixIcon: Icon(Icons.search),
+                      ),
+                      onChanged: (_) => setLocal(() {}),
+                    ),
+                    const SizedBox(height: 10),
+                    Flexible(
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: list.length,
+                        itemBuilder: (_, i) {
+                          final a = list[i];
+                          return ListTile(
+                            title: Text(a.displayName),
+                            subtitle: Text(a.grado),
+                            onTap: () => Navigator.pop(ctx, a),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // ---------------- Auth (Google) ----------------
+  Future<UserCredential> _signInWithGoogle() async {
+    final auth = FirebaseAuth.instance;
+
+    if (kIsWeb) {
+      final provider = GoogleAuthProvider();
+      provider.setCustomParameters({'prompt': 'select_account'});
+      return await auth.signInWithPopup(provider);
+    }
+
+    final google = GoogleSignIn.instance;
+    final gUser = await google.authenticate();
+    final gAuth = gUser.authentication;
+
+    final credential = GoogleAuthProvider.credential(
+      idToken: gAuth.idToken,
+    );
+
+    return await auth.signInWithCredential(credential);
+  }
+
+
+  // ---------------- Perfil ----------------
   void _irAPerfil({
     required _Nivel nivel,
-    required String estudianteId,
+    required String alumnoId,
     required String nombreAlumno,
     required String gradoSeleccionado,
   }) {
@@ -288,7 +385,7 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
       case _Nivel.inicial:
         screen = PerfilInicialScreen(
           escuela: widget.escuela,
-          estudianteId: estudianteId,
+          estudianteId: alumnoId,
           nombreAlumno: nombreAlumno,
           gradoSeleccionado: gradoSeleccionado,
         );
@@ -296,7 +393,7 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
       case _Nivel.primaria:
         screen = PerfilPrimariaScreen(
           escuela: widget.escuela,
-          estudianteId: estudianteId,
+          estudianteId: alumnoId,
           nombreAlumno: nombreAlumno,
           gradoSeleccionado: gradoSeleccionado,
         );
@@ -304,61 +401,18 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
       case _Nivel.secundaria:
         screen = PerfilSecundariaScreen(
           escuela: widget.escuela,
-          estudianteId: estudianteId,
+          estudianteId: alumnoId,
           nombreAlumno: nombreAlumno,
           gradoSeleccionado: gradoSeleccionado,
         );
         break;
     }
 
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => screen),
-    );
+    Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => screen));
   }
 
-  // -------------------- Query estudiante (matrícula string o int) --------------------
-  Future<QuerySnapshot<Map<String, dynamic>>> _queryByField(
-    String grado,
-    String field,
-    String numero,
-  ) async {
-    // string
-    var q = await _estudiantesCol
-        .where('grado', isEqualTo: grado)
-        .where(field, isEqualTo: numero)
-        .limit(1)
-        .get();
-
-    if (q.docs.isNotEmpty) return q;
-
-    // int
-    final n = int.tryParse(numero);
-    if (n != null) {
-      q = await _estudiantesCol
-          .where('grado', isEqualTo: grado)
-          .where(field, isEqualTo: n)
-          .limit(1)
-          .get();
-    }
-    return q;
-  }
-
-  Future<QuerySnapshot<Map<String, dynamic>>> _findStudent(
-    String grado,
-    String numero,
-  ) async {
-    // intenta en orden de probabilidad
-    const fields = ['matricula', 'numero', 'numeroLista', 'numLista'];
-    for (final f in fields) {
-      final q = await _queryByField(grado, f, numero);
-      if (q.docs.isNotEmpty) return q;
-    }
-    // vacío
-    return await _estudiantesCol.limit(0).get();
-  }
-
-  // -------------------- LOGIN --------------------
-  Future<void> _validarDatos() async {
+  // ---------------- Paso 1: Google + permisos + cargar lista ----------------
+  Future<void> _continuarConGoogle() async {
     FocusScope.of(context).unfocus();
     setState(() {
       _errorText = null;
@@ -366,122 +420,240 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
     });
 
     try {
-      final grado = (_gradoSel ?? '').trim();
-      if (grado.isEmpty) {
-        setState(() => _errorText = 'Selecciona tu aula/grado');
-        return;
-      }
-
-      final nombres = _normalizeName(_nombresCtrl.text);
-      final apellidos = _normalizeName(_apellidosCtrl.text);
-      final numero = _numeroCtrl.text.trim();
-      final pass = _contrasenaCtrl.text.trim();
-
-      _nombresCtrl.text = nombres;
-      _apellidosCtrl.text = apellidos;
-
-      if (nombres.isEmpty || apellidos.isEmpty) {
-        setState(() => _errorText = 'Escribe nombres y apellidos');
-        return;
-      }
-      if (numero.isEmpty) {
-        setState(() => _errorText = 'Escribe tu número de lista');
-        return;
-      }
-      if (pass.isEmpty) {
-        setState(() => _errorText = 'Escribe tu contraseña');
-        return;
-      }
-
-      final q = await _findStudent(grado, numero);
-
-      if (q.docs.isEmpty) {
-        setState(() => _errorText =
-            'No encontramos tu registro en ese grado con ese número');
-        return;
-      }
-
-      final doc = q.docs.first;
-      final data = doc.data();
-
-      // contraseña (plano o hash)
-      final hasAlgunaPassword = (data['password'] != null) ||
-          (data['contrasena'] != null) ||
-          (data['pass'] != null) ||
-          (data['passwordHash'] != null) ||
-          (data['passHash'] != null);
-
-      if (!hasAlgunaPassword) {
-        setState(() => _errorText =
-            'Este estudiante no tiene contraseña configurada. Pide al admin regenerarla.');
-        return;
-      }
-
-      if (!_passwordMatches(data, pass)) {
-        if (kDebugMode) {
-          debugPrint('LOGIN FAIL doc=${doc.id}');
-          debugPrint('keys=${data.keys.toList()}');
-          debugPrint('grado=$grado numero=$numero');
-          debugPrint(
-              'stored(password)="${data['password']}" stored(hash)="${data['passwordHash']}"');
-        }
-        setState(() => _errorText = 'Contraseña incorrecta');
-        return;
-      }
-
-      // ✅ nombreKey/apellidoKey o nombresKey/apellidosKey
-      final dbNombreKey = _firstString(data, const ['nombresKey', 'nombreKey']);
-      final dbApellidoKey =
-          _firstString(data, const ['apellidosKey', 'apellidoKey']);
-
-      final inNombreKey = _nameKey(nombres);
-      final inApellidoKey = _nameKey(apellidos);
-
-      if (dbNombreKey.isNotEmpty && dbApellidoKey.isNotEmpty) {
-        if (inNombreKey != dbNombreKey || inApellidoKey != dbApellidoKey) {
-          setState(() => _errorText = 'Tu nombre no coincide con el registro');
-          return;
-        }
-      }
-
-      final nombreAlumno = '$nombres $apellidos'.trim();
-
-      // ✅ CAMINO B: Auth real (sign-in o create) y guardado de rol en /users/{uid}
-      final userCred = await _signInOrCreateStudentAuth(
-        studentDocId: doc.id,
-        password: pass,
-      );
-
-      final user = userCred.user;
+      // 1) Google sign-in
+      final cred = await _signInWithGoogle();
+      final user = cred.user;
       if (user == null) {
-        setState(() => _errorText = 'No se pudo completar la autenticación.');
+        await _setError('No se pudo completar el inicio de sesión.');
         return;
       }
 
-      await _upsertUserProfile(
-        uid: user.uid,
-        studentDocId: doc.id,
-        displayName: nombreAlumno,
-        grado: grado,
+      final email = (user.email ?? '').trim();
+      if (email.isEmpty) {
+        await _setError('Tu cuenta de Google no tiene email disponible.');
+        return;
+      }
+      final emailLower = email.toLowerCase().trim();
+
+      // 1.5) organigrama (si tus rules lo exigen)
+ //     final orgRef = FirebaseFirestore.instance.collection('organigrama').doc(user.uid);
+ //     await _guard(
+ //       'set organigrama/{uid}',
+//        () => orgRef.set({
+  //        'role': 'student',
+   //       'accessType': 'google_student_or_tutor',
+    //      'schoolId': _schoolId,
+    //      'enabled': true,
+   //       'email': emailLower,
+     //     'updatedAt': FieldValue.serverTimestamp(),
+      //    'createdAt': FieldValue.serverTimestamp(),
+      //  }, SetOptions(merge: true)),
+     // );
+
+      // 2) validar acceso por email
+      final loginSnap = await _guard(
+        'get alumnos_login/{email}',
+        () => _alumnosLoginCol.doc(emailLower).get(),
       );
 
-      // ✅ aquí usamos el nivel seleccionado
-      _irAPerfil(
-        nivel: _nivelSel,
-        estudianteId: doc.id,
-        nombreAlumno: nombreAlumno,
-        gradoSeleccionado: grado,
-      );
+      if (!loginSnap.exists) {
+        // resetea UI para que NO quede “activado” nada
+        if (mounted) {
+          setState(() {
+            _accessReady = false;
+            _alumnosAll = [];
+            _gradoSel = null;
+            _alumnoSel = null;
+            _allowedIds = <String>{};
+            _nameCtrl?.clear();
+          });
+        }
+        await _setError(
+          'Aun no te has registrado.\n'
+          'comuniquese con la administacuion escolar.',
+        );
+        return;
+      }
+
+      final data = loginSnap.data() ?? {};
+      _allowedIds = _extractStudentIds(data);
+
+      if (_allowedIds.isEmpty) {
+        await _setError('Tu acceso existe, pero no tiene alumnos asignados.');
+        return;
+      }
+
+      // ✅ bootstrap users/{uid} para evitar permission-denied luego en "Entrar"
+      //await _ensureUserDocExists(
+        //user: user,
+        //emailLower: emailLower,
+       // allowedIds: _allowedIds,
+      //);
+
+      // 3) cargar alumnos permitidos
+      await _cargarAlumnosPermitidos(_allowedIds);
+
+      if (_alumnosAll.isEmpty) {
+        await _setError('No se encontraron alumnos para este acceso.');
+        return;
+      }
+
+      // 4) listo para selección (y por privacidad, grados vendrán SOLO de _alumnosAll)
+      if (!mounted) return;
+      setState(() {
+        _accessReady = true;
+        _gradoSel = null; // por defecto sin filtro
+        _alumnoSel = null;
+        _nameCtrl?.clear();
+      });
+
+      // 5) si solo hay 1 alumno, entrar directo
+    //  if (_alumnosAll.length == 1) {
+    //    setState(() => _alumnoSel = _alumnosAll.first);
+   //     await _entrarConSeleccion();
+   //   }
+
+    } on FirebaseException catch (e) {
+      if (e.code == 'permission-denied') {
+        await _setError(
+          'Permiso denegado.\n'
+          'Paso actual: $_step\n'
+          'Revisa rules para:\n'
+          '1) crear/actualizar /organigrama/{uid}\n'
+          '2) leer schools/{schoolId}/alumnos_login/{email}\n'
+          '3) leer schools/{schoolId}/alumnos/{alumnoId}\n'
+          '4) crear /users/{uid} (bootstrap student)',
+        );
+      } else {
+        await _setError('Error: ${e.code}\nPaso: $_step');
+      }
     } catch (e) {
-      setState(() => _errorText = 'Error: $e');
+      await _setError('Error: $e\nPaso: $_step');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
+  // ---------------- Paso 2: validar selección + entrar ----------------
+  Future<void> _entrarConSeleccion() async {
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _errorText = null;
+      _loading = true;
+    });
+
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        await _setError('No hay sesión activa. Presiona "Continuar con Google".');
+        return;
+      }
+
+      if (_alumnosAll.isEmpty) {
+        await _setError('No hay alumnos cargados. Presiona "Continuar con Google".');
+        return;
+      }
+
+      // si hay varios y no han seleccionado, pedimos
+  if (_alumnoSel == null) {
+  if (_alumnosAll.length == 1) {
+    setState(() => _alumnoSel = _alumnosAll.first);
+  } else {
+    await _setError('Selecciona un alumno antes de entrar.');
+    return;
+  }
+}
+
+
+      final selFinal = _alumnoSel!;
+      if (!_allowedIds.contains(selFinal.id)) {
+        await _setError(
+          'Este correo NO tiene acceso a ese alumno.\n'
+          'Selecciona el alumno correcto o pide al admin que agregue este correo.',
+        );
+        return;
+      }
+
+      // leer alumno real
+      DocumentSnapshot<Map<String, dynamic>> alumnoSnap =
+          await _guard('get alumnos/{alumnoId}', () => _alumnosCol.doc(selFinal.id).get());
+      if (!alumnoSnap.exists) {
+        alumnoSnap = await _guard(
+          'get estudiantes legacy/{alumnoId}',
+          () => _estudiantesLegacyCol.doc(selFinal.id).get(),
+        );
+      }
+      if (!alumnoSnap.exists) {
+        await _setError('No se encontró el alumno en la escuela.');
+        return;
+      }
+
+      final a = alumnoSnap.data() ?? {};
+      final nombres = (a['nombres'] ?? selFinal.nombres).toString().trim();
+      final apellidos = (a['apellidos'] ?? selFinal.apellidos).toString().trim();
+      final grado = (a['grado'] ?? selFinal.grado).toString().trim();
+
+      if (grado.isEmpty) {
+        await _setError('El alumno no tiene grado definido.');
+        return;
+      }
+
+      // activo / bloqueado
+      final status = (a['status'] ?? a['estado'] ?? 'activo').toString().toLowerCase().trim();
+      final enabled = (a['enabled'] is bool) ? (a['enabled'] as bool) : true;
+      final isActivo = enabled && (status.isEmpty || status == 'activo');
+
+      if (!isActivo) {
+        final msg = (status == 'pendiente')
+            ? 'Este alumno está PENDIENTE de aprobación. Habla con el administrador.'
+            : 'Este alumno está BLOQUEADO. Habla con el administrador.';
+        await _setError(msg);
+        return;
+      }
+
+      // coherencia con grado elegido (si eligieron)
+      final gradoSel = (_gradoSel ?? '').trim();
+      if (gradoSel.isNotEmpty && _key(gradoSel) != _key(grado)) {
+        await _setError(
+          'El alumno seleccionado no pertenece al grado elegido.\n'
+          'Cambia el grado o el alumno.',
+        );
+        return;
+      }
+
+      // nivel
+      final nivel = _nivelFromAny(a['nivel'] ?? a['level'] ?? a['nivelIndex']) ??
+          _nivelPorGradoKey[_key(grado)] ??
+          _nivelFallbackPorGrado(grado);
+
+      final nombreAlumno = ('$nombres $apellidos').trim().isEmpty
+          ? selFinal.displayName
+          : ('$nombres $apellidos').trim();
+
+
+      // navegar
+      _irAPerfil(
+        nivel: nivel,
+        alumnoId: selFinal.id,
+        nombreAlumno: nombreAlumno,
+        gradoSeleccionado: grado,
+      );
+    } on FirebaseException catch (e) {
+      if (e.code == 'permission-denied') {
+        await _setError('Error: permission-denied\nPaso: $_step');
+      } else {
+        await _setError('Error: ${e.code}\nPaso: $_step');
+      }
+    } catch (e) {
+      await _setError('Error: $e\nPaso: $_step');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  // ---------------- DEBUG ----------------
   void _accesoRapidoDebug() {
     if (!kDebugMode) return;
-
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
@@ -500,7 +672,7 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
                 Navigator.pop(context);
                 _irAPerfil(
                   nivel: _Nivel.inicial,
-                  estudianteId: 'demo_estudiante',
+                  alumnoId: 'demo_estudiante',
                   nombreAlumno: 'Alumno Inicial',
                   gradoSeleccionado: 'Inicial 1',
                 );
@@ -513,7 +685,7 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
                 Navigator.pop(context);
                 _irAPerfil(
                   nivel: _Nivel.primaria,
-                  estudianteId: 'demo_estudiante',
+                  alumnoId: 'demo_estudiante',
                   nombreAlumno: 'Alumno Primaria',
                   gradoSeleccionado: '5to A',
                 );
@@ -526,7 +698,7 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
                 Navigator.pop(context);
                 _irAPerfil(
                   nivel: _Nivel.secundaria,
-                  estudianteId: 'demo_estudiante',
+                  alumnoId: 'demo_estudiante',
                   nombreAlumno: 'Alumno Secundaria',
                   gradoSeleccionado: '2do B',
                 );
@@ -544,314 +716,256 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
     final azul = Colors.blue.shade900;
     final escuelaNombre = (widget.escuela.nombre ?? '').toString().trim();
 
+    // ✅ PRIVACIDAD:
+    // - Antes de login: no mostramos grados (y el control está deshabilitado igual)
+    // - Luego de login: SOLO grados de los alumnos permitidos
+    final gradosUI = _accessReady ? _gradosDesdeAlumnos() : <String>[];
+
+    // si el grado seleccionado ya no existe, limpiar
+    if ((_gradoSel ?? '').trim().isNotEmpty && gradosUI.isNotEmpty) {
+      final ok = gradosUI.any((g) => _key(g) == _key(_gradoSel!));
+      if (!ok) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          setState(() {
+            _gradoSel = null;
+            _alumnoSel = null;
+            _nameCtrl?.clear();
+          });
+        });
+      }
+    }
+
+    final filtrosHabilitados = _accessReady && !_loadingList && _alumnosAll.isNotEmpty;
+
+    final botonTexto = !_accessReady ? 'Continuar con Google' : 'Entrar';
+    final botonOnPressed = _loading
+        ? null
+        : (!_accessReady ? _continuarConGoogle : _entrarConSeleccion);
+
     return Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: false,
         backgroundColor: azul,
         title: const Text(''),
       ),
-      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: _gradosCol.orderBy('name').snapshots(),
-        builder: (context, snapGrades) {
-          if (snapGrades.hasError) {
-            return Center(
-              child: Text('Error cargando grados: ${snapGrades.error}'),
-            );
-          }
-
-          final docs = snapGrades.data?.docs ?? [];
-
-          // Convertir docs -> items (usa nivel del doc)
-          final items = docs.map((d) {
-            final data = d.data();
-
-            final name = (data['name'] ?? data['grado'] ?? data['nombre'] ?? '')
-                .toString()
-                .trim();
-            if (name.isEmpty) return null;
-
-            final explicitRaw =
-                data['nivel'] ?? data['level'] ?? data['nivelIndex'];
-            final explicitNivel = _nivelFromAny(explicitRaw);
-            final hasExplicit = explicitRaw != null && explicitNivel != null;
-
-            final nivel = explicitNivel ??
-                _nivelFromAny(data['nivel']) ??
-                _nivelFromAny(data['level']);
-
-            // si no hay nada explícito, fallback SOLO para nombres tipo "1ro Primaria"
-            final finalNivel = nivel ??
-                _nivelFromAny(explicitRaw) ??
-                (name.contains(RegExp(r'(inicial|primaria|secundaria)',
-                        caseSensitive: false))
-                    ? _nivelPorNombreFallback(name)
-                    : null);
-
-            return _GradeItem(
-                name: name, nivel: finalNivel, hasExplicitNivel: hasExplicit);
-          }).whereType<_GradeItem>().toList();
-
-          // Si existe al menos un grado con nivel explícito, filtramos por ese nivel.
-          final hayNivelExplicito =
-              items.any((x) => x.hasExplicitNivel || x.nivel != null);
-
-          List<String> gradesNivel;
-          if (items.isNotEmpty && hayNivelExplicito) {
-            gradesNivel = items
-                .where((x) => x.nivel == _nivelSel)
-                .map((x) => x.name)
-                .toSet()
-                .toList()
-              ..sort();
-          } else if (items.isNotEmpty) {
-            // Si no hay nivel en docs, mostramos TODOS (mejor que vacío)
-            gradesNivel =
-                items.map((x) => x.name).toSet().toList()..sort();
-          } else {
-            // si no hay grados en Firestore, fallback
-            gradesNivel = _gradosFallbackRD
-                .where((g) => _nivelPorNombreFallback(g) == _nivelSel)
-                .toList();
-          }
-
-          // sincroniza seleccionado
-          if (_gradoSel != null && !gradesNivel.contains(_gradoSel)) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (!mounted) return;
-              setState(() => _gradoSel = null);
-            });
-          }
-          if (_gradoSel == null && gradesNivel.isNotEmpty) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (!mounted) return;
-              setState(() => _gradoSel = gradesNivel.first);
-            });
-          }
-
-          final noHayGrados = gradesNivel.isEmpty;
-
-          return Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                // Header
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(18),
-                    gradient: LinearGradient(colors: [azul, Colors.blue.shade700]),
-                  ),
-                  child: Row(
-                    children: [
-                      GestureDetector(
-                        onLongPress: _accesoRapidoDebug,
-                        child: CircleAvatar(
-                          radius: 28,
-                          backgroundColor: Colors.white,
-                          child: Padding(
-                            padding: const EdgeInsets.all(6),
-                            child: Image.asset('assets/LogoAlumnos.png'),
-                          ),
-                        ),
+      body: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            // Header
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(18),
+                gradient: LinearGradient(colors: [azul, Colors.blue.shade700]),
+              ),
+              child: Row(
+                children: [
+                  GestureDetector(
+                    onLongPress: null,  // esto GestureDetector( en lugar de null
+                    child: CircleAvatar(
+                      radius: 28,
+                      backgroundColor: Colors.white,
+                      child: Padding(
+                        padding: const EdgeInsets.all(6),
+                        child: Image.asset('assets/LogoAlumnos.png'),
                       ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              escuelaNombre.isEmpty ? '—' : escuelaNombre,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 18,
-                                fontWeight: FontWeight.w900,
-                              ),
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            const SizedBox(height: 4),
-                            const Text(
-                              'Área de estudiantes',
-                              style: TextStyle(color: Colors.white70),
-                            ),
-                          ],
-                        ),
-                      ),
-                      if (kDebugMode)
-                        IconButton(
-                          tooltip: 'Acceso rápido (DEBUG)',
-                          onPressed: _accesoRapidoDebug,
-                          icon: const Icon(Icons.bolt, color: Colors.orange),
-                        ),
-                    ],
-                  ),
-                ),
-
-                const SizedBox(height: 18),
-
-                // Nivel
-                DropdownButtonFormField<_Nivel>(
-                  value: _nivelSel,
-                  decoration: InputDecoration(
-                    labelText: 'Nivel',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
                     ),
                   ),
-                  items: const [
-                    DropdownMenuItem(value: _Nivel.inicial, child: Text('Inicial')),
-                    DropdownMenuItem(value: _Nivel.primaria, child: Text('Primaria')),
-                    DropdownMenuItem(value: _Nivel.secundaria, child: Text('Secundaria')),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          escuelaNombre.isEmpty ? '—' : escuelaNombre,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.w900,
+                          ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          _loadingList
+                              ? 'Cargando alumnos…'
+                              : (!_accessReady
+                                  ? 'Primero continúa con Google para cargar tus alumnos'
+                                  : 'Selecciona grado y alumno, luego entra'),
+                          style: const TextStyle(color: Colors.white70),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (kDebugMode)
+                    IconButton(
+                      tooltip: 'Acceso rápido (DEBUG)',
+                      onPressed: null,  //_accesoRapidoDebug, esto en lugar de null
+                      icon: const Icon(Icons.bolt, color: Colors.orange),
+                    ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 18),
+
+            // Grado
+            IgnorePointer(
+              ignoring: !filtrosHabilitados,
+              child: Opacity(
+                opacity: filtrosHabilitados ? 1 : 0.5,
+                child: DropdownButtonFormField<String?>(
+                  value: (_gradoSel ?? '').trim().isEmpty ? null : _gradoSel,
+                  decoration: InputDecoration(
+                    labelText: 'Grado',
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  items: [
+                    const DropdownMenuItem<String?>(
+                      value: null,
+                      child: Text('— Sin filtro (mis grados) —'),
+                    ),
+                    ...gradosUI.map(
+                      (g) => DropdownMenuItem<String?>(
+                        value: g,
+                        child: Text(g),
+                      ),
+                    ),
                   ],
                   onChanged: (v) {
-                    if (v == null) return;
                     setState(() {
-                      _nivelSel = v;
-                      _gradoSel = null;
+                      _gradoSel = v;
+                      _alumnoSel = null;
+                      _nameCtrl?.clear();
                       _errorText = null;
                     });
                   },
                 ),
-
-                const SizedBox(height: 12),
-
-                // Aula/Grado
-                DropdownButtonFormField<String>(
-                  value: noHayGrados ? null : _gradoSel,
-                  decoration: InputDecoration(
-                    labelText: 'Aula / Grado',
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                  items: gradesNivel
-                      .map((g) => DropdownMenuItem(value: g, child: Text(g)))
-                      .toList(),
-                  onChanged: noHayGrados
-                      ? null
-                      : (v) => setState(() {
-                            _gradoSel = v;
-                            _errorText = null;
-                          }),
-                ),
-
-                if (noHayGrados) ...[
-                  const SizedBox(height: 10),
-                  Text(
-                    'No hay grados para este nivel.\n'
-                    'Pídele al admin que los cree y que cada grado tenga: nivel = "inicial|primaria|secundaria".',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.grey.shade700),
-                  ),
-                ],
-
-                const SizedBox(height: 12),
-
-                // Nombres / Apellidos
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _nombresCtrl,
-                        decoration: InputDecoration(
-                          labelText: 'Nombres',
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                        onChanged: (v) {
-                          final n = _normalizeName(v);
-                          _nombresCtrl.value = _nombresCtrl.value.copyWith(
-                            text: n,
-                            selection: TextSelection.collapsed(offset: n.length),
-                          );
-                        },
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextField(
-                        controller: _apellidosCtrl,
-                        decoration: InputDecoration(
-                          labelText: 'Apellidos',
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                        onChanged: (v) {
-                          final n = _normalizeName(v);
-                          _apellidosCtrl.value = _apellidosCtrl.value.copyWith(
-                            text: n,
-                            selection: TextSelection.collapsed(offset: n.length),
-                          );
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 12),
-
-                // Número + contraseña
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _numeroCtrl,
-                        keyboardType: TextInputType.number,
-                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                        decoration: InputDecoration(
-                          labelText: 'Número de lista',
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextField(
-                        controller: _contrasenaCtrl,
-                        obscureText: !_showPassword,
-                        decoration: InputDecoration(
-                          labelText: 'Contraseña',
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                          suffixIcon: IconButton(
-                            icon: Icon(_showPassword ? Icons.visibility_off : Icons.visibility),
-                            onPressed: () => setState(() => _showPassword = !_showPassword),
-                          ),
-                        ),
-                        onSubmitted: (_) => _validarDatos(),
-                      ),
-                    ),
-                  ],
-                ),
-
-                if (_errorText != null) ...[
-                  const SizedBox(height: 10),
-                  Text(_errorText!, style: const TextStyle(color: Colors.red)),
-                ],
-
-                const SizedBox(height: 16),
-
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: (_loading || noHayGrados) ? null : _validarDatos,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.orange,
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    ),
-                    child: _loading
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Text(
-                            'Entrar',
-                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
-                          ),
-                  ),
-                ),
-              ],
+              ),
             ),
-          );
-        },
+
+            const SizedBox(height: 12),
+
+            // Nombre
+            IgnorePointer(
+              ignoring: !filtrosHabilitados,
+              child: Opacity(
+                opacity: filtrosHabilitados ? 1 : 0.5,
+                child: Autocomplete<_AlumnoItem>(
+                  displayStringForOption: (o) => o.displayName,
+                  optionsBuilder: (text) {
+                    if (!filtrosHabilitados) return const Iterable<_AlumnoItem>.empty();
+                    final q = text.text;
+                    return _alumnosVisibles(q);
+                  },
+                  onSelected: (o) {
+                    setState(() {
+                      _alumnoSel = o;
+                      _errorText = null;
+                    });
+                    _nameCtrl?.text = o.displayName;
+                    _nameCtrl?.selection = TextSelection.collapsed(
+                      offset: _nameCtrl!.text.length,
+                    );
+                  },
+                  fieldViewBuilder: (context, ctrl, focusNode, onFieldSubmitted) {
+                    _nameCtrl = ctrl;
+
+                    return TextFormField(
+                      controller: ctrl,
+                      focusNode: focusNode,
+                      onChanged: (v) {
+                        if (_alumnoSel != null && v != _alumnoSel!.displayName) {
+                          setState(() => _alumnoSel = null);
+                        }
+                      },
+                      decoration: InputDecoration(
+                        labelText: 'Nombre del alumno',
+                        hintText: !_accessReady
+                            ? 'Primero continúa con Google'
+                            : ((_gradoSel ?? '').trim().isEmpty)
+                                ? 'Escribe para buscar (mis alumnos)'
+                                : 'Escribe para buscar (en el grado)',
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                        suffixIcon: _loadingList
+                            ? const Padding(
+                                padding: EdgeInsets.all(12),
+                                child: SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                ),
+                              )
+                            : IconButton(
+                                icon: const Icon(Icons.clear),
+                                onPressed: () {
+                                  ctrl.clear();
+                                  setState(() => _alumnoSel = null);
+                                },
+                              ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 10),
+
+            Text(
+              !_accessReady
+                  ? 'Tip: toca "Continuar con Google" para cargar SOLO tus alumnos.'
+                  : ((_gradoSel ?? '').trim().isEmpty)
+                      ? 'Tip: elige un grado para filtrar más rápido.'
+                      : 'Nombres filtrados por el grado seleccionado.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.grey.shade700),
+            ),
+
+            if (kDebugMode) ...[
+              const SizedBox(height: 6),
+              Text(
+                'Step: $_step | AccessReady: $_accessReady | Alumnos: ${_alumnosAll.length}'
+                '${((_gradoSel ?? '').trim().isEmpty) ? '' : ' | en grado: ${_alumnosVisibles("").length}'}',
+                style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+              ),
+            ],
+
+            if (_errorText != null) ...[
+              const SizedBox(height: 10),
+              Text(_errorText!, style: const TextStyle(color: Colors.red)),
+            ],
+
+            const SizedBox(height: 16),
+
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: botonOnPressed,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.orange,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                icon: _loading
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.login),
+                label: Text(
+                  _loading ? 'Procesando...' : botonTexto,
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

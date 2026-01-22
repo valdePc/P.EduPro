@@ -98,7 +98,7 @@ class AlumnoHeader extends StatelessWidget {
         final edad = AlumnoCommon.calcularEdad(dob);
 
         final matricula = AlumnoCommon.s(data['matricula']);
-        final seccion = AlumnoCommon.s(data['seccion']);
+     //   final seccion = AlumnoCommon.s(data['seccion']);
         final tanda = AlumnoCommon.s(data['tanda']);
         final idGlobal = AlumnoCommon.s(data['idGlobal']);
 
@@ -188,7 +188,7 @@ class AlumnoHeader extends StatelessWidget {
                               runSpacing: 6,
                               children: [
                                 _pill('Matrícula: ${matricula.isEmpty ? '—' : matricula}'),
-                                _pill('Sección: ${seccion.isEmpty ? '—' : seccion}'),
+                               // _pill('Sección: ${seccion.isEmpty ? '—' : seccion}'),
                                 _pill('Tanda: ${tanda.isEmpty ? '—' : tanda}'),
                                 _pill('ID: ${idGlobal.isEmpty ? '—' : idGlobal}'),
                                 _pill('Nac: ${AlumnoCommon.fmtDate(dob)}'),

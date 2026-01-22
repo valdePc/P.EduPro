@@ -1,4 +1,4 @@
-// lib/admin_escolar/screens/crear_cuenta_docente.dart
+ // lib/admin_escolar/screens/crear_cuenta_docente.dart
 import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -805,8 +805,8 @@ class _CrearCuentaDocentesScreenState extends State<CrearCuentaDocentesScreen> {
         builder: (_) => AlertDialog(
           title: const Text('Solicitud enviada'),
           content: const Text(
-            'Tu solicitud ha sido enviada, una ves la administracion hacepte tu solicitud.\n'
-            'podran iniciar sesion con nombre  y tu cuenta de google  “Iniciar con Google”.',
+            'Tu solicitud ha sido enviada, una ves sea aceptada.\n'
+            'podras iniciar sesion con nombre  y tu cuenta de google  “Iniciar con Google”.',
           ),
           actions: [
             ElevatedButton(

@@ -44,14 +44,15 @@ class _PerfilPrimariaScreenState extends State<PerfilPrimariaScreen> {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
   late final String _schoolId;
 
-  DocumentReference<Map<String, dynamic>> get _estRef => _db
-      .collection('escuelas')
-      .doc(_schoolId)
-      .collection('estudiantes')
-      .doc(widget.estudianteId);
+DocumentReference<Map<String, dynamic>> get _estRef => _db
+    .collection('schools')
+    .doc(_schoolId)
+    .collection('alumnos')
+    .doc(widget.estudianteId);
 
-  DocumentReference<Map<String, dynamic>> get _cfgRef =>
-      _db.collection('escuelas').doc(_schoolId).collection('config').doc('alumnos');
+DocumentReference<Map<String, dynamic>> get _cfgRef =>
+    _db.collection('schools').doc(_schoolId).collection('config').doc('alumnos');
+
 
 Future<void> _openCalendarioAlumno() async {
   // Lee el doc real del alumno para agarrar grado/sección correctos
@@ -88,10 +89,18 @@ Future<void> _openCalendarioAlumno() async {
   );
 }
 
+String _ensureSchoolDocId(String rawId) {
+  final id = rawId.trim();
+  if (id.isEmpty) return id;
+  return id.startsWith('eduproapp_admin_') ? id : 'eduproapp_admin_$id';
+}
+
   @override
   void initState() {
     super.initState();
-    _schoolId = normalizeSchoolIdFromEscuela(widget.escuela);
+    final raw = normalizeSchoolIdFromEscuela(widget.escuela);
+_schoolId = _ensureSchoolDocId(raw);
+
   }
 
   Future<void> _seedDemoData() async {

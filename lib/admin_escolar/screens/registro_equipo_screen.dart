@@ -1,9 +1,12 @@
 // lib/admin_escolar/screens/registro_equipo_screen.dart
-import 'dart:math';
+import 'dart:math'; // (si no lo usas puedes quitarlo; no rompe)
+import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter/foundation.dart' show kIsWeb; // (si no lo usas puedes quitarlo)
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 
 import 'package:edupro/models/escuela.dart';
 import 'package:edupro/utils/school_utils.dart' show normalizeSchoolIdFromEscuela;
@@ -15,7 +18,8 @@ import 'A_grados.dart';
 const Color _blue = Color(0xFF0D47A1);
 const Color _orange = Color(0xFFFFA000);
 
-/// ✅ Niveles
+/// ✅
+enum EstadoAlumno { activo, pendiente, bloqueado }
 enum NivelAcademico { inicial, primaria, secundaria }
 
 String nivelToDb(NivelAcademico n) {
@@ -26,6 +30,58 @@ String nivelToDb(NivelAcademico n) {
       return 'primaria';
     case NivelAcademico.secundaria:
       return 'secundaria';
+  }
+}
+
+/// ✅ Estado del alumno (login + control)
+String estadoToDb(EstadoAlumno e) {
+  switch (e) {
+    case EstadoAlumno.activo:
+      return 'activo';
+    case EstadoAlumno.pendiente:
+      return 'pendiente';
+    case EstadoAlumno.bloqueado:
+      return 'bloqueado';
+  }
+}
+
+EstadoAlumno estadoFromDb(String s) {
+  final v = s.trim().toLowerCase();
+  if (v == 'pendiente') return EstadoAlumno.pendiente;
+  if (v == 'bloqueado') return EstadoAlumno.bloqueado;
+  return EstadoAlumno.activo;
+}
+
+String estadoLabel(EstadoAlumno e) {
+  switch (e) {
+    case EstadoAlumno.activo:
+      return 'Activo';
+    case EstadoAlumno.pendiente:
+      return 'Pendiente';
+    case EstadoAlumno.bloqueado:
+      return 'Bloqueado';
+  }
+}
+
+IconData estadoIcon(EstadoAlumno e) {
+  switch (e) {
+    case EstadoAlumno.activo:
+      return Icons.check_circle;
+    case EstadoAlumno.pendiente:
+      return Icons.hourglass_top;
+    case EstadoAlumno.bloqueado:
+      return Icons.block;
+  }
+}
+
+Color estadoColor(EstadoAlumno e) {
+  switch (e) {
+    case EstadoAlumno.activo:
+      return Colors.green;
+    case EstadoAlumno.pendiente:
+      return Colors.amber;
+    case EstadoAlumno.bloqueado:
+      return Colors.red;
   }
 }
 
@@ -51,40 +107,21 @@ IconData nivelIcon(NivelAcademico n) {
   }
 }
 
-/// ✅ Inferencia para registros viejos (sin campo "nivel")
-/// - Si el grado dice "Inicial" => inicial
-/// - Si dice "Secundaria" (o "secund") => secundaria
-/// - Si dice "Primaria" => primaria
-/// - Si no dice nada, por defecto: primaria (para no “perder” datos)
-NivelAcademico inferNivelFromGradoName(String grado) {
-  final s = grado.toLowerCase().trim();
-
-  if (s.contains('inicial')) return NivelAcademico.inicial;
-  if (s.contains('secund')) return NivelAcademico.secundaria;
-  // algunos ponen "sec." o "sec"
-  if (RegExp(r'\bsec\b').hasMatch(s)) return NivelAcademico.secundaria;
-
-  if (s.contains('primar')) return NivelAcademico.primaria;
-
-  return NivelAcademico.primaria;
+int _leadingNumberOrBig(String s) {
+  final m = RegExp(r'^\s*(\d+)').firstMatch(s);
+  if (m == null) return 999999;
+  return int.tryParse(m.group(1)!) ?? 999999;
 }
 
-/// ✅ Filtra lista de grados por nivel seleccionado
-List<String> filtrarGradosPorNivel({
-  required List<String> all,
-  required List<String> fallbackRD,
-  required NivelAcademico nivel,
-}) {
-  final filtered = all.where((g) => inferNivelFromGradoName(g) == nivel).toList();
+/// ✅ Entrada dinámica de accesos por correo (email + usuario)
+class _AccessEmailEntry {
+  final TextEditingController emailCtrl = TextEditingController();
+  final TextEditingController userCtrl = TextEditingController();
 
-  // Si la escuela tiene grados creados pero ninguno se reconoce para ese nivel,
-  // usamos fallback por nivel (evita que el dropdown quede vacío).
-  if (filtered.isEmpty) {
-    final fb = fallbackRD.where((g) => inferNivelFromGradoName(g) == nivel).toList();
-    return fb.isNotEmpty ? fb : all;
+  void dispose() {
+    emailCtrl.dispose();
+    userCtrl.dispose();
   }
-
-  return filtered;
 }
 
 class RegistroEquipoScreen extends StatefulWidget {
@@ -105,7 +142,14 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
   // ✅ NIVEL (STATE REAL)
-  NivelAcademico _nivelSel = NivelAcademico.primaria; // primaria por defecto
+  NivelAcademico _nivelSel = NivelAcademico.primaria;
+
+  // ✅ ESTADO (por defecto: ACTIVO)
+  EstadoAlumno _estadoSel = EstadoAlumno.activo;
+
+  void _setEstado(EstadoAlumno e) {
+    setState(() => _estadoSel = e);
+  }
 
   // ✅ TANDA (STATE REAL)
   String? _tandaSel;
@@ -144,7 +188,7 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
   // Grado para la lista
   String? _gradoSeleccionadoLista;
 
-  // Datos tutor 1
+  // Datos tutor
   final _tutorNombreCtrl = TextEditingController();
   final _tutorParentescoCtrl = TextEditingController(text: 'Padre/Madre');
   final _tutorTelefonoCtrl = TextEditingController();
@@ -155,35 +199,26 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
   final _emergNombreCtrl = TextEditingController();
   final _emergTelefonoCtrl = TextEditingController();
 
-  // Credenciales del alumno (autogeneradas)
-  String _passwordAlumno = '';
+  // ✅ lista dinámica de correos con acceso (Google)
+  final List<_AccessEmailEntry> _accessEntries = [];
 
-  // Fallback grados si no hay ninguno creado todavía
-  final List<String> _gradosFallbackRD = const [
-    'Inicial 1',
-    'Inicial 2',
-    '1ro Primaria',
-    '2do Primaria',
-    '3ro Primaria',
-    '4to Primaria',
-    '5to Primaria',
-    '6to Primaria',
-    '1ro Secundaria',
-    '2do Secundaria',
-    '3ro Secundaria',
-    '4to Secundaria',
-    '5to Secundaria',
-    '6to Secundaria',
-  ];
+  // ✅ Foto alumno
+  final ImagePicker _picker = ImagePicker();
+  Uint8List? _photoBytes;
+  String? _photoExt;
+  bool _photoPicked = false;
 
   @override
   void initState() {
     super.initState();
-    _schoolId = normalizeSchoolIdFromEscuela(widget.escuela);
-    _passwordAlumno = _genPassword(len: 10);
 
-    // ✅ default tanda (mejor UX)
+    final o = (widget.schoolIdOverride ?? '').trim();
+    final raw = o.isNotEmpty ? o : normalizeSchoolIdFromEscuela(widget.escuela);
+    _schoolId = _ensureSchoolDocId(raw);
+
     _tandaSel ??= _tandas.first;
+
+    _accessEntries.add(_AccessEmailEntry());
   }
 
   @override
@@ -208,10 +243,38 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
     _emergNombreCtrl.dispose();
     _emergTelefonoCtrl.dispose();
 
+    for (final e in _accessEntries) {
+      e.dispose();
+    }
+
     super.dispose();
   }
 
   // ------------------ Helpers ------------------
+
+  String _ensureSchoolDocId(String rawId) {
+    final id = rawId.trim();
+    if (id.isEmpty) return id;
+    return id.startsWith('eduproapp_admin_') ? id : 'eduproapp_admin_$id';
+  }
+
+  String _normSpacesLower(String s) =>
+      s.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+
+  bool _gradoTerminaConNivel(String gradoName, NivelAcademico nivel) {
+    final s = _normSpacesLower(gradoName);
+
+    bool endsWithWord(String w) => s.endsWith(' $w') || s.endsWith(' de $w');
+
+    switch (nivel) {
+      case NivelAcademico.inicial:
+        return endsWithWord('inicial');
+      case NivelAcademico.primaria:
+        return endsWithWord('primaria');
+      case NivelAcademico.secundaria:
+        return endsWithWord('secundaria');
+    }
+  }
 
   String _onlyLettersSpaces(String s) =>
       s.replaceAll(RegExp(r"[^a-zA-ZñÑáéíóúÁÉÍÓÚüÜ\s'-]"), '');
@@ -243,6 +306,12 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
         .replaceAll(RegExp(r'[^0-9\+]'), '');
   }
 
+  bool _isValidEmail(String s) {
+    final v = s.trim();
+    final r = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
+    return r.hasMatch(v);
+  }
+
   int _calcAge(DateTime dob) {
     final now = DateTime.now();
     int age = now.year - dob.year;
@@ -258,40 +327,28 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
     return '$dd/$mm/${d.year}';
   }
 
-  String _genPassword({int len = 10}) {
-    const chars =
-        'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@#';
-    final rnd = Random.secure();
-    return List.generate(len, (_) => chars[rnd.nextInt(chars.length)]).join();
-  }
-
-  Future<void> _copy(String text) async {
-    await Clipboard.setData(ClipboardData(text: text));
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Copiado al portapapeles')),
-    );
-  }
-
-  // ------------------ Config (permiso foto) ------------------
+  // ------------------ Config ------------------
 
   DocumentReference<Map<String, dynamic>> get _registroConfigRef => _db
-      .collection('escuelas')
+      .collection('schools')
       .doc(_schoolId)
       .collection('config')
       .doc('registro');
 
-  // ------------------ Grados (MISMO sitio que AGrados) ------------------
-  // ✅ UNIFICADO: escuelas/{schoolId}/grados
+  // ------------------ Firestore paths ------------------
+
   CollectionReference<Map<String, dynamic>> get _gradosCol =>
-      _db.collection('escuelas').doc(_schoolId).collection('grados');
+      _db.collection('schools').doc(_schoolId).collection('grados');
 
-  CollectionReference<Map<String, dynamic>> get _estudiantesCol =>
-      _db.collection('escuelas').doc(_schoolId).collection('estudiantes');
+  CollectionReference<Map<String, dynamic>> get _alumnosCol =>
+      _db.collection('schools').doc(_schoolId).collection('alumnos');
 
-  // ✅ Colección GLOBAL para búsquedas globales / índice
-  CollectionReference<Map<String, dynamic>> get _estudiantesGlobalCol =>
-      _db.collection('estudiantes_global');
+  CollectionReference<Map<String, dynamic>> get _alumnosGlobalCol =>
+      _db.collection('alumnos_global');
+
+  // ✅ alumnos_login (docId = emailLower)
+  CollectionReference<Map<String, dynamic>> get _alumnosLoginCol =>
+      _db.collection('schools').doc(_schoolId).collection('alumnos_login');
 
   Future<void> _irAGrados() async {
     await Navigator.push(
@@ -300,6 +357,61 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
         builder: (_) => AGrados(escuela: widget.escuela),
       ),
     );
+  }
+
+  // ------------------ Foto alumno ------------------
+
+  Future<void> _pickFotoAlumno() async {
+    if (_saving) return;
+    try {
+      final x = await _picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 82,
+        maxWidth: 1200,
+      );
+      if (x == null) return;
+
+      final bytes = await x.readAsBytes();
+      final ext = (x.name.split('.').last).toLowerCase();
+
+      setState(() {
+        _photoBytes = bytes;
+        _photoExt = ext.isEmpty ? 'jpg' : ext;
+        _photoPicked = true;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo seleccionar la foto: $e')),
+      );
+    }
+  }
+
+  void _removeFotoAlumno() {
+    if (_saving) return;
+    setState(() {
+      _photoBytes = null;
+      _photoExt = null;
+      _photoPicked = false;
+    });
+  }
+
+  Future<Map<String, String?>?> _uploadFotoIfAny(String alumnoId) async {
+    if (_photoBytes == null || !_photoPicked) return null;
+
+    final safeExt = (_photoExt ?? 'jpg').replaceAll(RegExp(r'[^a-z0-9]'), '');
+    final path = 'schools/$_schoolId/alumnos/$alumnoId/profile.$safeExt';
+
+    final ref = FirebaseStorage.instance.ref().child(path);
+    final contentType = (safeExt == 'png') ? 'image/png' : 'image/jpeg';
+
+    await ref.putData(
+      _photoBytes!,
+      SettableMetadata(contentType: contentType),
+    );
+
+    final url = await ref.getDownloadURL();
+    return {'photoUrl': url, 'photoPath': path};
   }
 
   // ------------------ Fecha nacimiento ------------------
@@ -326,22 +438,25 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
     });
   }
 
-  // ------------------ Guardar estudiante ------------------
+  // ------------------ Duplicados ------------------
 
   Future<bool> _yaExistePorNumeroEnGradoYTanda({
     required String numero,
     required String grado,
     required String tanda,
+    required String nivelDb,
   }) async {
     final gradoKey = _nameKey(grado);
-    final snap = await _estudiantesCol
+
+    final a = await _alumnosCol
         .where('matricula', isEqualTo: numero)
         .where('gradoKey', isEqualTo: gradoKey)
         .where('tanda', isEqualTo: tanda)
+        .where('nivel', isEqualTo: nivelDb)
         .limit(1)
         .get();
 
-    return snap.docs.isNotEmpty;
+    return a.docs.isNotEmpty;
   }
 
   Future<bool> _yaExistePorNombreDob({
@@ -349,15 +464,14 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
     required String apellidosKey,
     required DateTime dob,
   }) async {
-    final snap = await _estudiantesCol
+    final a = await _alumnosCol
         .where('nombresKey', isEqualTo: nombresKey)
         .where('apellidosKey', isEqualTo: apellidosKey)
         .limit(8)
         .get();
 
-    for (final d in snap.docs) {
-      final data = d.data();
-      final ts = data['fechaNacimiento'];
+    for (final d in a.docs) {
+      final ts = d.data()['fechaNacimiento'];
       if (ts is Timestamp) {
         final other = ts.toDate();
         if (other.year == dob.year &&
@@ -367,8 +481,57 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
         }
       }
     }
+
     return false;
   }
+
+  // ------------------ Accesos ------------------
+
+  void _addAccessRow() {
+    setState(() => _accessEntries.add(_AccessEmailEntry()));
+  }
+
+  void _removeAccessRow(int i) {
+    if (_accessEntries.length <= 1) return;
+    final entry = _accessEntries.removeAt(i);
+    entry.dispose();
+    setState(() {});
+  }
+
+  List<Map<String, dynamic>> _buildAccesosOrThrow() {
+    final list = <Map<String, dynamic>>[];
+    final seen = <String>{};
+
+    for (final e in _accessEntries) {
+      final email = e.emailCtrl.text.trim();
+      final user = e.userCtrl.text.trim();
+
+      if (email.isEmpty && user.isEmpty) continue;
+
+      if (email.isEmpty || user.isEmpty) {
+        throw 'Completa email y usuario en los accesos (o deja la fila vacía).';
+      }
+      if (!_isValidEmail(email)) {
+        throw 'Email inválido en accesos: $email';
+      }
+
+      final emailLower = email.toLowerCase();
+      if (seen.contains(emailLower)) {
+        throw 'Email duplicado en accesos: $email';
+      }
+      seen.add(emailLower);
+
+      list.add({
+        'email': email,
+        'emailLower': emailLower,
+        'usuario': user,
+      });
+    }
+
+    return list;
+  }
+
+  // ------------------ Guardar alumno ------------------
 
   Future<void> _guardar() async {
     FocusScope.of(context).unfocus();
@@ -411,7 +574,33 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
       return;
     }
 
+    // ✅ Accesos por correo (Google)
+    List<Map<String, dynamic>> accesos;
+    try {
+      accesos = _buildAccesosOrThrow();
+    } catch (msg) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg.toString())),
+      );
+      return;
+    }
+
+    if (accesos.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content:
+              Text('Agrega al menos un correo con acceso (email + usuario).'),
+        ),
+      );
+      return;
+    }
+
+    final accessEmails = accesos.map((a) => a['emailLower'] as String).toList();
+
     final numero = _matriculaCtrl.text.trim();
+
+    final nivelDb = nivelToDb(_nivelSel);
+    final nivelTxt = nivelLabel(_nivelSel);
 
     setState(() => _saving = true);
     try {
@@ -419,18 +608,19 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
         numero: numero,
         grado: grado,
         tanda: tanda,
+        nivelDb: nivelDb,
       );
 
       if (dup) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-              content: Text('Ese número ya existe en este grado y tanda')),
+            content: Text('Ese número ya existe en este grado, tanda y nivel'),
+          ),
         );
         return;
       }
 
-      // ✅ Evita duplicado por nombre+dob (seguro extra)
       final dup2 = await _yaExistePorNombreDob(
         nombresKey: _nameKey(nombres),
         apellidosKey: _nameKey(apellidos),
@@ -449,41 +639,41 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
 
       final edad = _calcAge(_fechaNacimiento!);
 
-      // ✅ ID GLOBAL (se guarda dentro del estudiante + índice global)
-      final studentRef = _estudiantesCol.doc(); // genera id aleatorio
-      final idGlobal = studentRef.id;
+      // ✅ principal: alumnos
+      final alumnoRef = _alumnosCol.doc();
+      final idGlobal = alumnoRef.id;
 
-      final batch = _db.batch();
+      // ✅ Foto (si existe): sube primero para guardar URL
+      Map<String, String?>? photoData;
+      try {
+        photoData = await _uploadFotoIfAny(idGlobal);
+      } catch (_) {
+        photoData = null;
+      }
 
-      final nivelDb = nivelToDb(_nivelSel);
-      final nivelTxt = nivelLabel(_nivelSel);
-
-      // 1) Doc principal dentro de la escuela
-      batch.set(studentRef, {
-        // ✅ ID GLOBAL (dos nombres por compatibilidad)
+      final baseData = <String, dynamic>{
         'idGlobal': idGlobal,
         'fx': idGlobal,
-
-        // ✅ NIVEL (nuevo)
         'nivel': nivelDb,
         'nivelLabel': nivelTxt,
-
-        // ✅ Útil para búsquedas / auditoría
         'schoolId': _schoolId,
-        'schoolRef': 'escuelas/$_schoolId',
+        'schoolRef': 'schools/$_schoolId',
+
+        // ✅ ESTADO / BLOQUEO
+        'status': estadoToDb(_estadoSel),
+        'enabled': _estadoSel != EstadoAlumno.bloqueado, // bloqueado = false
+        'statusAt': FieldValue.serverTimestamp(),
 
         'nombres': nombres,
         'apellidos': apellidos,
         'nombresKey': _nameKey(nombres),
         'apellidosKey': _nameKey(apellidos),
 
-        // ✅ Se mantiene "matricula" para compatibilidad
         'matricula': numero,
 
         'grado': grado,
         'gradoKey': _nameKey(grado),
 
-        // ✅ TANDA
         'tanda': tanda,
 
         'fechaNacimiento': Timestamp.fromDate(_fechaNacimiento!),
@@ -511,45 +701,80 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
           'telefono': _normalizePhone(_emergTelefonoCtrl.text),
         },
 
-        // ⚠️ MVP: esto es texto plano. Si luego lo usarás para login real,
-        // mejor hash (backend) o Firebase Auth.
-        'password': _passwordAlumno,
+        'accesos': accesos,
+        'accesosEmails': accessEmails,
 
+        'photoUrl': photoData?['photoUrl'],
+        'photoPath': photoData?['photoPath'],
+
+        'ingresoAt': FieldValue.serverTimestamp(),
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
-      });
+      };
 
-      // 2) Índice global (para buscar estudiantes en TODO el sistema)
-      final globalRef = _estudiantesGlobalCol.doc(idGlobal);
-      batch.set(globalRef, {
+      final batch = _db.batch();
+
+      // 1) alumno en su escuela
+      batch.set(alumnoRef, baseData);
+
+      // 2) índice global (solo “alumnos_global”)
+      final globalAlumnoRef = _alumnosGlobalCol.doc(idGlobal);
+      batch.set(globalAlumnoRef, {
         'idGlobal': idGlobal,
         'fx': idGlobal,
         'schoolId': _schoolId,
-        'studentPath': studentRef.path,
-
-        // ✅ NIVEL (nuevo)
+        'studentPath': alumnoRef.path,
         'nivel': nivelDb,
         'nivelLabel': nivelTxt,
-
         'nombres': nombres,
         'apellidos': apellidos,
         'nombresKey': _nameKey(nombres),
         'apellidosKey': _nameKey(apellidos),
-
         'matricula': numero,
         'grado': grado,
         'gradoKey': _nameKey(grado),
         'tanda': tanda,
-
         'fechaNacimiento': Timestamp.fromDate(_fechaNacimiento!),
-
+        'accesosEmails': accessEmails,
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
+        'status': estadoToDb(_estadoSel),
+        'enabled': _estadoSel != EstadoAlumno.bloqueado,
       });
+
+      // 3) alumnos_login (por emailLower) -> agrega studentIds
+      for (final a in accesos) {
+        final email = (a['email'] ?? '').toString().trim();
+        final emailLower =
+            (a['emailLower'] ?? '').toString().trim().toLowerCase();
+        final usuario = (a['usuario'] ?? '').toString().trim();
+
+        if (emailLower.isEmpty) continue;
+
+        final loginRef = _alumnosLoginCol.doc(emailLower);
+
+        batch.set(
+          loginRef,
+          {
+            'email': email,
+            'emailLower': emailLower,
+            'schoolId': _schoolId,
+
+            // ✅ un mismo email puede tener varios hijos
+            'studentIds': FieldValue.arrayUnion([idGlobal]),
+
+            // opcional
+            'usuarios': FieldValue.arrayUnion([usuario]),
+
+            'updatedAt': FieldValue.serverTimestamp(),
+          },
+          SetOptions(merge: true),
+        );
+      }
 
       await batch.commit();
 
-      // Limpieza
+      // reset form
       _nombresCtrl.clear();
       _apellidosCtrl.clear();
       _matriculaCtrl.clear();
@@ -568,16 +793,26 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
       _emergNombreCtrl.clear();
       _emergTelefonoCtrl.clear();
 
-      // Nueva contraseña para el próximo alumno
+      for (final e in _accessEntries) {
+        e.emailCtrl.clear();
+        e.userCtrl.clear();
+      }
+      if (_accessEntries.length > 1) {
+        for (int i = _accessEntries.length - 1; i >= 1; i--) {
+          _removeAccessRow(i);
+        }
+      }
+
+      _removeFotoAlumno();
+
       setState(() {
-        _passwordAlumno = _genPassword(len: 10);
-        // Para que la lista se quede viendo ese grado automáticamente
         _gradoSeleccionadoLista = grado;
+        _estadoSel = EstadoAlumno.activo;
       });
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Estudiante registrado en $nivelTxt')),
+        SnackBar(content: Text('Alumno registrado en $nivelTxt')),
       );
     } catch (e) {
       if (!mounted) return;
@@ -591,25 +826,16 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
 
   // ------------------ Nivel selector ------------------
 
-  void _setNivel(NivelAcademico n, List<String> gradosDelNivel) {
+  void _setNivel(NivelAcademico n) {
     setState(() {
       _nivelSel = n;
+      _gradoSeleccionadoForm = null;
+      _gradoSeleccionadoLista = null;
 
-      // Resetea grado si no pertenece al nivel nuevo
-      if (_gradoSeleccionadoForm != null &&
-          inferNivelFromGradoName(_gradoSeleccionadoForm!) != _nivelSel) {
-        _gradoSeleccionadoForm = null;
-      }
-      if (_gradoSeleccionadoLista != null &&
-          inferNivelFromGradoName(_gradoSeleccionadoLista!) != _nivelSel) {
-        _gradoSeleccionadoLista = null;
-      }
-
-      // Defaults para el nivel
-      if (gradosDelNivel.isNotEmpty) {
-        _gradoSeleccionadoForm ??= gradosDelNivel.first;
-        _gradoSeleccionadoLista ??= gradosDelNivel.first;
-      }
+      // ✅ IMPORTANTÍSIMO: la foto NO se “queda pegada” entre niveles
+      _photoBytes = null;
+      _photoExt = null;
+      _photoPicked = false;
     });
   }
 
@@ -653,39 +879,57 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
             stream: _gradosCol.orderBy('name').snapshots(),
             builder: (context, snapGrades) {
               final gradeDocs = snapGrades.data?.docs ?? [];
-              final gradesAll = gradeDocs
-                  .map((d) => (d.data()['name'] ?? '').toString().trim())
+              final nivelDb = nivelToDb(_nivelSel);
+
+              final hasNivelField = gradeDocs.any((d) {
+                final v = (d.data()['nivel'] ?? '').toString().trim();
+                return v.isNotEmpty;
+              });
+
+              final gradesFinal = gradeDocs
+                  .map((d) => d.data())
+                  .where((m) {
+                    final name = (m['name'] ?? '').toString().trim();
+                    if (name.isEmpty) return false;
+
+                    if (hasNivelField) {
+                      final v = (m['nivel'] ?? '')
+                          .toString()
+                          .trim()
+                          .toLowerCase();
+                      return v == nivelDb;
+                    }
+
+                    return _gradoTerminaConNivel(name, _nivelSel);
+                  })
+                  .map((m) => (m['name'] ?? '').toString().trim())
                   .where((s) => s.isNotEmpty)
                   .toSet()
                   .toList()
-                ..sort();
+                ..sort((a, b) {
+                  final na = _leadingNumberOrBig(a);
+                  final nb = _leadingNumberOrBig(b);
+                  if (na != nb) return na.compareTo(nb);
+                  return a.toLowerCase().compareTo(b.toLowerCase());
+                });
 
-              final baseAll = gradesAll.isNotEmpty ? gradesAll : _gradosFallbackRD;
+              final hasGrados = gradesFinal.isNotEmpty;
 
-              // ✅ Filtrado de grados por nivel
-              final gradesNivel = filtrarGradosPorNivel(
-                all: baseAll,
-                fallbackRD: _gradosFallbackRD,
-                nivel: _nivelSel,
-              );
-
-              // ✅ Mantener selections consistentes con el nivel actual
               if (_gradoSeleccionadoForm != null &&
-                  !gradesNivel.contains(_gradoSeleccionadoForm)) {
+                  !gradesFinal.contains(_gradoSeleccionadoForm)) {
                 _gradoSeleccionadoForm = null;
               }
               if (_gradoSeleccionadoLista != null &&
-                  !gradesNivel.contains(_gradoSeleccionadoLista)) {
+                  !gradesFinal.contains(_gradoSeleccionadoLista)) {
                 _gradoSeleccionadoLista = null;
               }
 
-              // ✅ Defaults (solo si quedaron null)
-              if (_gradoSeleccionadoForm == null && gradesNivel.isNotEmpty) {
+              if (hasGrados && _gradoSeleccionadoForm == null) {
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   if (!mounted) return;
                   setState(() {
-                    _gradoSeleccionadoForm = gradesNivel.first;
-                    _gradoSeleccionadoLista ??= gradesNivel.first;
+                    _gradoSeleccionadoForm = gradesFinal.first;
+                    _gradoSeleccionadoLista ??= gradesFinal.first;
                   });
                 });
               }
@@ -693,11 +937,11 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
               final isWide = MediaQuery.of(context).size.width >= 980;
 
               final formPanel = _FormPanel(
+                schoolId: _schoolId,
                 nivel: _nivelSel,
-                onNivelChanged: (n) => _setNivel(n, gradesNivel),
-
+                onNivelChanged: _setNivel,
                 permitirFotoAlumno: _permitirFotoAlumno,
-                gradesNivel: gradesNivel,
+                gradesNivel: gradesFinal,
                 saving: _saving,
                 formKey: _formKey,
                 nombresCtrl: _nombresCtrl,
@@ -707,6 +951,8 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
                 observCtrl: _observCtrl,
                 fechaCtrl: _fechaCtrl,
                 edadCtrl: _edadCtrl,
+                estado: _estadoSel,
+                onEstadoChanged: _setEstado,
                 gradoSeleccionado: _gradoSeleccionadoForm,
                 onGradoChanged: (v) => setState(() {
                   _gradoSeleccionadoForm = v;
@@ -714,12 +960,9 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
                     _gradoSeleccionadoLista = v;
                   }
                 }),
-
-                // ✅ TANDA
                 tandaSeleccionada: _tandaSel,
                 tandas: _tandas,
                 onTandaChanged: (v) => setState(() => _tandaSel = v),
-
                 onPickFecha: _pickFechaNacimiento,
                 tutorNombreCtrl: _tutorNombreCtrl,
                 tutorParentescoCtrl: _tutorParentescoCtrl,
@@ -728,27 +971,30 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
                 tutorEmailCtrl: _tutorEmailCtrl,
                 emergNombreCtrl: _emergNombreCtrl,
                 emergTelefonoCtrl: _emergTelefonoCtrl,
-                passwordAlumno: _passwordAlumno,
-                onCopyPassword: () => _copy(_passwordAlumno),
-                onRegenerarPassword: () => setState(() {
-                  _passwordAlumno = _genPassword(len: 10);
-                }),
                 onCrearGrado: _irAGrados,
                 onGuardar: _guardar,
                 normalizeName: _normalizeName,
                 normalizePhone: _normalizePhone,
+                isValidEmail: _isValidEmail,
+                photoBytes: _photoBytes,
+                photoPicked: _photoPicked,
+                onPickPhoto: _pickFotoAlumno,
+                onRemovePhoto: _removeFotoAlumno,
+                accessEntries: _accessEntries,
+                onAddAccess: _addAccessRow,
+                onRemoveAccess: _removeAccessRow,
               );
 
               final listPanel = _ListPanel(
+                schoolId: _schoolId,
                 nivel: _nivelSel,
-                gradesNivel: gradesNivel,
+                gradesNivel: gradesFinal,
                 gradoSeleccionadoLista: _gradoSeleccionadoLista,
                 onGradoChanged: (v) =>
                     setState(() => _gradoSeleccionadoLista = v),
                 searchCtrl: _searchListCtrl,
                 onSearchChanged: (v) =>
                     setState(() => _searchList = v.trim().toLowerCase()),
-                schoolId: _schoolId,
                 search: _searchList,
               );
 
@@ -756,6 +1002,11 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
                 return ListView(
                   padding: const EdgeInsets.all(16),
                   children: [
+                    if (!hasGrados)
+                      _NoGradosBanner(
+                        nivelTxt: nivelLabel(_nivelSel),
+                        onCrearGrado: _irAGrados,
+                      ),
                     formPanel,
                     const SizedBox(height: 14),
                     listPanel,
@@ -769,7 +1020,14 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
                     flex: 6,
                     child: ListView(
                       padding: const EdgeInsets.all(16),
-                      children: [formPanel],
+                      children: [
+                        if (!hasGrados)
+                          _NoGradosBanner(
+                            nivelTxt: nivelLabel(_nivelSel),
+                            onCrearGrado: _irAGrados,
+                          ),
+                        formPanel
+                      ],
                     ),
                   ),
                   Container(width: 1, color: Colors.grey.shade300),
@@ -793,6 +1051,11 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
 // ---------------- UI Panels ----------------
 
 class _FormPanel extends StatelessWidget {
+  final String schoolId;
+
+  final EstadoAlumno estado;
+  final ValueChanged<EstadoAlumno> onEstadoChanged;
+
   final NivelAcademico nivel;
   final ValueChanged<NivelAcademico> onNivelChanged;
 
@@ -814,7 +1077,6 @@ class _FormPanel extends StatelessWidget {
   final String? gradoSeleccionado;
   final ValueChanged<String?> onGradoChanged;
 
-  // ✅ TANDA (props)
   final String? tandaSeleccionada;
   final List<String> tandas;
   final ValueChanged<String?> onTandaChanged;
@@ -830,17 +1092,24 @@ class _FormPanel extends StatelessWidget {
   final TextEditingController emergNombreCtrl;
   final TextEditingController emergTelefonoCtrl;
 
-  final String passwordAlumno;
-  final VoidCallback onCopyPassword;
-  final VoidCallback onRegenerarPassword;
-
   final VoidCallback onCrearGrado;
   final VoidCallback onGuardar;
 
   final String Function(String) normalizeName;
   final String Function(String) normalizePhone;
+  final bool Function(String) isValidEmail;
+
+  final Uint8List? photoBytes;
+  final bool photoPicked;
+  final VoidCallback onPickPhoto;
+  final VoidCallback onRemovePhoto;
+
+  final List<_AccessEmailEntry> accessEntries;
+  final VoidCallback onAddAccess;
+  final void Function(int) onRemoveAccess;
 
   const _FormPanel({
+    required this.schoolId,
     required this.nivel,
     required this.onNivelChanged,
     required this.permitirFotoAlumno,
@@ -867,40 +1136,37 @@ class _FormPanel extends StatelessWidget {
     required this.tutorEmailCtrl,
     required this.emergNombreCtrl,
     required this.emergTelefonoCtrl,
-    required this.passwordAlumno,
-    required this.onCopyPassword,
-    required this.onRegenerarPassword,
     required this.onCrearGrado,
     required this.onGuardar,
     required this.normalizeName,
     required this.normalizePhone,
+    required this.isValidEmail,
+    required this.photoBytes,
+    required this.photoPicked,
+    required this.onPickPhoto,
+    required this.onRemovePhoto,
+    required this.accessEntries,
+    required this.onAddAccess,
+    required this.onRemoveAccess,
+    required this.estado,
+    required this.onEstadoChanged,
   });
 
   @override
   Widget build(BuildContext context) {
     final nTxt = nivelLabel(nivel);
-
-    final title = 'Formulario de inscripción • $nTxt';
-    final subtitle = (nivel == NivelAcademico.inicial)
-        ? 'Inicial: registro con estilo más infantil para identificarlo rápido.'
-        : 'Registra estudiantes con datos completos + tutor(es). Los nombres se corrigen automáticamente para evitar errores.';
-
-    final icon = Icon(nivelIcon(nivel), color: _orange);
-
-    final softBg = (nivel == NivelAcademico.inicial)
-        ? _orange.withOpacity(0.06)
-        : Colors.white;
+    final hasGrados = gradesNivel.isNotEmpty;
 
     return _CardShell(
-      title: title,
-      subtitle: subtitle,
-      icon: icon,
-      background: softBg,
+      title: 'Formulario de inscripción • $nTxt',
+      subtitle:
+          'Grados filtrados por campo "nivel" (fallback por nombre si falta).',
+      icon: Icon(nivelIcon(nivel), color: _orange),
+      background: Colors.white,
       child: Form(
         key: formKey,
         child: Column(
           children: [
-            // ✅ Selector rápido de nivel dentro del formulario también
             Row(
               children: [
                 Expanded(
@@ -911,10 +1177,80 @@ class _FormPanel extends StatelessWidget {
                 ),
               ],
             ),
+
+            const SizedBox(height: 12),
+            const _SectionTitle('Estado del alumno'),
+            const SizedBox(height: 10),
+            _EstadoSwitcher(
+              value: estado,
+              onChanged: onEstadoChanged,
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Activo = normal • Pendiente = por revisar • Bloqueado = sin acceso',
+                style: TextStyle(color: Colors.grey.shade700),
+              ),
+            ),
+
             const SizedBox(height: 12),
 
-            const _SectionTitle('Datos del estudiante'),
+            if (!hasGrados)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: _orange.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: _orange.withOpacity(0.25)),
+                ),
+                child: const Text(
+                  'No hay grados creados para este nivel. Pulsa "Crear grado".',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+
+            const SizedBox(height: 12),
+            const _SectionTitle('Foto del alumno'),
             const SizedBox(height: 10),
+
+            Row(
+              children: [
+                CircleAvatar(
+                  radius: 34,
+                  backgroundColor: _blue.withOpacity(0.08),
+                  backgroundImage:
+                      (photoBytes != null) ? MemoryImage(photoBytes!) : null,
+                  child: (photoBytes == null)
+                      ? const Icon(Icons.person, size: 34, color: _blue)
+                      : null,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Sube una foto (opcional). Se guardará en Storage y quedará vinculada al alumno.',
+                    style: TextStyle(color: Colors.grey.shade700),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  tooltip: 'Elegir foto',
+                  onPressed: saving ? null : onPickPhoto,
+                  icon: const Icon(Icons.photo_library, color: _orange),
+                ),
+                IconButton(
+                  tooltip: 'Quitar foto',
+                  onPressed: (saving || !photoPicked) ? null : onRemovePhoto,
+                  icon: Icon(Icons.delete_outline, color: Colors.grey.shade700),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 14),
+            const _SectionTitle('Datos del alumno'),
+            const SizedBox(height: 10),
+
             Row(
               children: [
                 Expanded(
@@ -968,7 +1304,6 @@ class _FormPanel extends StatelessWidget {
             ),
             const SizedBox(height: 12),
 
-            // ✅ Matrícula + Tanda + Grado (misma fila)
             Row(
               children: [
                 Expanded(
@@ -977,7 +1312,7 @@ class _FormPanel extends StatelessWidget {
                     textInputAction: TextInputAction.next,
                     decoration: const InputDecoration(
                       labelText: 'Matrícula o Número',
-                      hintText: 'Ej: 12 (número de lista) o código interno',
+                      hintText: 'Ej: 12',
                       border: OutlineInputBorder(),
                     ),
                     validator: (v) {
@@ -996,8 +1331,7 @@ class _FormPanel extends StatelessWidget {
                       border: OutlineInputBorder(),
                     ),
                     items: tandas
-                        .map((t) =>
-                            DropdownMenuItem(value: t, child: Text(t)))
+                        .map((t) => DropdownMenuItem(value: t, child: Text(t)))
                         .toList(),
                     onChanged: onTandaChanged,
                     validator: (v) =>
@@ -1007,7 +1341,7 @@ class _FormPanel extends StatelessWidget {
                 const SizedBox(width: 12),
                 Expanded(
                   child: DropdownButtonFormField<String>(
-                    value: gradoSeleccionado,
+                    value: hasGrados ? gradoSeleccionado : null,
                     decoration: InputDecoration(
                       labelText: 'Grado ($nTxt)',
                       border: const OutlineInputBorder(),
@@ -1015,10 +1349,13 @@ class _FormPanel extends StatelessWidget {
                     items: gradesNivel
                         .map((g) => DropdownMenuItem(value: g, child: Text(g)))
                         .toList(),
-                    onChanged: onGradoChanged,
-                    validator: (v) => (v == null || v.trim().isEmpty)
-                        ? 'Selecciona grado'
-                        : null,
+                    onChanged: hasGrados ? onGradoChanged : null,
+                    validator: (v) {
+                      if (!hasGrados) return 'Crea grados primero';
+                      return (v == null || v.trim().isEmpty)
+                          ? 'Selecciona grado'
+                          : null;
+                    },
                   ),
                 ),
               ],
@@ -1177,9 +1514,96 @@ class _FormPanel extends StatelessWidget {
               controller: tutorEmailCtrl,
               keyboardType: TextInputType.emailAddress,
               decoration: const InputDecoration(
-                labelText: 'Email (opcional)',
+                labelText: 'Email del tutor (opcional)',
                 border: OutlineInputBorder(),
               ),
+            ),
+
+            const SizedBox(height: 14),
+            const _SectionTitle('Correos con acceso (Google)'),
+            const SizedBox(height: 8),
+            Text(
+              'Aquí agregas los correos (docente, padres o quien tú decidas) que podrán acceder al alumno cuando activemos el login con Google.',
+              style: TextStyle(color: Colors.grey.shade700),
+            ),
+            const SizedBox(height: 10),
+
+            Column(
+              children: [
+                for (int i = 0; i < accessEntries.length; i++) ...[
+                  Row(
+                    children: [
+                      Expanded(
+                        flex: 6,
+                        child: TextFormField(
+                          controller: accessEntries[i].emailCtrl,
+                          keyboardType: TextInputType.emailAddress,
+                          decoration: InputDecoration(
+                            labelText: 'Correo #${i + 1}',
+                            border: const OutlineInputBorder(),
+                          ),
+                          onChanged: (v) {
+                            final lower = v.trim().toLowerCase();
+                            if (lower != v) {
+                              accessEntries[i].emailCtrl.value =
+                                  accessEntries[i].emailCtrl.value.copyWith(
+                                text: lower,
+                                selection: TextSelection.collapsed(
+                                    offset: lower.length),
+                              );
+                            }
+                          },
+                          validator: (_) {
+                            final email =
+                                accessEntries[i].emailCtrl.text.trim();
+                            final user = accessEntries[i].userCtrl.text.trim();
+                            if (email.isEmpty && user.isEmpty) return null;
+                            if (email.isEmpty) return 'Email requerido';
+                            if (!isValidEmail(email)) return 'Email inválido';
+                            return null;
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        flex: 5,
+                        child: TextFormField(
+                          controller: accessEntries[i].userCtrl,
+                          decoration: const InputDecoration(
+                            labelText: 'Usuario',
+                            border: OutlineInputBorder(),
+                          ),
+                          validator: (_) {
+                            final email =
+                                accessEntries[i].emailCtrl.text.trim();
+                            final user = accessEntries[i].userCtrl.text.trim();
+                            if (email.isEmpty && user.isEmpty) return null;
+                            if (user.isEmpty) return 'Usuario requerido';
+                            return null;
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        tooltip: 'Quitar',
+                        onPressed: (saving || accessEntries.length <= 1)
+                            ? null
+                            : () => onRemoveAccess(i),
+                        icon: const Icon(Icons.close, color: _orange),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    onPressed: saving ? null : onAddAccess,
+                    icon: const Icon(Icons.add, color: _orange),
+                    label: const Text('Agregar correo'),
+                  ),
+                ),
+              ],
             ),
 
             const SizedBox(height: 14),
@@ -1241,42 +1665,7 @@ class _FormPanel extends StatelessWidget {
               maxLines: 4,
             ),
 
-            const SizedBox(height: 14),
-            const _SectionTitle('Credenciales del alumno (MVP)'),
             const SizedBox(height: 10),
-
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.grey.shade300),
-                color: Colors.white,
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      'Contraseña: $passwordAlumno',
-                      style: const TextStyle(fontWeight: FontWeight.w800),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: 'Copiar',
-                    onPressed: onCopyPassword,
-                    icon: const Icon(Icons.copy),
-                  ),
-                  IconButton(
-                    tooltip: 'Regenerar',
-                    onPressed: onRegenerarPassword,
-                    icon: const Icon(Icons.refresh),
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 8),
-
             Text(
               permitirFotoAlumno
                   ? 'Foto del alumno: el alumno podrá cambiarla (según tu configuración actual).'
@@ -1289,7 +1678,7 @@ class _FormPanel extends StatelessWidget {
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
-                onPressed: saving ? null : onGuardar,
+                onPressed: (saving || !hasGrados) ? null : onGuardar,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: _blue,
                   padding: const EdgeInsets.symmetric(vertical: 14),
@@ -1303,7 +1692,11 @@ class _FormPanel extends StatelessWidget {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Icon(Icons.save),
-                label: Text(saving ? 'Guardando...' : 'Registrar estudiante'),
+                label: Text(
+                  saving
+                      ? 'Guardando...'
+                      : (!hasGrados ? 'Crea grados primero' : 'Registrar alumno'),
+                ),
               ),
             ),
           ],
@@ -1314,6 +1707,7 @@ class _FormPanel extends StatelessWidget {
 }
 
 class _ListPanel extends StatelessWidget {
+  final String schoolId;
   final NivelAcademico nivel;
 
   final List<String> gradesNivel;
@@ -1323,39 +1717,39 @@ class _ListPanel extends StatelessWidget {
   final TextEditingController searchCtrl;
   final ValueChanged<String> onSearchChanged;
 
-  final String schoolId;
   final String search;
 
   const _ListPanel({
+    required this.schoolId,
     required this.nivel,
     required this.gradesNivel,
     required this.gradoSeleccionadoLista,
     required this.onGradoChanged,
     required this.searchCtrl,
     required this.onSearchChanged,
-    required this.schoolId,
     required this.search,
   });
 
-  CollectionReference<Map<String, dynamic>> get _estudiantesCol =>
+  CollectionReference<Map<String, dynamic>> get _alumnosCol =>
       FirebaseFirestore.instance
-          .collection('escuelas')
+          .collection('schools')
           .doc(schoolId)
-          .collection('estudiantes');
+          .collection('alumnos');
 
   @override
   Widget build(BuildContext context) {
     final nTxt = nivelLabel(nivel);
+    final hasGrados = gradesNivel.isNotEmpty;
+    final nivelDb = nivelToDb(nivel);
 
     return _CardShell(
-      title: 'Estudiantes por grado • $nTxt',
-      subtitle:
-          'Selecciona un grado y verás los estudiantes de este nivel. El sistema reconoce registros viejos sin "nivel" por el nombre del grado.',
+      title: 'Alumnos por grado • $nTxt',
+      subtitle: 'Aquí solo trabajas con grados filtrados por este nivel.',
       icon: const Icon(Icons.school, color: _orange),
       child: Column(
         children: [
           DropdownButtonFormField<String>(
-            value: gradoSeleccionadoLista,
+            value: hasGrados ? gradoSeleccionadoLista : null,
             decoration: const InputDecoration(
               labelText: 'Grado',
               border: OutlineInputBorder(),
@@ -1363,9 +1757,9 @@ class _ListPanel extends StatelessWidget {
             items: gradesNivel
                 .map((g) => DropdownMenuItem(value: g, child: Text(g)))
                 .toList(),
-            onChanged: onGradoChanged,
+            onChanged: hasGrados ? onGradoChanged : null,
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
           TextField(
             controller: searchCtrl,
             decoration: const InputDecoration(
@@ -1376,14 +1770,19 @@ class _ListPanel extends StatelessWidget {
             onChanged: onSearchChanged,
           ),
           const SizedBox(height: 12),
-          if (gradoSeleccionadoLista == null)
+          if (!hasGrados)
             const Padding(
               padding: EdgeInsets.all(12),
-              child: Text('Selecciona un grado para ver estudiantes.'),
+              child: Text('No hay grados para este nivel. Crea grados primero.'),
+            )
+          else if (gradoSeleccionadoLista == null)
+            const Padding(
+              padding: EdgeInsets.all(12),
+              child: Text('Selecciona un grado para ver alumnos.'),
             )
           else
             StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: _estudiantesCol
+              stream: _alumnosCol
                   .where('grado', isEqualTo: gradoSeleccionadoLista)
                   .snapshots(),
               builder: (context, snap) {
@@ -1397,48 +1796,41 @@ class _ListPanel extends StatelessWidget {
 
                 final docs = snap.data!.docs;
 
-                final rows = docs.map((d) {
-                  final data = d.data();
-                  final nombres = (data['nombres'] ?? '').toString();
-                  final apellidos = (data['apellidos'] ?? '').toString();
-                  final numero = (data['matricula'] ?? '').toString();
-                  final grado = (data['grado'] ?? '').toString();
-                  final edad = (data['edad'] ?? '').toString();
+                final rows = docs
+                    .map((d) {
+                      final data = d.data();
 
-                  // ✅ Nivel real si existe, si no, inferido por grado
-                  final nivelDb = (data['nivel'] ?? '').toString().trim();
-                  final nivelDoc = nivelDb.isNotEmpty
-                      ? (nivelDb == 'inicial'
-                          ? NivelAcademico.inicial
-                          : (nivelDb == 'secundaria'
-                              ? NivelAcademico.secundaria
-                              : NivelAcademico.primaria))
-                      : inferNivelFromGradoName(grado);
+                      // ✅ filtro extra en memoria: evita mezclar niveles sin crear índices nuevos
+                      final n = (data['nivel'] ?? '').toString().trim().toLowerCase();
+                      if (n.isNotEmpty && n != nivelDb) return null;
 
-                  final key = ('$nombres $apellidos $numero').toLowerCase();
-                  return {
-                    'id': d.id,
-                    'nombres': nombres,
-                    'apellidos': apellidos,
-                    'numero': numero,
-                    'grado': grado,
-                    'edad': edad,
-                    'nivel': nivelDoc,
-                    'key': key,
-                  };
-                }).toList();
+                      final nombres = (data['nombres'] ?? '').toString();
+                      final apellidos = (data['apellidos'] ?? '').toString();
+                      final numero = (data['matricula'] ?? '').toString();
+                      final grado = (data['grado'] ?? '').toString();
+                      final edad = (data['edad'] ?? '').toString();
+                      final status = (data['status'] ?? 'activo').toString();
 
-                // ✅ Filtra por nivel (client-side para no perder datos viejos)
-                final rowsNivel = rows
-                    .where((r) => (r['nivel'] as NivelAcademico) == nivel)
+                      final key = ('$nombres $apellidos $numero').toLowerCase();
+                      return {
+                        'id': d.id,
+                        'nombres': nombres,
+                        'apellidos': apellidos,
+                        'numero': numero,
+                        'grado': grado,
+                        'edad': edad,
+                        'status': status,
+                        'key': key,
+                      };
+                    })
+                    .where((x) => x != null)
+                    .cast<Map<String, dynamic>>()
                     .toList();
 
                 final q = search.trim().toLowerCase();
                 final filtered = q.isEmpty
-                    ? rowsNivel
-                    : rowsNivel
-                        .where((r) => (r['key'] as String).contains(q))
-                        .toList();
+                    ? rows
+                    : rows.where((r) => (r['key'] as String).contains(q)).toList();
 
                 filtered.sort((a, b) {
                   final aa = '${a['apellidos']} ${a['nombres']}'.toLowerCase();
@@ -1449,7 +1841,7 @@ class _ListPanel extends StatelessWidget {
                 if (filtered.isEmpty) {
                   return const Padding(
                     padding: EdgeInsets.all(12),
-                    child: Text('No hay estudiantes para mostrar.'),
+                    child: Text('No hay alumnos para mostrar.'),
                   );
                 }
 
@@ -1474,11 +1866,11 @@ class _ListPanel extends StatelessWidget {
                             Expanded(
                               child: Text(
                                 'Total: ${filtered.length}',
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.w800),
+                                style:
+                                    const TextStyle(fontWeight: FontWeight.w800),
                               ),
                             ),
-                            const Icon(Icons.person, color: _orange),
+                            const Icon(Icons.people, color: _orange),
                           ],
                         ),
                       ),
@@ -1492,7 +1884,11 @@ class _ListPanel extends StatelessWidget {
                           final r = filtered[i];
                           final title = '${r['apellidos']}, ${r['nombres']}';
 
+                          final st = estadoFromDb((r['status'] ?? 'activo').toString());
+                          final stColor = estadoColor(st);
+
                           final sub = [
+                            'Estado: ${estadoLabel(st)}',
                             if ((r['numero'] as String).isNotEmpty)
                               'Número: ${r['numero']}',
                             if ((r['edad'] as String).isNotEmpty)
@@ -1503,8 +1899,8 @@ class _ListPanel extends StatelessWidget {
 
                           return ListTile(
                             leading: CircleAvatar(
-                              backgroundColor: _orange.withOpacity(0.12),
-                              child: const Icon(Icons.person, color: _orange),
+                              backgroundColor: stColor.withOpacity(0.15),
+                              child: Icon(estadoIcon(st), color: stColor),
                             ),
                             title: Text(title, overflow: TextOverflow.ellipsis),
                             subtitle: Text(sub, overflow: TextOverflow.ellipsis),
@@ -1515,8 +1911,7 @@ class _ListPanel extends StatelessWidget {
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   const SnackBar(
                                     content: Text(
-                                      'Edición rápida: la hacemos en el próximo paso.',
-                                    ),
+                                        'Edición rápida: la hacemos en el próximo paso.'),
                                   ),
                                 );
                               },
@@ -1529,6 +1924,45 @@ class _ListPanel extends StatelessWidget {
                 );
               },
             ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NoGradosBanner extends StatelessWidget {
+  final String nivelTxt;
+  final VoidCallback onCrearGrado;
+
+  const _NoGradosBanner({
+    required this.nivelTxt,
+    required this.onCrearGrado,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: _orange.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: _orange.withOpacity(0.25)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.warning_amber_rounded, color: _orange),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'No hay grados para $nivelTxt. Crea los grados para que aparezcan en el selector.',
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+          ),
+          TextButton(
+            onPressed: onCrearGrado,
+            child: const Text('Crear grado'),
+          ),
         ],
       ),
     );
@@ -1578,7 +2012,8 @@ class _CardShell extends StatelessWidget {
               Expanded(
                 child: Text(
                   title,
-                  style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                  style:
+                      const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
@@ -1644,7 +2079,8 @@ class _NivelSwitcher extends StatelessWidget {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(nivelIcon(n), size: 18, color: selected ? _blue : Colors.grey.shade700),
+                Icon(nivelIcon(n),
+                    size: 18, color: selected ? _blue : Colors.grey.shade700),
                 const SizedBox(width: 8),
                 Text(
                   nivelLabel(n),
@@ -1667,6 +2103,67 @@ class _NivelSwitcher extends StatelessWidget {
         chip(NivelAcademico.primaria),
         const SizedBox(width: 8),
         chip(NivelAcademico.secundaria),
+      ],
+    );
+  }
+}
+
+class _EstadoSwitcher extends StatelessWidget {
+  final EstadoAlumno value;
+  final ValueChanged<EstadoAlumno> onChanged;
+
+  const _EstadoSwitcher({
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    Widget chip(EstadoAlumno e) {
+      final selected = e == value;
+      final c = estadoColor(e);
+
+      return Expanded(
+        child: InkWell(
+          borderRadius: BorderRadius.circular(999),
+          onTap: () => onChanged(e),
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 10),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(
+                color: selected ? c : Colors.grey.shade300,
+                width: selected ? 1.5 : 1,
+              ),
+              color: selected ? c.withOpacity(0.12) : Colors.white,
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(estadoIcon(e),
+                    size: 18, color: selected ? c : Colors.grey.shade700),
+                const SizedBox(width: 8),
+                Text(
+                  estadoLabel(e),
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    color: selected ? c : Colors.grey.shade800,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Row(
+      children: [
+        chip(EstadoAlumno.activo),
+        const SizedBox(width: 8),
+        chip(EstadoAlumno.pendiente),
+        const SizedBox(width: 8),
+        chip(EstadoAlumno.bloqueado),
       ],
     );
   }
