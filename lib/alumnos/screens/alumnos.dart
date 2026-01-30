@@ -63,7 +63,7 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
 
   // 2 pasos:
   // 1) Google + permisos -> carga _alumnosAll
-  // 2) Selección alumno (si hay varios) + entrar
+  // 2) Selección alumno + entrar
   bool _accessReady = false; // true cuando ya cargamos alumnos permitidos
 
   // Filtros
@@ -92,9 +92,6 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
 
   CollectionReference<Map<String, dynamic>> get _alumnosLoginCol =>
       FirebaseFirestore.instance.collection('schools').doc(_schoolId).collection('alumnos_login');
-
-  DocumentReference<Map<String, dynamic>> get _usersDoc =>
-      FirebaseFirestore.instance.collection('users').doc(FirebaseAuth.instance.currentUser?.uid ?? '__no_uid__');
 
   @override
   void initState() {
@@ -155,8 +152,10 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
   }
 
   Set<String> _extractStudentIds(Map<String, dynamic> data) {
-    dynamic raw =
-        data['studentIds'] ?? data['studentsIds'] ?? data['alumnoIds'] ?? data['alumnosIds'];
+    dynamic raw = data['studentIds'] ??
+        data['studentsIds'] ??
+        data['alumnoIds'] ??
+        data['alumnosIds'];
     if (raw is List) {
       return raw.map((e) => e.toString().trim()).where((x) => x.isNotEmpty).toSet();
     }
@@ -294,84 +293,32 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
     return base.take(60).toList();
   }
 
-  Future<_AlumnoItem?> _seleccionarAlumnoModal() async {
-    return showModalBottomSheet<_AlumnoItem>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (_) {
-        final ctrl = TextEditingController();
-        return StatefulBuilder(
-          builder: (ctx, setLocal) {
-            final q = ctrl.text;
-            final list = _alumnosVisibles(q);
-
-            return SafeArea(
-              child: Padding(
-                padding: EdgeInsets.only(
-                  left: 16,
-                  right: 16,
-                  top: 8,
-                  bottom: 16 + MediaQuery.of(ctx).viewInsets.bottom,
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    TextField(
-                      controller: ctrl,
-                      autofocus: true,
-                      decoration: const InputDecoration(
-                        labelText: 'Buscar alumno',
-                        prefixIcon: Icon(Icons.search),
-                      ),
-                      onChanged: (_) => setLocal(() {}),
-                    ),
-                    const SizedBox(height: 10),
-                    Flexible(
-                      child: ListView.builder(
-                        shrinkWrap: true,
-                        itemCount: list.length,
-                        itemBuilder: (_, i) {
-                          final a = list[i];
-                          return ListTile(
-                            title: Text(a.displayName),
-                            subtitle: Text(a.grado),
-                            onTap: () => Navigator.pop(ctx, a),
-                          );
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-
   // ---------------- Auth (Google) ----------------
   Future<UserCredential> _signInWithGoogle() async {
     final auth = FirebaseAuth.instance;
 
+    // ✅ Web: popup (no usa accessToken)
     if (kIsWeb) {
       final provider = GoogleAuthProvider();
       provider.setCustomParameters({'prompt': 'select_account'});
       return await auth.signInWithPopup(provider);
     }
 
+    // ✅ Mobile/desktop: google_sign_in v7+
     final google = GoogleSignIn.instance;
+    await google.initialize();
+
     final gUser = await google.authenticate();
     final gAuth = gUser.authentication;
 
-    final credential = GoogleAuthProvider.credential(
-      idToken: gAuth.idToken,
-    );
+    final idToken = gAuth.idToken;
+    if (idToken == null || idToken.isEmpty) {
+      throw Exception('Google no devolvió idToken.');
+    }
 
+    final credential = GoogleAuthProvider.credential(idToken: idToken);
     return await auth.signInWithCredential(credential);
   }
-
 
   // ---------------- Perfil ----------------
   void _irAPerfil({
@@ -435,21 +382,6 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
       }
       final emailLower = email.toLowerCase().trim();
 
-      // 1.5) organigrama (si tus rules lo exigen)
- //     final orgRef = FirebaseFirestore.instance.collection('organigrama').doc(user.uid);
- //     await _guard(
- //       'set organigrama/{uid}',
-//        () => orgRef.set({
-  //        'role': 'student',
-   //       'accessType': 'google_student_or_tutor',
-    //      'schoolId': _schoolId,
-    //      'enabled': true,
-   //       'email': emailLower,
-     //     'updatedAt': FieldValue.serverTimestamp(),
-      //    'createdAt': FieldValue.serverTimestamp(),
-      //  }, SetOptions(merge: true)),
-     // );
-
       // 2) validar acceso por email
       final loginSnap = await _guard(
         'get alumnos_login/{email}',
@@ -457,7 +389,6 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
       );
 
       if (!loginSnap.exists) {
-        // resetea UI para que NO quede “activado” nada
         if (mounted) {
           setState(() {
             _accessReady = false;
@@ -469,8 +400,8 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
           });
         }
         await _setError(
-          'Aun no te has registrado.\n'
-          'comuniquese con la administacuion escolar.',
+          'Aún no te has registrado.\n'
+          'Comunícate con la administración escolar.',
         );
         return;
       }
@@ -483,13 +414,6 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
         return;
       }
 
-      // ✅ bootstrap users/{uid} para evitar permission-denied luego en "Entrar"
-      //await _ensureUserDocExists(
-        //user: user,
-        //emailLower: emailLower,
-       // allowedIds: _allowedIds,
-      //);
-
       // 3) cargar alumnos permitidos
       await _cargarAlumnosPermitidos(_allowedIds);
 
@@ -498,31 +422,22 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
         return;
       }
 
-      // 4) listo para selección (y por privacidad, grados vendrán SOLO de _alumnosAll)
+      // 4) listo para selección
       if (!mounted) return;
       setState(() {
         _accessReady = true;
-        _gradoSel = null; // por defecto sin filtro
+        _gradoSel = null;
         _alumnoSel = null;
         _nameCtrl?.clear();
       });
-
-      // 5) si solo hay 1 alumno, entrar directo
-    //  if (_alumnosAll.length == 1) {
-    //    setState(() => _alumnoSel = _alumnosAll.first);
-   //     await _entrarConSeleccion();
-   //   }
-
     } on FirebaseException catch (e) {
       if (e.code == 'permission-denied') {
         await _setError(
           'Permiso denegado.\n'
           'Paso actual: $_step\n'
           'Revisa rules para:\n'
-          '1) crear/actualizar /organigrama/{uid}\n'
-          '2) leer schools/{schoolId}/alumnos_login/{email}\n'
-          '3) leer schools/{schoolId}/alumnos/{alumnoId}\n'
-          '4) crear /users/{uid} (bootstrap student)',
+          '1) leer schools/{schoolId}/alumnos_login/{email}\n'
+          '2) leer schools/{schoolId}/alumnos/{alumnoId}',
         );
       } else {
         await _setError('Error: ${e.code}\nPaso: $_step');
@@ -554,16 +469,14 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
         return;
       }
 
-      // si hay varios y no han seleccionado, pedimos
-  if (_alumnoSel == null) {
-  if (_alumnosAll.length == 1) {
-    setState(() => _alumnoSel = _alumnosAll.first);
-  } else {
-    await _setError('Selecciona un alumno antes de entrar.');
-    return;
-  }
-}
-
+      if (_alumnoSel == null) {
+        if (_alumnosAll.length == 1) {
+          setState(() => _alumnoSel = _alumnosAll.first);
+        } else {
+          await _setError('Selecciona un alumno antes de entrar.');
+          return;
+        }
+      }
 
       final selFinal = _alumnoSel!;
       if (!_allowedIds.contains(selFinal.id)) {
@@ -630,8 +543,6 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
           ? selFinal.displayName
           : ('$nombres $apellidos').trim();
 
-
-      // navegar
       _irAPerfil(
         nivel: nivel,
         alumnoId: selFinal.id,
@@ -711,14 +622,44 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
     );
   }
 
+  // ---------------- UI helpers (solo estética) ----------------
+  Widget _statusPill({
+    required Color bg,
+    required IconData icon,
+    required String text,
+    required Color fg,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: fg.withOpacity(0.18)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: fg),
+          const SizedBox(width: 6),
+          Text(
+            text,
+            style: TextStyle(color: fg, fontWeight: FontWeight.w800, fontSize: 12),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final azul = Colors.blue.shade900;
+    const azul = Color(0xFF0D47A1);
+    const azul2 = Color(0xFF1976D2);
+    const naranja = Color(0xFFFFA000);
+    const bg = Color(0xFFF4F7FB);
+
     final escuelaNombre = (widget.escuela.nombre ?? '').toString().trim();
 
     // ✅ PRIVACIDAD:
-    // - Antes de login: no mostramos grados (y el control está deshabilitado igual)
-    // - Luego de login: SOLO grados de los alumnos permitidos
     final gradosUI = _accessReady ? _gradosDesdeAlumnos() : <String>[];
 
     // si el grado seleccionado ya no existe, limpiar
@@ -739,232 +680,496 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
     final filtrosHabilitados = _accessReady && !_loadingList && _alumnosAll.isNotEmpty;
 
     final botonTexto = !_accessReady ? 'Continuar con Google' : 'Entrar';
-    final botonOnPressed = _loading
-        ? null
-        : (!_accessReady ? _continuarConGoogle : _entrarConSeleccion);
+    final botonOnPressed =
+        _loading ? null : (!_accessReady ? _continuarConGoogle : _entrarConSeleccion);
 
-    return Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        backgroundColor: azul,
-        title: const Text(''),
+    final theme = Theme.of(context);
+    final localTheme = theme.copyWith(
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: Colors.white,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(color: Colors.grey.shade300),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(color: Colors.grey.shade300),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: azul, width: 1.8),
+        ),
+        labelStyle: TextStyle(color: Colors.grey.shade800, fontWeight: FontWeight.w700),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // Header
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(18),
-                gradient: LinearGradient(colors: [azul, Colors.blue.shade700]),
-              ),
-              child: Row(
-                children: [
-                  GestureDetector(
-                    onLongPress: null,  // esto GestureDetector( en lugar de null
-                    child: CircleAvatar(
-                      radius: 28,
-                      backgroundColor: Colors.white,
-                      child: Padding(
-                        padding: const EdgeInsets.all(6),
-                        child: Image.asset('assets/LogoAlumnos.png'),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          escuelaNombre.isEmpty ? '—' : escuelaNombre,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.w900,
+    );
+
+    return Theme(
+      data: localTheme,
+      child: Scaffold(
+        backgroundColor: bg,
+        extendBodyBehindAppBar: true,
+        appBar: AppBar(
+          automaticallyImplyLeading: false,
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          title: const Text(''),
+        ),
+        body: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 680),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // HERO HEADER más pro (sin tocar tu lógica)
+                    Container(
+                      padding: const EdgeInsets.all(18),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(22),
+                        gradient: const LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [azul, azul2],
+                        ),
+                        boxShadow: const [
+                          BoxShadow(
+                            blurRadius: 22,
+                            offset: Offset(0, 10),
+                            color: Color(0x26000000),
                           ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          _loadingList
-                              ? 'Cargando alumnos…'
-                              : (!_accessReady
-                                  ? 'Primero continúa con Google para cargar tus alumnos'
-                                  : 'Selecciona grado y alumno, luego entra'),
-                          style: const TextStyle(color: Colors.white70),
-                        ),
-                      ],
-                    ),
-                  ),
-                  if (kDebugMode)
-                    IconButton(
-                      tooltip: 'Acceso rápido (DEBUG)',
-                      onPressed: null,  //_accesoRapidoDebug, esto en lugar de null
-                      icon: const Icon(Icons.bolt, color: Colors.orange),
-                    ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 18),
-
-            // Grado
-            IgnorePointer(
-              ignoring: !filtrosHabilitados,
-              child: Opacity(
-                opacity: filtrosHabilitados ? 1 : 0.5,
-                child: DropdownButtonFormField<String?>(
-                  value: (_gradoSel ?? '').trim().isEmpty ? null : _gradoSel,
-                  decoration: InputDecoration(
-                    labelText: 'Grado',
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                  items: [
-                    const DropdownMenuItem<String?>(
-                      value: null,
-                      child: Text('— Sin filtro (mis grados) —'),
-                    ),
-                    ...gradosUI.map(
-                      (g) => DropdownMenuItem<String?>(
-                        value: g,
-                        child: Text(g),
+                        ],
                       ),
-                    ),
-                  ],
-                  onChanged: (v) {
-                    setState(() {
-                      _gradoSel = v;
-                      _alumnoSel = null;
-                      _nameCtrl?.clear();
-                      _errorText = null;
-                    });
-                  },
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 12),
-
-            // Nombre
-            IgnorePointer(
-              ignoring: !filtrosHabilitados,
-              child: Opacity(
-                opacity: filtrosHabilitados ? 1 : 0.5,
-                child: Autocomplete<_AlumnoItem>(
-                  displayStringForOption: (o) => o.displayName,
-                  optionsBuilder: (text) {
-                    if (!filtrosHabilitados) return const Iterable<_AlumnoItem>.empty();
-                    final q = text.text;
-                    return _alumnosVisibles(q);
-                  },
-                  onSelected: (o) {
-                    setState(() {
-                      _alumnoSel = o;
-                      _errorText = null;
-                    });
-                    _nameCtrl?.text = o.displayName;
-                    _nameCtrl?.selection = TextSelection.collapsed(
-                      offset: _nameCtrl!.text.length,
-                    );
-                  },
-                  fieldViewBuilder: (context, ctrl, focusNode, onFieldSubmitted) {
-                    _nameCtrl = ctrl;
-
-                    return TextFormField(
-                      controller: ctrl,
-                      focusNode: focusNode,
-                      onChanged: (v) {
-                        if (_alumnoSel != null && v != _alumnoSel!.displayName) {
-                          setState(() => _alumnoSel = null);
-                        }
-                      },
-                      decoration: InputDecoration(
-                        labelText: 'Nombre del alumno',
-                        hintText: !_accessReady
-                            ? 'Primero continúa con Google'
-                            : ((_gradoSel ?? '').trim().isEmpty)
-                                ? 'Escribe para buscar (mis alumnos)'
-                                : 'Escribe para buscar (en el grado)',
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                        suffixIcon: _loadingList
-                            ? const Padding(
-                                padding: EdgeInsets.all(12),
-                                child: SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                ),
-                              )
-                            : IconButton(
-                                icon: const Icon(Icons.clear),
-                                onPressed: () {
-                                  ctrl.clear();
-                                  setState(() => _alumnoSel = null);
-                                },
+                      child: Stack(
+                        children: [
+                          // decor (solo UI)
+                          Positioned(
+                            right: -30,
+                            top: -40,
+                            child: Container(
+                              width: 130,
+                              height: 130,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Colors.white.withOpacity(0.10),
                               ),
+                            ),
+                          ),
+                          Positioned(
+                            left: -20,
+                            bottom: -35,
+                            child: Container(
+                              width: 120,
+                              height: 120,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Colors.white.withOpacity(0.08),
+                              ),
+                            ),
+                          ),
+
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: [
+                              // Logo con borde + sombra
+                              GestureDetector(
+                                onLongPress: kDebugMode ? _accesoRapidoDebug : null,
+                                child: Container(
+                                  width: 64,
+                                  height: 64,
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(18),
+                                    boxShadow: const [
+                                      BoxShadow(
+                                        blurRadius: 16,
+                                        offset: Offset(0, 8),
+                                        color: Color(0x22000000),
+                                      ),
+                                    ],
+                                  ),
+                                  padding: const EdgeInsets.all(10),
+                                  child: Image.asset('assets/LogoAlumnos.png'),
+                                ),
+                              ),
+                              const SizedBox(width: 14),
+
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      escuelaNombre.isEmpty ? '—' : escuelaNombre,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.w900,
+                                        letterSpacing: 0.2,
+                                      ),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    const SizedBox(height: 6),
+                                    AnimatedSwitcher(
+                                      duration: const Duration(milliseconds: 200),
+                                      child: Text(
+                                        _loadingList
+                                            ? 'Cargando alumnos…'
+                                            : (!_accessReady
+                                                ? 'Inicia con Google para cargar tus alumnos'
+                                                : 'Elige grado y alumno, luego entra'),
+                                        key: ValueKey('${_loadingList}_${_accessReady}'),
+                                        style: TextStyle(
+                                          color: Colors.white.withOpacity(0.82),
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 10),
+                                    Wrap(
+                                      spacing: 8,
+                                      runSpacing: 8,
+                                      children: [
+                                        _statusPill(
+                                          bg: Colors.white.withOpacity(0.12),
+                                          icon: Icons.lock,
+                                          text: 'Privado',
+                                          fg: Colors.white,
+                                        ),
+                                        _statusPill(
+                                          bg: Colors.white.withOpacity(0.12),
+                                          icon: _accessReady ? Icons.verified : Icons.info_outline,
+                                          text: _accessReady ? 'Acceso listo' : 'Paso 1',
+                                          fg: Colors.white,
+                                        ),
+                                        if (_loadingList)
+                                          _statusPill(
+                                            bg: Colors.white.withOpacity(0.12),
+                                            icon: Icons.sync,
+                                            text: 'Sincronizando',
+                                            fg: Colors.white,
+                                          ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+
+                              if (kDebugMode)
+                                IconButton(
+                                  tooltip: 'Acceso rápido (DEBUG)',
+                                  onPressed: _accesoRapidoDebug,
+                                  icon: const Icon(Icons.bolt, color: naranja),
+                                ),
+                            ],
+                          ),
+                        ],
                       ),
-                    );
-                  },
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    // CARD FORM (más elegante, misma funcionalidad)
+                    Container(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(22),
+                        boxShadow: const [
+                          BoxShadow(
+                            blurRadius: 22,
+                            offset: Offset(0, 10),
+                            color: Color(0x16000000),
+                          ),
+                        ],
+                      ),
+                      child: Card(
+                        elevation: 0,
+                        color: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(Icons.account_circle, color: Colors.grey.shade800),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Text(
+                                      'EduAlumn',
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w900,
+                                        color: Colors.grey.shade900,
+                                      ),
+                                    ),
+                                  ),
+                                  if (_accessReady)
+                                    _statusPill(
+                                      bg: const Color(0xFFE9F7EF),
+                                      icon: Icons.check_circle,
+                                      text: 'Listo',
+                                      fg: const Color(0xFF1E7F3B),
+                                    )
+                                  else
+                                    _statusPill(
+                                      bg: const Color(0xFFFFF5E6),
+                                      icon: Icons.login,
+                                      text: 'Paso 1',
+                                      fg: const Color(0xFF8A5B00),
+                                    ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              Divider(color: Colors.grey.shade200, height: 1),
+                              const SizedBox(height: 14),
+
+                              // Grado
+                              IgnorePointer(
+                                ignoring: !filtrosHabilitados,
+                                child: AnimatedOpacity(
+                                  duration: const Duration(milliseconds: 180),
+                                  opacity: filtrosHabilitados ? 1 : 0.55,
+                                  child: DropdownButtonFormField<String?>(
+                                    value: (_gradoSel ?? '').trim().isEmpty ? null : _gradoSel,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Grado',
+                                      prefixIcon: Icon(Icons.class_),
+                                    ),
+                                    items: [
+                                      const DropdownMenuItem<String?>(
+                                        value: null,
+                                        child: Text('— Sin filtro —'),
+                                      ),
+                                      ...gradosUI.map(
+                                        (g) => DropdownMenuItem<String?>(
+                                          value: g,
+                                          child: Text(g),
+                                        ),
+                                      ),
+                                    ],
+                                    onChanged: (v) {
+                                      setState(() {
+                                        _gradoSel = v;
+                                        _alumnoSel = null;
+                                        _nameCtrl?.clear();
+                                        _errorText = null;
+                                      });
+                                    },
+                                  ),
+                                ),
+                              ),
+
+                              const SizedBox(height: 12),
+
+                              // Nombre alumno (Autocomplete)
+                              IgnorePointer(
+                                ignoring: !filtrosHabilitados,
+                                child: AnimatedOpacity(
+                                  duration: const Duration(milliseconds: 180),
+                                  opacity: filtrosHabilitados ? 1 : 0.55,
+                                  child: Autocomplete<_AlumnoItem>(
+                                    displayStringForOption: (o) => o.displayName,
+                                    optionsBuilder: (text) {
+                                      if (!filtrosHabilitados) {
+                                        return const Iterable<_AlumnoItem>.empty();
+                                      }
+                                      return _alumnosVisibles(text.text);
+                                    },
+                                    onSelected: (o) {
+                                      setState(() {
+                                        _alumnoSel = o;
+                                        _errorText = null;
+                                      });
+                                      _nameCtrl?.text = o.displayName;
+                                      _nameCtrl?.selection = TextSelection.collapsed(
+                                        offset: _nameCtrl!.text.length,
+                                      );
+                                    },
+                                    fieldViewBuilder:
+                                        (context, ctrl, focusNode, onFieldSubmitted) {
+                                      _nameCtrl = ctrl;
+
+                                      return TextFormField(
+                                        controller: ctrl,
+                                        focusNode: focusNode,
+                                        onChanged: (v) {
+                                          if (_alumnoSel != null && v != _alumnoSel!.displayName) {
+                                            setState(() => _alumnoSel = null);
+                                          }
+                                        },
+                                        decoration: InputDecoration(
+                                          labelText: 'Nombre del alumno',
+                                          hintText: !_accessReady
+                                              ? 'Primero continúa con Google'
+                                              : ((_gradoSel ?? '').trim().isEmpty)
+                                                  ? 'Escribe para buscar (mis alumnos)'
+                                                  : 'Escribe para buscar (en el grado)',
+                                          prefixIcon: const Icon(Icons.search),
+                                          suffixIcon: _loadingList
+                                              ? const Padding(
+                                                  padding: EdgeInsets.all(12),
+                                                  child: SizedBox(
+                                                    width: 18,
+                                                    height: 18,
+                                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                                  ),
+                                                )
+                                              : IconButton(
+                                                  tooltip: 'Limpiar',
+                                                  icon: const Icon(Icons.clear),
+                                                  onPressed: () {
+                                                    ctrl.clear();
+                                                    setState(() => _alumnoSel = null);
+                                                  },
+                                                ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ),
+
+                              const SizedBox(height: 12),
+
+                              // Tips + privacidad
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFF7F9FC),
+                                  borderRadius: BorderRadius.circular(14),
+                                  border: Border.all(color: const Color(0x11000000)),
+                                ),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Icon(Icons.shield_outlined, color: Colors.grey.shade700),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Text(
+                                        !_accessReady
+                                            ? 'Alta Seguridad'
+                                            : ((_gradoSel ?? '').trim().isEmpty)
+                                                ? 'Tip: elige un grado para filtrar más rápido.'
+                                                : 'Mostrando alumnos dentro del grado seleccionado.',
+                                        style: TextStyle(
+                                          color: Colors.grey.shade800,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+
+                              if (kDebugMode) ...[
+                                const SizedBox(height: 10),
+                                Text(
+                                  'Step: $_step | AccessReady: $_accessReady | Alumnos: ${_alumnosAll.length}'
+                                  '${((_gradoSel ?? '').trim().isEmpty) ? '' : ' | en grado: ${_alumnosVisibles("").length}'}',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                                ),
+                              ],
+
+                              // Error animado (más elegante)
+                              AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 220),
+                                child: (_errorText == null)
+                                    ? const SizedBox.shrink()
+                                    : Padding(
+                                        padding: const EdgeInsets.only(top: 12),
+                                        child: Container(
+                                          padding: const EdgeInsets.all(12),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFFFFEDEE),
+                                            borderRadius: BorderRadius.circular(14),
+                                            border: Border.all(color: const Color(0x33D32F2F)),
+                                          ),
+                                          child: Row(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              const Icon(Icons.error_outline, color: Colors.red),
+                                              const SizedBox(width: 10),
+                                              Expanded(
+                                                child: Text(
+                                                  _errorText!,
+                                                  style: const TextStyle(
+                                                    color: Colors.red,
+                                                    fontWeight: FontWeight.w800,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                              ),
+
+                              const SizedBox(height: 14),
+
+                              // Botón principal (misma acción, mejor presencia)
+                              SizedBox(
+                                width: double.infinity,
+                                child: ElevatedButton.icon(
+                                  onPressed: botonOnPressed,
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: naranja,
+                                    foregroundColor: Colors.black,
+                                    padding: const EdgeInsets.symmetric(vertical: 14),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(14),
+                                    ),
+                                    elevation: 0,
+                                  ).copyWith(
+                                    // sombra suave sin cambiar lógica
+                                    shadowColor: WidgetStateProperty.all(const Color(0x22000000)),
+                                  ),
+                                  icon: _loading
+                                      ? const SizedBox(
+                                          width: 18,
+                                          height: 18,
+                                          child: CircularProgressIndicator(strokeWidth: 2),
+                                        )
+                                      : Icon(!_accessReady ? Icons.g_mobiledata : Icons.login),
+                                  label: Text(
+                                    _loading ? 'Procesando...' : botonTexto,
+                                    style: const TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                ),
+                              ),
+
+                              const SizedBox(height: 10),
+
+                              // microcopy final (solo UI)
+                              Text(
+                                !_accessReady
+                                    ? '¿No ves tu acceso? Pide a la administración que registre tu correo.'
+                                    : 'Si tienes varios alumnos, asegúrate de elegir el correcto antes de entrar.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: Colors.grey.shade700,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 14),
+                  ],
                 ),
               ),
             ),
-
-            const SizedBox(height: 10),
-
-            Text(
-              !_accessReady
-                  ? 'Tip: toca "Continuar con Google" para cargar SOLO tus alumnos.'
-                  : ((_gradoSel ?? '').trim().isEmpty)
-                      ? 'Tip: elige un grado para filtrar más rápido.'
-                      : 'Nombres filtrados por el grado seleccionado.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey.shade700),
-            ),
-
-            if (kDebugMode) ...[
-              const SizedBox(height: 6),
-              Text(
-                'Step: $_step | AccessReady: $_accessReady | Alumnos: ${_alumnosAll.length}'
-                '${((_gradoSel ?? '').trim().isEmpty) ? '' : ' | en grado: ${_alumnosVisibles("").length}'}',
-                style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
-              ),
-            ],
-
-            if (_errorText != null) ...[
-              const SizedBox(height: 10),
-              Text(_errorText!, style: const TextStyle(color: Colors.red)),
-            ],
-
-            const SizedBox(height: 16),
-
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: botonOnPressed,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.orange,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-                icon: _loading
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.login),
-                label: Text(
-                  _loading ? 'Procesando...' : botonTexto,
-                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
-                ),
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );

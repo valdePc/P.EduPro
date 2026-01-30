@@ -465,54 +465,29 @@ class _AdminGeneralScreenState extends State<AdminGeneralScreen>
                                 IconButton(
                                   icon: const Icon(Icons.admin_panel_settings,
                                       color: Colors.blue),
-                                  onPressed: () async {
-                                    final pass = await _solicitarPassword(
-                                        'Contraseña / Admin');
-                                    if (pass != null &&
-                                        (pass.toLowerCase() == adminPassword ||
-                                            pass == c.password)) {
-                                      Navigator.pushNamed(context, '/admincole',
-                                          arguments: c);
-                                    } else if (pass != null) {
-                                      _mostrarError();
-                                    }
-                                  },
+  onPressed: () {
+    Navigator.pushNamed(context, '/admincole', arguments: c);
+  },
                                 ),
                               ),
                               DataCell(
                                 IconButton(
                                   icon: const Icon(Icons.person_outline,
                                       color: Colors.green),
-                                  onPressed: () async {
-                                    final pass = await _solicitarPassword(
-                                        'Contraseña  / Docentes');
-                                    if (pass != null &&
-                                        (pass.toLowerCase() == adminPassword ||
-                                            pass == c.password)) {
-                                      Navigator.pushNamed(context, '/docentes',
-                                          arguments: c);
-                                    } else if (pass != null) {
-                                      _mostrarError();
-                                    }
-                                  },
+onPressed: () {
+  Navigator.pushNamed(context, '/docentes', arguments: c);
+},
+
                                 ),
                               ),
                               DataCell(
                                 IconButton(
                                   icon: const Icon(Icons.school,
                                       color: Colors.orange),
-                                  onPressed: () async {
-                                    final pass = await _solicitarPassword(
-                                        'Contraseña / Estudiantes');
-                                    if (pass != null &&
-                                        (pass.toLowerCase() == adminPassword ||
-                                            pass == c.password)) {
-                                      Navigator.pushNamed(context, '/alumnos',
-                                          arguments: c);
-                                    } else if (pass != null) {
-                                      _mostrarError();
-                                    }
-                                  },
+onPressed: () {
+  Navigator.pushNamed(context, '/alumnos', arguments: c);
+},
+
                                 ),
                               ),
                               DataCell(

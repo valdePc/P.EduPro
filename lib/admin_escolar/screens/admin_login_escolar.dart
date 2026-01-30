@@ -501,275 +501,544 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
   }
 
   // ------------------------------------------------------------
-  // UI
+  // UI (solo diseño — la lógica se queda intacta)
   // ------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
-    final azul = const Color.fromARGB(255, 21, 101, 192);
+    // Paleta EduPro (azul + naranja)
+    const azul = Color.fromARGB(255, 21, 101, 192);
+    const naranja = Color.fromARGB(255, 255, 193, 7);
+
+    final schoolName = '${widget.escuela.nombre}'.trim();
 
     final rawAdminEmail = (_schoolData?['adminEmail'] ?? '').toString().trim();
     final adminEmail = _looksLikeEmail(rawAdminEmail) ? rawAdminEmail : '';
     final configured = adminEmail.isNotEmpty;
 
+    final String statusTitle;
     final String statusText;
+    final IconData statusIcon;
     final Color statusBg;
     final Color statusFg;
+    final Color statusBorder;
 
     if (_schoolLoading) {
-      statusText = 'Cargando configuración del colegio...';
-      statusBg = Colors.grey.shade200;
+      statusTitle = 'Cargando';
+      statusText = 'Leyendo configuración del colegio…';
+      statusIcon = Icons.hourglass_top_rounded;
+      statusBg = Colors.grey.shade100;
       statusFg = Colors.black87;
+      statusBorder = Colors.grey.shade300;
     } else if (!_schoolDocFound) {
+      statusTitle = 'Colegio no encontrado';
       statusText =
-          'No se encontró este colegio en Firestore.\n'
-          'Abre este login desde la lista de Colegios (para que lleve el código correcto).';
+          'No existe este colegio en Firestore.\n'
+          'Abre este login desde la lista de Colegios.';
+      statusIcon = Icons.error_outline_rounded;
       statusBg = Colors.red.shade50;
       statusFg = Colors.red.shade900;
+      statusBorder = Colors.red.shade200;
     } else if (!configured) {
-      // OJO: aunque no haya adminEmail, igual puede autorizar por schools/{id}/admins
+      statusTitle = 'Sin correo principal';
       statusText =
-          'Este colegio aún no tiene adminEmail configurado.\n'
+          'No hay adminEmail configurado.\n'
           'Aún así, pueden entrar admins autorizados por lista.';
+      statusIcon = Icons.info_outline_rounded;
       statusBg = Colors.orange.shade50;
       statusFg = Colors.orange.shade900;
+      statusBorder = Colors.orange.shade200;
     } else {
+      statusTitle = 'Autorización lista';
       statusText = 'Correo Autorizado: $adminEmail';
+      statusIcon = Icons.verified_rounded;
       statusBg = Colors.green.shade50;
       statusFg = Colors.green.shade900;
+      statusBorder = Colors.green.shade200;
     }
 
     final bool canInteract = !_loading && !_schoolLoading && _schoolDocFound;
 
     return Scaffold(
-      backgroundColor: const Color.fromARGB(255, 244, 248, 245),
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 460),
-          child: Card(
-            elevation: 6,
-            child: Padding(
-              padding: const EdgeInsets.all(18),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  SizedBox(
-                    height: 90,
-                    child: Image.asset(
-                      'assets/LogoAdmin.png',
-                      fit: BoxFit.contain,
-                      errorBuilder: (_, __, ___) => const Icon(Icons.school, size: 64),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Text(
-                    widget.escuela.nombre,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
-                  ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    'Acceso • Administración Escolar',
-                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 12),
+      body: Stack(
+        children: [
+          // Fondo “pro” (sin volverse “futurista”, pero sí premium)
+          Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  azul.withOpacity(0.14),
+                  Colors.white,
+                  naranja.withOpacity(0.12),
+                ],
+              ),
+            ),
+          ),
 
-                  // selector de modo
-                  Container(
-                    padding: const EdgeInsets.all(6),
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade100,
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: Colors.grey.shade300),
-                    ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: GestureDetector(
-                            onTap: () => _switchMode(_AuthMode.login),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(vertical: 10),
-                              decoration: BoxDecoration(
-                                color: _mode == _AuthMode.login ? azul : Colors.transparent,
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Text(
-                                'Iniciar sesión',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                  color: _mode == _AuthMode.login ? Colors.white : Colors.black87,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: GestureDetector(
-                            onTap: () => _switchMode(_AuthMode.register),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(vertical: 10),
-                              decoration: BoxDecoration(
-                                color: _mode == _AuthMode.register ? azul : Colors.transparent,
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Text(
-                                'Registro',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                  color: _mode == _AuthMode.register
-                                      ? Colors.white
-                                      : Colors.black87,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+          // adornos suaves
+          Positioned(
+            top: -80,
+            left: -60,
+            child: Container(
+              width: 220,
+              height: 220,
+              decoration: BoxDecoration(
+                color: azul.withOpacity(0.12),
+                shape: BoxShape.circle,
+              ),
+            ),
+          ),
+          Positioned(
+            bottom: -90,
+            right: -70,
+            child: Container(
+              width: 260,
+              height: 260,
+              decoration: BoxDecoration(
+                color: naranja.withOpacity(0.12),
+                shape: BoxShape.circle,
+              ),
+            ),
+          ),
 
-                  const SizedBox(height: 12),
-
-                  // estado del colegio
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: statusBg,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      statusText,
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                        color: statusFg,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-
-                  // MODO LOGIN (SOLO GOOGLE)
-                  if (_mode == _AuthMode.login) ...[
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: azul,
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                        ),
-                        onPressed: canInteract ? _loginGoogle : null,
-                        icon: const Icon(Icons.g_mobiledata, size: 28),
-                        label: Text(
-                          _loading ? 'Cargando...' : 'Continuar con Google',
-                          style: const TextStyle(fontWeight: FontWeight.w800),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    const Text(
-                      'Solo Personal Autorizado.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 12, height: 1.2),
-                    ),
-
-                    // DEV bypass solo en login
-                    Visibility(
-                      visible: _devBypassEnabled,
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const SizedBox(height: 12),
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                              color: Colors.red.shade50,
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: Colors.red.shade200),
-                            ),
-                            child: Row(
-                              children: const [
-                                Icon(Icons.warning_amber_rounded,
-                                    size: 18, color: Colors.red),
-                                SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    'Modo DEV: acceso rápido habilitado',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w800,
-                                      color: Colors.red,
+          SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 520),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(26),
+                    child: Material(
+                      elevation: 14,
+                      shadowColor: Colors.black.withOpacity(0.18),
+                      color: Colors.white.withOpacity(0.96),
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // Header compacto (logo + título)
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.center,
+                              children: [
+                                Container(
+                                  width: 54,
+                                  height: 54,
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(16),
+                                    color: azul.withOpacity(0.08),
+                                    border: Border.all(color: azul.withOpacity(0.18)),
+                                  ),
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(8),
+                                    child: Image.asset(
+                                      'assets/LogoAdmin.png',
+                                      fit: BoxFit.contain,
+                                      errorBuilder: (_, __, ___) =>
+                                          const Icon(Icons.school, size: 30),
                                     ),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        schoolName.isEmpty ? 'Colegio' : schoolName,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.w900,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Row(
+                                        children: [
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 10,
+                                              vertical: 5,
+                                            ),
+                                            decoration: BoxDecoration(
+                                              color: azul.withOpacity(0.10),
+                                              borderRadius: BorderRadius.circular(999),
+                                              border: Border.all(color: azul.withOpacity(0.20)),
+                                            ),
+                                            child: const Text(
+                                              'Administración Escolar',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.w800,
+                                                color: azul,
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          if (!_schoolLoading && _schoolDocFound && !_schoolActive())
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(
+                                                horizontal: 10,
+                                                vertical: 5,
+                                              ),
+                                              decoration: BoxDecoration(
+                                                color: Colors.red.shade50,
+                                                borderRadius: BorderRadius.circular(999),
+                                                border: Border.all(color: Colors.red.shade200),
+                                              ),
+                                              child: Text(
+                                                'INACTIVO',
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  fontWeight: FontWeight.w900,
+                                                  color: Colors.red.shade800,
+                                                ),
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                    ],
                                   ),
                                 ),
                               ],
                             ),
-                          ),
-                          const SizedBox(height: 10),
-                          SizedBox(
-                            width: double.infinity,
-                            child: OutlinedButton.icon(
-                              onPressed: _loading ? null : _devQuickAccess,
-                              icon: const Icon(Icons.bolt),
-                              label: const Text('Acceso rápido (DEV)'),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
 
-                  // MODO REGISTRO (SE MANTIENE INTACTO)
-                  if (_mode == _AuthMode.register) ...[
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: Colors.blueGrey.shade50,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.blueGrey.shade100),
-                      ),
-                      child: const Text(
-                        'Ingrese el CÓDIGO que le proporciono la administración,\n'
-                        'para acceder a este espacio.',
-                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _codeCtrl,
-                      textInputAction: TextInputAction.done,
-                      decoration: const InputDecoration(
-                        labelText: 'Código del colegio',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.vpn_key),
-                      ),
-                      onSubmitted: (_) {
-                        if (!_loading) _goToRegistro();
-                      },
-                    ),
-                    const SizedBox(height: 12),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: azul,
-                          padding: const EdgeInsets.symmetric(vertical: 14),
+                            const SizedBox(height: 14),
+
+                            // Selector modo (más fino y compacto)
+                            Container(
+                              padding: const EdgeInsets.all(6),
+                              decoration: BoxDecoration(
+                                color: Colors.grey.shade50,
+                                borderRadius: BorderRadius.circular(18),
+                                border: Border.all(color: Colors.grey.shade300),
+                              ),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: _ModeChip(
+                                      active: _mode == _AuthMode.login,
+                                      label: 'Iniciar sesión',
+                                      activeColor: azul,
+                                      onTap: () => _switchMode(_AuthMode.login),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Expanded(
+                                    child: _ModeChip(
+                                      active: _mode == _AuthMode.register,
+                                      label: 'Registro',
+                                      activeColor: azul,
+                                      onTap: () => _switchMode(_AuthMode.register),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+
+                            const SizedBox(height: 12),
+
+                            // Estado del colegio
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: statusBg,
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(color: statusBorder),
+                              ),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Icon(statusIcon, color: statusFg),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          statusTitle,
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.w900,
+                                            color: statusFg,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          statusText,
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                            color: statusFg.withOpacity(0.95),
+                                            height: 1.2,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+
+                            const SizedBox(height: 14),
+
+                            // MODO LOGIN (SOLO GOOGLE)
+                            if (_mode == _AuthMode.login) ...[
+                              SizedBox(
+                                width: double.infinity,
+                                child: ElevatedButton(
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: azul,
+                                    foregroundColor: Colors.white,
+                                    elevation: 0,
+                                    padding: const EdgeInsets.symmetric(vertical: 14),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                    ),
+                                  ),
+                                  onPressed: canInteract ? _loginGoogle : null,
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Container(
+                                        width: 28,
+                                        height: 28,
+                                        decoration: BoxDecoration(
+                                          color: Colors.white.withOpacity(0.18),
+                                          borderRadius: BorderRadius.circular(10),
+                                        ),
+                                        alignment: Alignment.center,
+                                        child: const Icon(Icons.g_mobiledata, size: 26),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Text(
+                                        _loading ? 'Conectando…' : 'Continuar con Google',
+                                        style: const TextStyle(fontWeight: FontWeight.w900),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              Text(
+                                'Solo personal autorizado.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.black.withOpacity(0.65),
+                                ),
+                              ),
+
+                              // DEV bypass solo en login
+                              Visibility(
+                                visible: _devBypassEnabled,
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const SizedBox(height: 12),
+                                    Container(
+                                      width: double.infinity,
+                                      padding: const EdgeInsets.all(12),
+                                      decoration: BoxDecoration(
+                                        color: Colors.red.shade50,
+                                        borderRadius: BorderRadius.circular(16),
+                                        border: Border.all(color: Colors.red.shade200),
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          const Icon(Icons.warning_amber_rounded,
+                                              size: 18, color: Colors.red),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: Text(
+                                              'Modo DEV: acceso rápido habilitado',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.w900,
+                                                color: Colors.red.shade800,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const SizedBox(height: 10),
+                                    SizedBox(
+                                      width: double.infinity,
+                                      child: OutlinedButton.icon(
+                                        style: OutlinedButton.styleFrom(
+                                          padding: const EdgeInsets.symmetric(vertical: 14),
+                                          shape: RoundedRectangleBorder(
+                                            borderRadius: BorderRadius.circular(16),
+                                          ),
+                                        ),
+                                        onPressed: _loading ? null : _devQuickAccess,
+                                        icon: const Icon(Icons.bolt),
+                                        label: const Text(
+                                          'Acceso rápido (DEV)',
+                                          style: TextStyle(fontWeight: FontWeight.w900),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+
+                            // MODO REGISTRO (SE MANTIENE INTACTO)
+                            if (_mode == _AuthMode.register) ...[
+                              Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: Colors.blueGrey.shade50,
+                                  borderRadius: BorderRadius.circular(16),
+                                  border: Border.all(color: Colors.blueGrey.shade100),
+                                ),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Icon(Icons.vpn_key_rounded,
+                                        color: Colors.blueGrey.shade700),
+                                    const SizedBox(width: 10),
+                                    const Expanded(
+                                      child: Text(
+                                        'Ingrese el CÓDIGO que le proporcionó la administración\n'
+                                        'para continuar al registro.',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w800,
+                                          height: 1.2,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              TextField(
+                                controller: _codeCtrl,
+                                textInputAction: TextInputAction.done,
+                                decoration: InputDecoration(
+                                  labelText: 'Código del colegio',
+                                  prefixIcon: const Icon(Icons.vpn_key),
+                                  filled: true,
+                                  fillColor: Colors.grey.shade50,
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                  enabledBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(16),
+                                    borderSide: BorderSide(color: Colors.grey.shade300),
+                                  ),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(16),
+                                    borderSide: const BorderSide(color: azul, width: 1.6),
+                                  ),
+                                ),
+                                onSubmitted: (_) {
+                                  if (!_loading) _goToRegistro();
+                                },
+                              ),
+                              const SizedBox(height: 12),
+                              SizedBox(
+                                width: double.infinity,
+                                child: ElevatedButton(
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: azul,
+                                    foregroundColor: Colors.white,
+                                    elevation: 0,
+                                    padding: const EdgeInsets.symmetric(vertical: 14),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                    ),
+                                  ),
+                                  onPressed: canInteract ? _goToRegistro : null,
+                                  child: Text(
+                                    _loading ? 'Verificando…' : 'Continuar a registro',
+                                    style: const TextStyle(fontWeight: FontWeight.w900),
+                                  ),
+                                ),
+                              ),
+                            ],
+
+                            const SizedBox(height: 12),
+
+                            // Footer chiquito, elegante
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Container(
+                                  width: 8,
+                                  height: 8,
+                                  decoration: BoxDecoration(
+                                    color: naranja,
+                                    borderRadius: BorderRadius.circular(99),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Powered by EduPro',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w800,
+                                    color: Colors.black.withOpacity(0.55),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
-                        onPressed: canInteract ? _goToRegistro : null,
-                        child: Text(
-                          _loading ? 'Verificando...' : 'Continuar a registro',
-                          style: const TextStyle(fontWeight: FontWeight.w800),
-                        ),
                       ),
                     ),
-                  ],
-                ],
+                  ),
+                ),
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Chip bonito para el selector de modo (solo UI)
+class _ModeChip extends StatelessWidget {
+  final bool active;
+  final String label;
+  final Color activeColor;
+  final VoidCallback onTap;
+
+  const _ModeChip({
+    required this.active,
+    required this.label,
+    required this.activeColor,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        decoration: BoxDecoration(
+          color: active ? activeColor : Colors.transparent,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Text(
+          label,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontWeight: FontWeight.w900,
+            color: active ? Colors.white : Colors.black87,
           ),
         ),
       ),

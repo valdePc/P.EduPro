@@ -16,7 +16,6 @@ import 'package:edupro/admin_escolar/screens/A_pagos.dart';
 import 'package:edupro/admin_escolar/screens/A_grados.dart';
 import 'package:edupro/admin_escolar/screens/A_reuniones.dart';
 import 'package:edupro/admin_escolar/screens/A_registro.dart';
-import 'package:edupro/admin_escolar/screens/A_chat_administracion_screen.dart';
 import 'package:edupro/admin_escolar/screens/A_MonitoreoDocentes.dart';
 
 // Wrapper de asignaturas (pantalla)

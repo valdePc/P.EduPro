@@ -260,10 +260,7 @@ class _DocentesScreenState extends State<DocentesScreen> {
 
     // 1) Por emailLower
     if (qLower.contains('@')) {
-      snap = await _teachersPublicColl
-          .where('emailLower', isEqualTo: qLower)
-          .limit(1)
-          .get();
+      snap = await _teachersPublicColl.where('emailLower', isEqualTo: qLower).limit(1).get();
       if (snap.docs.isNotEmpty) return _TeacherOption.fromDoc(snap.docs.first);
     }
 
@@ -271,7 +268,7 @@ class _DocentesScreenState extends State<DocentesScreen> {
     snap = await _teachersPublicColl.where('loginKey', isEqualTo: qLower).limit(1).get();
     if (snap.docs.isNotEmpty) return _TeacherOption.fromDoc(snap.docs.first);
 
-    // 3) Por name exacto (si tu data guarda el name tal cual)
+    // 3) Por name exacto
     snap = await _teachersPublicColl.where('name', isEqualTo: qRaw).limit(1).get();
     if (snap.docs.isNotEmpty) return _TeacherOption.fromDoc(snap.docs.first);
 
@@ -305,6 +302,24 @@ class _DocentesScreenState extends State<DocentesScreen> {
       if (user == null) return;
       if (_schoolId.trim().isEmpty) return;
 
+      final membersRef = _db.collection('schools').doc(_schoolId).collection('members').doc(user.uid);
+
+      // ✅ 1) CREA/ACTUALIZA members SIEMPRE (sin depender del token)
+      try {
+        await membersRef.set({
+          'uid': user.uid,
+          'role': 'teacher',
+          'audience': 'teachers',
+          'tokens': <String>[],
+          'updatedAt': FieldValue.serverTimestamp(),
+          'lastTokenAt': FieldValue.serverTimestamp(), // ✅ obligatorio por tus reglas
+        }, SetOptions(merge: true));
+      } catch (e) {
+        if (kDebugMode) debugPrint('Error creando members base: $e');
+        return;
+      }
+
+      // ✅ 2) Intentar conseguir token (si falla, igual members ya existe)
       try {
         await FirebaseMessaging.instance.requestPermission();
       } catch (_) {}
@@ -319,42 +334,46 @@ class _DocentesScreenState extends State<DocentesScreen> {
           );
         } catch (e) {
           if (kDebugMode) debugPrint('FCM Web token error: $e');
-          return;
+          token = null;
         }
       } else {
-        token = await FirebaseMessaging.instance.getToken();
+        try {
+          token = await FirebaseMessaging.instance.getToken();
+        } catch (e) {
+          if (kDebugMode) debugPrint('FCM Mobile token error: $e');
+          token = null;
+        }
       }
 
       token = token?.trim();
-      if (token == null || token.isEmpty) return;
 
-      final membersRef = _db
-          .collection('schools')
-          .doc(_schoolId)
-          .collection('members')
-          .doc(user.uid);
+      // ✅ 3) Si hay token, lo agregamos
+      if (token != null && token.isNotEmpty) {
+        try {
+          final snap = await membersRef.get();
+          final data = snap.data() ?? {};
 
-      try {
-        final existing = await membersRef.get();
+          final current = List<String>.from((data['tokens'] ?? const []) as List);
+          if (!current.contains(token)) current.add(token);
 
-        if (!existing.exists) {
+          // respeta tu regla: tokens <= 30
+          if (current.length > 30) {
+            current.removeRange(0, current.length - 30);
+          }
+
           await membersRef.set({
-            'uid': user.uid,
-            'role': 'teacher',
-            'audience': 'teachers',
-            'tokens': [token],
+            'tokens': current,
             'updatedAt': FieldValue.serverTimestamp(),
-          });
-        } else {
-          await membersRef.update({
-            'tokens': FieldValue.arrayUnion([token]),
-            'updatedAt': FieldValue.serverTimestamp(),
-          });
+            'lastTokenAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+        } catch (e) {
+          if (kDebugMode) debugPrint('Error guardando token en members: $e');
         }
-      } catch (e) {
-        if (kDebugMode) debugPrint('Error guardando members token: $e');
+      } else {
+        if (kDebugMode) debugPrint('FCM token vacío: members creado sin token.');
       }
 
+      // ✅ 4) Topics (opcional)
       try {
         await FirebaseMessaging.instance.subscribeToTopic('school_$_schoolId');
         await FirebaseMessaging.instance.subscribeToTopic('school_${_schoolId}_teachers');
@@ -437,9 +456,7 @@ class _DocentesScreenState extends State<DocentesScreen> {
       final td = tdSnap.data() ?? {};
       final tdStatusRaw =
           (td['statusLower'] ?? td['status'] ?? '').toString().trim().toLowerCase();
-      final tdStatus = (tdStatusRaw == 'activo' || tdStatusRaw == 'activa')
-          ? 'active'
-          : tdStatusRaw;
+      final tdStatus = (tdStatusRaw == 'activo' || tdStatusRaw == 'activa') ? 'active' : tdStatusRaw;
 
       if (tdStatus != 'active') {
         setState(() {
@@ -459,6 +476,29 @@ class _DocentesScreenState extends State<DocentesScreen> {
               'Tu cuenta no tiene correo registrado. Pide a administración que agregue tu correo.';
         });
         return;
+      }
+
+      Future<void> _bootstrapTeacherUserDoc({
+        required User user,
+        required String schoolId,
+        required String teacherDocId,
+        required String emailLower,
+      }) async {
+        final ref = _db.collection('users').doc(user.uid);
+
+        await ref.set({
+          'uid': user.uid,
+          'role': 'teacher',
+          'schoolId': schoolId,
+          'schoolIds': [schoolId],
+          'teacherDocId': teacherDocId,
+          'email': emailLower,
+          'enabled': true,
+          'status': 'active',
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+          'lastLoginAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
       }
 
       // 1) Google Sign-In
@@ -541,298 +581,545 @@ class _DocentesScreenState extends State<DocentesScreen> {
     );
   }
 
+  // -------------------------------
+  // UI (solo diseño — lógica intacta)
+  // -------------------------------
   @override
   Widget build(BuildContext context) {
-    final azul = const Color.fromARGB(255, 21, 101, 192);
-    final bg = const Color(0xFFF4F7FB);
-    final amber = const Color(0xFFFFA000);
+    const azul = Color.fromARGB(255, 21, 101, 192);
+    const amber = Color(0xFFFFA000);
+
+    final schoolName = (widget.escuela.nombre ?? '').trim();
 
     return Scaffold(
-      backgroundColor: bg,
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        title: const Text(''),
-        backgroundColor: azul,
-        foregroundColor: Colors.white,
-        elevation: 0,
-      ),
-      body: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              const SizedBox(height: 32),
-              Center(
-                child: Column(
-                  children: [
-                    Image.asset('assets/LogoDocentes.png', height: 96),
-                    const SizedBox(height: 14),
-                    Text(
-                      widget.escuela.nombre ?? '',
-                      style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 10),
-                    const Text(
-                      'Bienvenido al área de docentes',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: Colors.black54,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                ),
+      body: Stack(
+        children: [
+          // Fondo pro (suave)
+          Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  azul.withOpacity(0.16),
+                  Colors.white,
+                  amber.withOpacity(0.12),
+                ],
               ),
-              const SizedBox(height: 22),
-              Container(
-                padding: const EdgeInsets.all(18),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: azul.withOpacity(0.12)),
-                  boxShadow: const [
-                    BoxShadow(
-                      blurRadius: 14,
-                      offset: Offset(0, 10),
-                      color: Color(0x14000000),
-                    ),
-                  ],
-                ),
-                child: Form(
-                  key: _formKey,
-                  child: Column(
-                    children: [
-                      RawAutocomplete<_TeacherOption>(
-                        textEditingController: _usernameCtrl,
-                        focusNode: _usernameFocus,
-                        displayStringForOption: (opt) => opt.name,
-                        optionsBuilder: (TextEditingValue value) {
-                          if (_loadingTeachers) {
-                            return const Iterable<_TeacherOption>.empty();
-                          }
-                          final q = value.text.trim();
-                          if (q.isEmpty) return const Iterable<_TeacherOption>.empty();
-                          return _filterOptions(q);
-                        },
-                        onSelected: (opt) {
-                          setState(() => _selectedTeacher = opt);
-                          _usernameCtrl.text = opt.name;
-                          _usernameCtrl.selection =
-                              TextSelection.collapsed(offset: _usernameCtrl.text.length);
-                        },
-                        fieldViewBuilder: (context, ctrl, focusNode, onFieldSubmitted) {
-                          return TextFormField(
-                            controller: ctrl,
-                            focusNode: focusNode,
-                            decoration: InputDecoration(
-                              labelText: 'Nombre de usuario',
-                              filled: true,
-                              fillColor: const Color(0xFFF4F7FB),
-                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                              prefixIcon: const Icon(Icons.person_search),
-                              helperText: 'Escriba para ver sugerencias y seleccione su nombre.',
-                              suffixIcon: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  if ((_selectedTeacher != null) || ctrl.text.trim().isNotEmpty)
-                                    IconButton(
-                                      tooltip: 'Limpiar',
-                                      icon: const Icon(Icons.clear),
-                                      onPressed: _loading ? null : _clearTeacherSelection,
+            ),
+          ),
+
+          // adornos suaves
+          Positioned(
+            top: -90,
+            left: -70,
+            child: Container(
+              width: 240,
+              height: 240,
+              decoration: BoxDecoration(
+                color: azul.withOpacity(0.12),
+                shape: BoxShape.circle,
+              ),
+            ),
+          ),
+          Positioned(
+            bottom: -100,
+            right: -80,
+            child: Container(
+              width: 280,
+              height: 280,
+              decoration: BoxDecoration(
+                color: amber.withOpacity(0.12),
+                shape: BoxShape.circle,
+              ),
+            ),
+          ),
+
+          SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 560),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(26),
+                    child: Material(
+                      elevation: 14,
+                      shadowColor: Colors.black.withOpacity(0.18),
+                      color: Colors.white.withOpacity(0.96),
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // Header (logo + título)
+                            Row(
+                              children: [
+                                Container(
+                                  width: 54,
+                                  height: 54,
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(16),
+                                    color: azul.withOpacity(0.08),
+                                    border: Border.all(color: azul.withOpacity(0.18)),
+                                  ),
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(8),
+                                    child: Image.asset(
+                                      'assets/LogoDocentes.png',
+                                      fit: BoxFit.contain,
+                                      errorBuilder: (_, __, ___) =>
+                                          const Icon(Icons.school, size: 30),
                                     ),
-                                  IconButton(
-                                    tooltip: 'Actualizar lista',
-                                    icon: const Icon(Icons.refresh),
-                                    onPressed: _loading ? null : _loadActiveTeachers,
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        schoolName.isEmpty ? 'Colegio' : schoolName,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.w900,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 3),
+                                      Row(
+                                        children: [
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 10,
+                                              vertical: 5,
+                                            ),
+                                            decoration: BoxDecoration(
+                                              color: amber.withOpacity(0.16),
+                                              borderRadius: BorderRadius.circular(999),
+                                              border: Border.all(color: amber.withOpacity(0.30)),
+                                            ),
+                                            child: const Text(
+                                              'Área de Docentes',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.w900,
+                                                color: Colors.black87,
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          if (_loadingTeachers)
+                                            _Pill(
+                                              text: 'Cargando lista…',
+                                              icon: Icons.sync_rounded,
+                                              bg: Colors.grey.shade100,
+                                              fg: Colors.black87,
+                                              bd: Colors.grey.shade300,
+                                            )
+                                          else
+                                            _Pill(
+                                              text: '${_activeTeachers.length} activos',
+                                              icon: Icons.verified_rounded,
+                                              bg: Colors.green.shade50,
+                                              fg: Colors.green.shade900,
+                                              bd: Colors.green.shade200,
+                                            ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+
+                            const SizedBox(height: 14),
+
+                            // Caja del formulario (más “premium”)
+                            Container(
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(color: Colors.grey.shade200),
+                                boxShadow: [
+                                  BoxShadow(
+                                    blurRadius: 20,
+                                    offset: const Offset(0, 12),
+                                    color: Colors.black.withOpacity(0.06),
                                   ),
                                 ],
                               ),
-                            ),
-                            validator: (v) =>
-                                (v == null || v.trim().isEmpty) ? 'Escriba su nombre' : null,
-                            onFieldSubmitted: (_) => _loading ? null : _onLoginWithGoogle(),
-                          );
-                        },
-                        optionsViewBuilder: (context, onSelected, options) {
-                          final list = options.toList();
-                          return Align(
-                            alignment: Alignment.topLeft,
-                            child: Material(
-                              elevation: 6,
-                              borderRadius: BorderRadius.circular(14),
-                              child: ConstrainedBox(
-                                constraints: const BoxConstraints(maxHeight: 280, maxWidth: 620),
-                                child: ListView.separated(
-                                  padding: const EdgeInsets.symmetric(vertical: 6),
-                                  itemCount: list.length,
-                                  separatorBuilder: (_, __) => const Divider(height: 1),
-                                  itemBuilder: (_, i) {
-                                    final t = list[i];
-                                    return ListTile(
-                                      onTap: () => onSelected(t),
-                                      title: Text(
-                                        t.name,
-                                        style: const TextStyle(fontWeight: FontWeight.w800),
+                              child: Form(
+                                key: _formKey,
+                                child: Column(
+                                  children: [
+                                    // Autocomplete
+                                    RawAutocomplete<_TeacherOption>(
+                                      textEditingController: _usernameCtrl,
+                                      focusNode: _usernameFocus,
+                                      displayStringForOption: (opt) => opt.name,
+                                      optionsBuilder: (TextEditingValue value) {
+                                        if (_loadingTeachers) {
+                                          return const Iterable<_TeacherOption>.empty();
+                                        }
+                                        final q = value.text.trim();
+                                        if (q.isEmpty) {
+                                          return const Iterable<_TeacherOption>.empty();
+                                        }
+                                        return _filterOptions(q);
+                                      },
+                                      onSelected: (opt) {
+                                        setState(() => _selectedTeacher = opt);
+                                        _usernameCtrl.text = opt.name;
+                                        _usernameCtrl.selection = TextSelection.collapsed(
+                                          offset: _usernameCtrl.text.length,
+                                        );
+                                      },
+                                      fieldViewBuilder: (context, ctrl, focusNode, onFieldSubmitted) {
+                                        return TextFormField(
+                                          controller: ctrl,
+                                          focusNode: focusNode,
+                                          decoration: InputDecoration(
+                                            labelText: 'Nombre de usuario',
+                                            filled: true,
+                                            fillColor: Colors.grey.shade50,
+                                            border: OutlineInputBorder(
+                                              borderRadius: BorderRadius.circular(16),
+                                            ),
+                                            enabledBorder: OutlineInputBorder(
+                                              borderRadius: BorderRadius.circular(16),
+                                              borderSide: BorderSide(color: Colors.grey.shade300),
+                                            ),
+                                            focusedBorder: const OutlineInputBorder(
+                                              borderRadius: BorderRadius.all(Radius.circular(16)),
+                                              borderSide: BorderSide(color: azul, width: 1.6),
+                                            ),
+                                            prefixIcon: const Icon(Icons.person_search),
+                                            helperText:
+                                                'Escriba para ver sugerencias y seleccione su nombre.',
+                                            suffixIcon: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                if ((_selectedTeacher != null) || ctrl.text.trim().isNotEmpty)
+                                                  IconButton(
+                                                    tooltip: 'Limpiar',
+                                                    icon: const Icon(Icons.clear),
+                                                    onPressed: _loading ? null : _clearTeacherSelection,
+                                                  ),
+                                                IconButton(
+                                                  tooltip: 'Actualizar lista',
+                                                  icon: const Icon(Icons.refresh),
+                                                  onPressed: _loading ? null : _loadActiveTeachers,
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                          validator: (v) => (v == null || v.trim().isEmpty)
+                                              ? 'Escriba su nombre'
+                                              : null,
+                                          onFieldSubmitted: (_) => _loading ? null : _onLoginWithGoogle(),
+                                        );
+                                      },
+                                      optionsViewBuilder: (context, onSelected, options) {
+                                        final list = options.toList();
+                                        return Align(
+                                          alignment: Alignment.topLeft,
+                                          child: Material(
+                                            elevation: 10,
+                                            borderRadius: BorderRadius.circular(16),
+                                            child: ConstrainedBox(
+                                              constraints: const BoxConstraints(
+                                                maxHeight: 300,
+                                                maxWidth: 720,
+                                              ),
+                                              child: ListView.separated(
+                                                padding: const EdgeInsets.symmetric(vertical: 6),
+                                                itemCount: list.length,
+                                                separatorBuilder: (_, __) => const Divider(height: 1),
+                                                itemBuilder: (_, i) {
+                                                  final t = list[i];
+                                                  return ListTile(
+                                                    onTap: () => onSelected(t),
+                                                    leading: CircleAvatar(
+                                                      backgroundColor: azul.withOpacity(0.10),
+                                                      child: const Icon(Icons.person, color: azul),
+                                                    ),
+                                                    title: Text(
+                                                      t.name,
+                                                      style: const TextStyle(fontWeight: FontWeight.w900),
+                                                    ),
+                                                    subtitle: (t.loginKey.trim().isEmpty)
+                                                        ? null
+                                                        : Text('Usuario: ${t.loginKey}'),
+                                                  );
+                                                },
+                                              ),
+                                            ),
+                                          ),
+                                        );
+                                      },
+                                    ),
+
+                                    // Estados / mensajes
+                                    if (_loadingTeachers) ...[
+                                      const SizedBox(height: 10),
+                                      const Row(
+                                        children: [
+                                          SizedBox(
+                                            height: 16,
+                                            width: 16,
+                                            child: CircularProgressIndicator(strokeWidth: 2),
+                                          ),
+                                          SizedBox(width: 10),
+                                          Text(
+                                            'Cargando docentes activos…',
+                                            style: TextStyle(
+                                              color: Colors.black54,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          ),
+                                        ],
                                       ),
-                                      subtitle: (t.loginKey.trim().isEmpty)
-                                          ? null
-                                          : Text('Usuario: ${t.loginKey}'),
-                                    );
-                                  },
+                                    ] else if ((_teachersLoadError ?? '').trim().isNotEmpty) ...[
+                                      const SizedBox(height: 10),
+                                      Container(
+                                        width: double.infinity,
+                                        padding: const EdgeInsets.all(12),
+                                        decoration: BoxDecoration(
+                                          color: Colors.orange.withOpacity(0.10),
+                                          borderRadius: BorderRadius.circular(14),
+                                          border: Border.all(color: Colors.orange.withOpacity(0.25)),
+                                        ),
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            const Text(
+                                              'No se pudo cargar la lista de docentes.',
+                                              style: TextStyle(fontWeight: FontWeight.w900),
+                                            ),
+                                            if (kDebugMode) ...[
+                                              const SizedBox(height: 6),
+                                              Text('Detalle: $_teachersLoadError'),
+                                            ],
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+
+                                    if (_selectedTeacher != null) ...[
+                                      const SizedBox(height: 12),
+                                      Container(
+                                        width: double.infinity,
+                                        padding: const EdgeInsets.all(12),
+                                        decoration: BoxDecoration(
+                                          color: Colors.green.withOpacity(0.08),
+                                          borderRadius: BorderRadius.circular(14),
+                                          border: Border.all(color: Colors.green.withOpacity(0.25)),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            const Icon(Icons.check_circle, color: Colors.green),
+                                            const SizedBox(width: 10),
+                                            Expanded(
+                                              child: Text(
+                                                'Seleccionado: ${_selectedTeacher!.name}',
+                                                style: const TextStyle(fontWeight: FontWeight.w900),
+                                              ),
+                                            ),
+                                            IconButton(
+                                              tooltip: 'Quitar selección',
+                                              onPressed: _loading ? null : () => setState(() => _selectedTeacher = null),
+                                              icon: const Icon(Icons.close),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+
+                                    if (_invalidLogin && (_errorMessage ?? '').trim().isNotEmpty) ...[
+                                      const SizedBox(height: 12),
+                                      Container(
+                                        width: double.infinity,
+                                        padding: const EdgeInsets.all(12),
+                                        decoration: BoxDecoration(
+                                          color: Colors.red.withOpacity(0.08),
+                                          borderRadius: BorderRadius.circular(14),
+                                          border: Border.all(color: Colors.red.withOpacity(0.20)),
+                                        ),
+                                        child: Row(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            const Icon(Icons.error_outline, color: Colors.red),
+                                            const SizedBox(width: 10),
+                                            Expanded(
+                                              child: Text(
+                                                _errorMessage!,
+                                                style: const TextStyle(
+                                                  color: Colors.red,
+                                                  fontWeight: FontWeight.w900,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+
+                                    const SizedBox(height: 16),
+
+                                    // Botón Google (más “premium”)
+                                    SizedBox(
+                                      width: double.infinity,
+                                      height: 50,
+                                      child: ElevatedButton(
+                                        onPressed: _loading ? null : _onLoginWithGoogle,
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: amber,
+                                          foregroundColor: Colors.black,
+                                          elevation: 0,
+                                          shape: RoundedRectangleBorder(
+                                            borderRadius: BorderRadius.circular(16),
+                                          ),
+                                          textStyle: const TextStyle(
+                                            fontWeight: FontWeight.w900,
+                                            fontSize: 15,
+                                          ),
+                                        ),
+                                        child: _loading
+                                            ? const SizedBox(
+                                                height: 20,
+                                                width: 20,
+                                                child: CircularProgressIndicator(
+                                                  valueColor: AlwaysStoppedAnimation(Colors.black),
+                                                  strokeWidth: 2,
+                                                ),
+                                              )
+                                            : Row(
+                                                mainAxisAlignment: MainAxisAlignment.center,
+                                                children: [
+                                                  Container(
+                                                    width: 28,
+                                                    height: 28,
+                                                    decoration: BoxDecoration(
+                                                      color: Colors.black.withOpacity(0.08),
+                                                      borderRadius: BorderRadius.circular(10),
+                                                    ),
+                                                    alignment: Alignment.center,
+                                                    child: const Icon(Icons.g_mobiledata, size: 26),
+                                                  ),
+                                                  const SizedBox(width: 10),
+                                                  const Text('Iniciar con Google'),
+                                                ],
+                                              ),
+                                      ),
+                                    ),
+
+                                    const SizedBox(height: 10),
+
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        TextButton(
+                                          onPressed: _onCreateAccount,
+                                          child: const Text(
+                                            'Crear cuenta',
+                                            style: TextStyle(fontWeight: FontWeight.w900),
+                                          ),
+                                        ),
+                                        TextButton(
+                                          onPressed: _loading ? null : _loadActiveTeachers,
+                                          child: const Text(
+                                            'Refrescar',
+                                            style: TextStyle(fontWeight: FontWeight.w900),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
                                 ),
                               ),
                             ),
-                          );
-                        },
-                      ),
-                      if (_loadingTeachers) ...[
-                        const SizedBox(height: 10),
-                        const Row(
-                          children: [
-                            SizedBox(
-                              height: 16,
-                              width: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ),
-                            SizedBox(width: 10),
-                            Text(
-                              'Cargando docentes activos...',
-                              style: TextStyle(color: Colors.black54, fontWeight: FontWeight.w600),
+
+                            const SizedBox(height: 12),
+
+                            // Footer
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Container(
+                                  width: 8,
+                                  height: 8,
+                                  decoration: BoxDecoration(
+                                    color: amber,
+                                    borderRadius: BorderRadius.circular(99),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Powered by EduPro',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w800,
+                                    color: Colors.black.withOpacity(0.55),
+                                  ),
+                                ),
+                              ],
                             ),
                           ],
                         ),
-                      ] else if ((_teachersLoadError ?? '').trim().isNotEmpty) ...[
-                        const SizedBox(height: 10),
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.orange.withOpacity(0.10),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.orange.withOpacity(0.25)),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                'No se pudo cargar la lista de docentes.',
-                                style: TextStyle(fontWeight: FontWeight.w900),
-                              ),
-                              if (kDebugMode) ...[
-                                const SizedBox(height: 6),
-                                Text('Detalle: $_teachersLoadError'),
-                              ],
-                            ],
-                          ),
-                        ),
-                      ],
-                      if (_selectedTeacher != null) ...[
-                        const SizedBox(height: 12),
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.green.withOpacity(0.08),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.green.withOpacity(0.25)),
-                          ),
-                          child: Row(
-                            children: [
-                              const Icon(Icons.check_circle, color: Colors.green),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  'Seleccionado: ${_selectedTeacher!.name}',
-                                  style: const TextStyle(fontWeight: FontWeight.w900),
-                                ),
-                              ),
-                              IconButton(
-                                tooltip: 'Quitar selección',
-                                onPressed: _loading
-                                    ? null
-                                    : () => setState(() => _selectedTeacher = null),
-                                icon: const Icon(Icons.close),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                      if (_invalidLogin && (_errorMessage ?? '').trim().isNotEmpty) ...[
-                        const SizedBox(height: 12),
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.red.withOpacity(0.08),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.red.withOpacity(0.20)),
-                          ),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Icon(Icons.error_outline, color: Colors.red),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  _errorMessage!,
-                                  style: const TextStyle(
-                                    color: Colors.red,
-                                    fontWeight: FontWeight.w800,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                      const SizedBox(height: 18),
-                      SizedBox(
-                        width: double.infinity,
-                        height: 48,
-                        child: ElevatedButton.icon(
-                          onPressed: _loading ? null : _onLoginWithGoogle,
-                          icon: const Icon(Icons.g_mobiledata, size: 28),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: amber,
-                            foregroundColor: Colors.black,
-                            elevation: 0,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                            textStyle: const TextStyle(fontWeight: FontWeight.w900, fontSize: 15),
-                          ),
-                          label: _loading
-                              ? const SizedBox(
-                                  height: 20,
-                                  width: 20,
-                                  child: CircularProgressIndicator(
-                                    valueColor: AlwaysStoppedAnimation(Colors.black),
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Text('Iniciar con Google'),
-                        ),
                       ),
-                      const SizedBox(height: 6),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          TextButton(
-                            onPressed: _onCreateAccount,
-                            child: const Text('Crear cuenta'),
-                          ),
-                          const SizedBox(width: 10),
-                        ],
-                      ),
-                    ],
+                    ),
                   ),
                 ),
               ),
-              const SizedBox(height: 18),
-            ],
+            ),
           ),
-        ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Pill extends StatelessWidget {
+  final String text;
+  final IconData icon;
+  final Color bg;
+  final Color fg;
+  final Color bd;
+
+  const _Pill({
+    required this.text,
+    required this.icon,
+    required this.bg,
+    required this.fg,
+    required this.bd,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: bd),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: fg),
+          const SizedBox(width: 6),
+          Text(
+            text,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w900,
+              color: fg,
+            ),
+          ),
+        ],
       ),
     );
   }

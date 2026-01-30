@@ -43,8 +43,12 @@ class _PerfilInicialScreenState extends State<PerfilInicialScreen> {
       .collection('estudiantes')
       .doc(widget.estudianteId);
 
-  DocumentReference<Map<String, dynamic>> get _cfgRef =>
-      _db.collection('escuelas').doc(_schoolId).collection('config').doc('alumnos');
+DocumentReference<Map<String, dynamic>> get _cfgRef =>
+    _db.collection('schools')
+      .doc(_schoolId)
+      .collection('config')
+      .doc('alumnos');
+
 
 void _openCalendarioAlumno() {
   final gradoFallback = (widget.gradoSeleccionado ?? 'Inicial').trim();

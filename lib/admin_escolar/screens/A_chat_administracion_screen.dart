@@ -31,15 +31,22 @@ class _AChatAdministracionScreenState extends State<AChatAdministracionScreen> {
   late final String _schoolId;
   late AdminChatMode _mode;
 
+  String _ensureSchoolDocId(String rawId) {
+    final id = rawId.trim();
+    if (id.isEmpty) return id;
+    return id.startsWith('eduproapp_admin_') ? id : 'eduproapp_admin_$id';
+  }
+
   CollectionReference<Map<String, dynamic>> get _threadsCol => _db
-      .collection('escuelas')
+      .collection('schools')
       .doc(_schoolId)
       .collection('chats_admin');
 
   @override
   void initState() {
     super.initState();
-    _schoolId = normalizeSchoolIdFromEscuela(widget.escuela);
+    final raw = normalizeSchoolIdFromEscuela(widget.escuela);
+    _schoolId = _ensureSchoolDocId(raw);
     _mode = widget.initialMode ?? AdminChatMode.todosDocentes;
   }
 
@@ -65,6 +72,7 @@ class _AChatAdministracionScreenState extends State<AChatAdministracionScreen> {
           threadId: threadId,
           threadTitle: title,
           isAdmin: true,
+          senderName: 'Administración',
         ),
       ),
     );
@@ -84,7 +92,7 @@ class _AChatAdministracionScreenState extends State<AChatAdministracionScreen> {
 
     final t = picked.first;
     await _openThread(
-      threadId: 'direct_${t.id}',
+      threadId: 'direct_${t.id}', // 👈 t.id = docId del teacher
       title: t.name,
       type: 'direct_teacher',
     );
@@ -116,24 +124,38 @@ class _AChatAdministracionScreenState extends State<AChatAdministracionScreen> {
           threadId: doc.id,
           threadTitle: title,
           isAdmin: true,
+          senderName: 'Administración',
         ),
       ),
     );
   }
 
   Future<List<_TeacherPick>?> _pickTeachers({required bool single}) async {
-    // Si tu colección real se llama diferente, cámbiala aquí:
-    final col = _db.collection('escuelas').doc(_schoolId).collection('maestros');
+    // ✅ docentes en schools/{schoolId}/teachers
+    final col = _db.collection('schools').doc(_schoolId).collection('teachers');
 
-    final snap = await col.orderBy('nombre').limit(200).get();
+    // ✅ sin orderBy para evitar líos si el campo no está en todos
+    final snap = await col.limit(250).get();
 
     final items = snap.docs.map((d) {
       final data = d.data();
-      final nombre = (data['nombre'] ?? data['nombres'] ?? data['displayName'] ?? '').toString().trim();
-      final apellidos = (data['apellido'] ?? data['apellidos'] ?? '').toString().trim();
+
+      final nombre = (data['nombre'] ??
+              data['nombres'] ??
+              data['displayName'] ??
+              data['name'] ??
+              '')
+          .toString()
+          .trim();
+
+      final apellidos = (data['apellido'] ?? data['apellidos'] ?? '')
+          .toString()
+          .trim();
+
       final full = ('$nombre $apellidos').trim();
       return _TeacherPick(id: d.id, name: full.isEmpty ? 'Docente (${d.id})' : full);
-    }).toList();
+    }).toList()
+      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
 
     if (!mounted) return null;
 
@@ -153,7 +175,9 @@ class _AChatAdministracionScreenState extends State<AChatAdministracionScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final nombre = (widget.escuela.nombre ?? '—').trim().isEmpty ? '—' : widget.escuela.nombre!.trim();
+    final nombre = (widget.escuela.nombre ?? '—').trim().isEmpty
+        ? '—'
+        : widget.escuela.nombre!.trim();
 
     return Scaffold(
       backgroundColor: const Color(0xFFF6F7FB),
@@ -166,7 +190,8 @@ class _AChatAdministracionScreenState extends State<AChatAdministracionScreen> {
         children: [
           _CardShell(
             title: 'Chat de administración',
-            subtitle: 'Canales para comunicarte con docentes: todos, uno a uno, o grupos seleccionados.',
+            subtitle:
+                'Canales para comunicarte con docentes: todos, uno a uno, o grupos seleccionados.',
             icon: const Icon(Icons.chat_bubble_outline, color: _orange),
             child: Wrap(
               spacing: 10,
@@ -208,10 +233,7 @@ class _AChatAdministracionScreenState extends State<AChatAdministracionScreen> {
             subtitle: 'Entradas visibles para administración (ordenadas por actividad).',
             icon: const Icon(Icons.forum_outlined, color: _orange),
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: _threadsCol
-                  .orderBy('updatedAt', descending: true) // ✅ sin where => evita index compuesto
-                  .limit(20)
-                  .snapshots(),
+              stream: _threadsCol.orderBy('updatedAt', descending: true).limit(20).snapshots(),
               builder: (context, snap) {
                 if (snap.hasError) return Text('Error: ${snap.error}');
                 if (!snap.hasData) return const LinearProgressIndicator();
@@ -247,6 +269,7 @@ class _AChatAdministracionScreenState extends State<AChatAdministracionScreen> {
                                     threadId: d.id,
                                     threadTitle: title,
                                     isAdmin: true,
+                                    senderName: 'Administración',
                                   ),
                                 ),
                               );
@@ -269,56 +292,11 @@ class _AChatAdministracionScreenState extends State<AChatAdministracionScreen> {
   }
 }
 
-class AdminRecentThreadsPreview extends StatelessWidget {
-  final Escuela escuela;
-  final int maxItems;
-
-  const AdminRecentThreadsPreview({
-    super.key,
-    required this.escuela,
-    this.maxItems = 3,
-  });
-
-  static const _orange = Color(0xFFFFA000);
-
-  @override
-  Widget build(BuildContext context) {
-    final db = FirebaseFirestore.instance;
-    final schoolId = normalizeSchoolIdFromEscuela(escuela);
-    final threadsCol = db.collection('escuelas').doc(schoolId).collection('chats_admin');
-
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: threadsCol.orderBy('updatedAt', descending: true).limit(maxItems).snapshots(),
-      builder: (context, snap) {
-        if (snap.hasError) return Text('Error cargando chat: ${snap.error}');
-        if (!snap.hasData) return const LinearProgressIndicator();
-
-        final docs = snap.data!.docs;
-        if (docs.isEmpty) return const Text('Aún no hay conversaciones recientes.');
-
-        return Column(
-          children: docs.map((d) {
-            final data = d.data();
-            final title = (data['title'] ?? 'Conversación').toString();
-            final last = (data['lastMessage'] ?? '').toString();
-            return Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: ListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                leading: CircleAvatar(
-                  backgroundColor: _orange.withOpacity(0.12),
-                  child: const Icon(Icons.forum, color: _orange),
-                ),
-                title: Text(title, overflow: TextOverflow.ellipsis),
-                subtitle: Text(last.isEmpty ? 'Sin mensajes todavía' : last, overflow: TextOverflow.ellipsis),
-              ),
-            );
-          }).toList(),
-        );
-      },
-    );
-  }
+// --- lo demás igual ---
+class _TeacherPick {
+  final String id;
+  final String name;
+  const _TeacherPick({required this.id, required this.name});
 }
 
 class _ModeButton extends StatelessWidget {
@@ -358,10 +336,7 @@ class _ModeButton extends StatelessWidget {
           children: [
             Icon(icon, color: selected ? _orange : _blue),
             const SizedBox(width: 8),
-            Text(
-              label,
-              style: TextStyle(color: fg, fontWeight: FontWeight.w800),
-            ),
+            Text(label, style: TextStyle(color: fg, fontWeight: FontWeight.w800)),
           ],
         ),
       ),
@@ -424,12 +399,6 @@ class _CardShell extends StatelessWidget {
   }
 }
 
-class _TeacherPick {
-  final String id;
-  final String name;
-  const _TeacherPick({required this.id, required this.name});
-}
-
 class _TeacherPickerSheet extends StatefulWidget {
   final List<_TeacherPick> items;
   final bool single;
@@ -453,7 +422,9 @@ class _TeacherPickerSheetState extends State<_TeacherPickerSheet> {
   @override
   Widget build(BuildContext context) {
     final q = _search.text.trim().toLowerCase();
-    final filtered = q.isEmpty ? widget.items : widget.items.where((e) => e.name.toLowerCase().contains(q)).toList();
+    final filtered = q.isEmpty
+        ? widget.items
+        : widget.items.where((e) => e.name.toLowerCase().contains(q)).toList();
 
     return SafeArea(
       child: Padding(
@@ -535,6 +506,60 @@ class _TeacherPickerSheetState extends State<_TeacherPickerSheet> {
           ],
         ),
       ),
+    );
+  }
+}
+class AdminRecentThreadsPreview extends StatelessWidget {
+  final Escuela escuela;
+  final int maxItems;
+
+  const AdminRecentThreadsPreview({
+    super.key,
+    required this.escuela,
+    this.maxItems = 3,
+  });
+
+  static const _orange = Color(0xFFFFA000);
+
+  @override
+  Widget build(BuildContext context) {
+    final db = FirebaseFirestore.instance;
+    final schoolId = normalizeSchoolIdFromEscuela(escuela);
+    final threadsCol = db.collection('escuelas').doc(schoolId).collection('chats_admin');
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: threadsCol.orderBy('updatedAt', descending: true).limit(maxItems).snapshots(),
+      builder: (context, snap) {
+        if (snap.hasError) return Text('Error cargando chat: ${snap.error}');
+        if (!snap.hasData) return const LinearProgressIndicator();
+
+        final docs = snap.data!.docs;
+        if (docs.isEmpty) return const Text('Aún no hay conversaciones recientes.');
+
+        return Column(
+          children: docs.map((d) {
+            final data = d.data();
+            final title = (data['title'] ?? 'Conversación').toString();
+            final last = (data['lastMessage'] ?? '').toString();
+            return Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: CircleAvatar(
+                  backgroundColor: _orange.withOpacity(0.12),
+                  child: const Icon(Icons.forum, color: _orange),
+                ),
+                title: Text(title, overflow: TextOverflow.ellipsis),
+                subtitle: Text(
+                  last.isEmpty ? 'Sin mensajes todavía' : last,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            );
+          }).toList(),
+        );
+      },
     );
   }
 }
