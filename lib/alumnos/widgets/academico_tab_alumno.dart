@@ -3,19 +3,20 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-class AcademicoTab extends StatefulWidget {
-  final DocumentReference<Map<String, dynamic>> estRef;
+class AcademicoTabAlumno extends StatefulWidget {
+  /// ✅ Debe ser ref tipo: schools/{schoolId}/alumnos/{alumnoId}
+  final DocumentReference<Map<String, dynamic>> alumnoRef;
 
-  const AcademicoTab({
+  const AcademicoTabAlumno({
     super.key,
-    required this.estRef,
+    required this.alumnoRef,
   });
 
   @override
-  State<AcademicoTab> createState() => _AcademicoTabState();
+  State<AcademicoTabAlumno> createState() => _AcademicoTabAlumnoState();
 }
 
-class _AcademicoTabState extends State<AcademicoTab>
+class _AcademicoTabAlumnoState extends State<AcademicoTabAlumno>
     with TickerProviderStateMixin {
   // UI consistente
   static const Color _blue = Color.fromARGB(255, 21, 101, 192);
@@ -31,6 +32,16 @@ class _AcademicoTabState extends State<AcademicoTab>
   late final TabController _dayTabs;
   late final int _todayDay;
   late final int _nextDay;
+
+  // 📌 Tu Firestore (según screenshot): schools/{schoolId}/calendario_escolar_items
+  static const String _calendarCollection = 'calendario_escolar_items';
+
+  // 📌 Campos esperados en calendario_escolar_items
+  // - gradeId: docId del grado (string)
+  // - day: 1..5 (int)
+  // - startMin/endMin: int
+  static const String _gradeField = 'gradeId'; // si usas "gradoId", cámbialo aquí
+  static const String _dayField = 'day';       // si usas "dia", cámbialo aquí
 
   int _clampToSchoolWeek(int weekday) {
     if (weekday >= 1 && weekday <= 5) return weekday;
@@ -127,6 +138,7 @@ class _AcademicoTabState extends State<AcademicoTab>
       ),
       child: Text(
         text,
+        overflow: TextOverflow.ellipsis,
         style: TextStyle(
           color: fg ?? Colors.grey.shade800,
           fontWeight: FontWeight.w800,
@@ -200,81 +212,73 @@ class _AcademicoTabState extends State<AcademicoTab>
   static bool _isEnabled(Map<String, dynamic> data) {
     final v = data['enabled'];
     if (v is bool) return v == true;
-    // ✅ Si no existe, asumimos TRUE (igual que tu filosofía en rules)
-    return true;
+    return true; // si no existe, asumimos TRUE
   }
 
   @override
   Widget build(BuildContext context) {
-    // 📌 El doc padre (ej: schools/eduproapp_admin_QICMY6Q5)
-    final DocumentReference<Map<String, dynamic>>? schoolDoc =
-        widget.estRef.parent.parent as DocumentReference<Map<String, dynamic>>?;
-
-    if (schoolDoc == null) {
+    // ✅ Detecta doc de escuela desde schools/{schoolId}/alumnos/{alumnoId}
+    final schoolDocDynamic = widget.alumnoRef.parent.parent;
+    if (schoolDocDynamic == null) {
       return const Center(
         child: Text('No se pudo detectar la escuela del alumno.'),
       );
     }
 
-    final calendarCol = schoolDoc.collection('calendario_escolar_items');
+    final DocumentReference schoolDoc = schoolDocDynamic;
+
+    final calendarCol = schoolDoc.collection(_calendarCollection);
 
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: widget.estRef.snapshots(),
-      builder: (context, estSnap) {
-        if (estSnap.hasError) {
+      stream: widget.alumnoRef.snapshots(),
+      builder: (context, alumnoSnap) {
+        if (alumnoSnap.hasError) {
           return Center(
-            child: Text('Error cargando alumno: ${estSnap.error}'),
+            child: Text('Error cargando alumno: ${alumnoSnap.error}'),
           );
         }
-        if (!estSnap.hasData) {
+        if (!alumnoSnap.hasData) {
           return const Center(child: CircularProgressIndicator());
         }
 
-        final estData = estSnap.data!.data() ?? {};
+        final alumnoData = alumnoSnap.data!.data() ?? {};
 
-        // ✅ Para HORARIO necesitamos un id real del grado (docId)
-        final gradeId = _readString(estData, const [
+        // ✅ Prioridad: gradoId real (docId del grado) si existe
+        final gradoId = _readString(alumnoData, const [
           'gradoId',
           'gradeId',
           'gradoDocId',
           'gradeDocId',
         ]);
 
-        // Nombre amigable (si lo tienes)
-        final gradeName = _readString(estData, const [
-          'gradoName',
-          'gradeName',
+        // ✅ Solo para mostrar en UI (nombre)
+        final gradoNombre = _readString(alumnoData, const [
           'grado',
           'grade',
-          'gradoKey',
-          'gradeKey',
+          'gradoName',
+          'gradeName',
         ]);
 
-        if (gradeId.isEmpty) {
-          return Center(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Text(
-                'Este alumno no tiene "gradoId" configurado.\n\n'
-                'Para que vea su horario, guarda en el alumno:\n'
-                '• gradoId = docId real del grado (mismo que usa calendario_escolar_items.gradeId)\n\n'
-                'Ahora mismo tienes: "${gradeName.isEmpty ? "—" : gradeName}"',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: Colors.grey.shade700,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
+        if (gradoId.isEmpty) {
+          return Padding(
+            padding: const EdgeInsets.all(16),
+            child: _emptyState(
+              'Este alumno no tiene "gradeId/gradoId" guardado.\n\n'
+              'Solución:\n'
+              '• Al registrar alumno guarda:\n'
+              '  - gradeId = docId real del grado\n'
+              '  - (y si quieres también gradoId = mismo valor)\n\n'
+              'No borres "grado" ni "gradoKey".',
             ),
           );
         }
 
-  final q = calendarCol
-  .where('gradeId', isEqualTo: gradeId)
-  .where('day', isEqualTo: _selectedDay)
-  .where('enabled', isEqualTo: true)
-  .orderBy('startMin');
-
+        // ✅ Query por gradeId + day, ordenado por startMin
+        // ⚠️ No filtramos enabled aquí, porque si el doc no tiene enabled, la query no lo devuelve.
+        final q = calendarCol
+            .where(_gradeField, isEqualTo: gradoId)
+            .where(_dayField, isEqualTo: _selectedDay)
+            .orderBy('startMin');
 
         final isTodayView = _selectedDay == _todayDay;
         final nowMin = _nowMinutes();
@@ -326,7 +330,7 @@ class _AcademicoTabState extends State<AcademicoTab>
                         ),
                         const SizedBox(height: 6),
                         Text(
-                          gradeName.isNotEmpty ? gradeName : 'Grado asignado',
+                          gradoNombre.isNotEmpty ? gradoNombre : 'Grado asignado',
                           style: TextStyle(
                             color: Colors.white.withOpacity(.95),
                             fontWeight: FontWeight.w800,
@@ -363,8 +367,9 @@ class _AcademicoTabState extends State<AcademicoTab>
 
                 final docs = calSnap.data!.docs;
 
-                // ✅ Filtrado seguro por enabled (si no existe => true)
-                final filtered = docs.where((d) => _isEnabled(d.data())).toList();
+                // ✅ Filtrar enabled en memoria (si falta enabled, se asume true)
+                final filtered =
+                    docs.where((d) => _isEnabled(d.data())).toList();
 
                 if (filtered.isEmpty) {
                   return _emptyState(
@@ -384,10 +389,8 @@ class _AcademicoTabState extends State<AcademicoTab>
                     final teacher =
                         (m['teacherName'] ?? m['teacherId'] ?? '—').toString();
 
-                    final sMin =
-                        (m['startMin'] is int) ? (m['startMin'] as int) : null;
-                    final eMin =
-                        (m['endMin'] is int) ? (m['endMin'] as int) : null;
+                    final sMin = (m['startMin'] is int) ? (m['startMin'] as int) : null;
+                    final eMin = (m['endMin'] is int) ? (m['endMin'] as int) : null;
 
                     final bool isRunning = isTodayView &&
                         sMin != null &&
@@ -395,12 +398,10 @@ class _AcademicoTabState extends State<AcademicoTab>
                         nowMin >= sMin &&
                         nowMin < eMin;
 
-                    final bool isPast =
-                        isTodayView && eMin != null && nowMin >= eMin;
+                    final bool isPast = isTodayView && eMin != null && nowMin >= eMin;
 
-                    final Color leadColor = isRunning
-                        ? _todayGreen
-                        : (isPast ? _pastRed : _orange);
+                    final Color leadColor =
+                        isRunning ? _todayGreen : (isPast ? _pastRed : _orange);
 
                     return Container(
                       margin: const EdgeInsets.only(bottom: 12),
@@ -418,9 +419,7 @@ class _AcademicoTabState extends State<AcademicoTab>
                       ),
                       child: ListTile(
                         contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 10,
-                        ),
+                            horizontal: 14, vertical: 10),
                         leading: Container(
                           width: 46,
                           height: 46,
@@ -441,11 +440,17 @@ class _AcademicoTabState extends State<AcademicoTab>
                             spacing: 8,
                             runSpacing: 8,
                             children: [
-                              _chip('Docente: $teacher',
-                                  bg: Colors.blue.shade50, fg: _blue),
-                              if (gradeName.isNotEmpty)
-                                _chip('Grado: $gradeName',
-                                    bg: _orange.withOpacity(.12), fg: _blue),
+                              _chip(
+                                'Docente: $teacher',
+                                bg: Colors.blue.shade50,
+                                fg: _blue,
+                              ),
+                              if (gradoNombre.isNotEmpty)
+                                _chip(
+                                  'Grado: $gradoNombre',
+                                  bg: _orange.withOpacity(.12),
+                                  fg: _blue,
+                                ),
                             ],
                           ),
                         ),
@@ -455,7 +460,6 @@ class _AcademicoTabState extends State<AcademicoTab>
                 );
               },
             ),
-            const SizedBox(height: 90),
           ],
         );
       },

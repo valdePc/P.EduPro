@@ -9,7 +9,7 @@ import 'package:edupro/models/escuela.dart';
 import 'package:edupro/admin_escolar/screens/A_calendarioacademico.dart';
 import 'package:edupro/admin_escolar/screens/A_reporteyanalisis.dart';
 import 'package:edupro/admin_escolar/screens/A_notificacionesyrecomendacion.dart';
-import 'package:edupro/admin_escolar/screens/A_usuarios.dart';
+import 'package:edupro/admin_escolar/screens/estudiantes.dart';
 import 'package:edupro/admin_escolar/screens/A_planificacionacademica.dart';
 import 'package:edupro/admin_escolar/screens/A_evaluaciones.dart';
 import 'package:edupro/admin_escolar/screens/A_pagos.dart';
@@ -17,16 +17,33 @@ import 'package:edupro/admin_escolar/screens/A_grados.dart';
 import 'package:edupro/admin_escolar/screens/A_reuniones.dart';
 import 'package:edupro/admin_escolar/screens/A_registro.dart';
 import 'package:edupro/admin_escolar/screens/A_MonitoreoDocentes.dart';
+import 'package:edupro/admin_escolar/screens/A_calendario_escolar.dart';
 
 // Wrapper de asignaturas (pantalla)
 import 'package:edupro/admin_escolar/screens/A_asignaturas.dart';
 
-// NUEVO: chat admin
+// Chat admin (solo menú lateral ahora)
 import 'package:edupro/admin_escolar/screens/A_chat_administracion_screen.dart';
 
 // Servicio compartido
 import 'package:edupro/admin_escolar/widgets/asignaturas.dart'
     show sharedSubjectsService;
+
+class _ActionItem {
+  final String label;
+  final IconData icon;
+  final Color accent;
+  final VoidCallback onTap;
+  final bool primary;
+
+  const _ActionItem({
+    required this.label,
+    required this.icon,
+    required this.accent,
+    required this.onTap,
+    this.primary = false,
+  });
+}
 
 class APizarra extends StatelessWidget {
   final Escuela escuela;
@@ -71,6 +88,39 @@ class APizarra extends StatelessWidget {
       selectedTileColor: Colors.blue.shade50,
       onTap: onTap,
     );
+  }
+
+  Widget _sectionLabel(String text) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+      child: Text(
+        text.toUpperCase(),
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w900,
+          color: Colors.grey.shade600,
+          letterSpacing: 0.6,
+        ),
+      ),
+    );
+  }
+
+  void _copyLinks(BuildContext context) {
+    final links = <String>[];
+    if (escuela.adminLink != null) links.add('Admin: ${escuela.adminLink}');
+    if (escuela.profLink != null) links.add('Profesores: ${escuela.profLink}');
+    if (escuela.alumLink != null) links.add('Alumnos: ${escuela.alumLink}');
+
+    if (links.isNotEmpty) {
+      Clipboard.setData(ClipboardData(text: links.join('\n')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enlaces copiados al portapapeles')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No hay enlaces disponibles')),
+      );
+    }
   }
 
   Widget _statCard({
@@ -132,37 +182,57 @@ class APizarra extends StatelessWidget {
     );
   }
 
-  Widget _buildStatsGrid(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final isNarrow = constraints.maxWidth < 520;
-        final crossAxisCount = isNarrow ? 1 : 2;
+Widget _buildStatsGrid(BuildContext context) {
+  return LayoutBuilder(
+    builder: (context, constraints) {
+      final isNarrow = constraints.maxWidth < 520;
+      final crossAxisCount = isNarrow ? 1 : 2;
 
-        return GridView.count(
-          crossAxisCount: crossAxisCount,
-          mainAxisSpacing: 16,
-          crossAxisSpacing: 16,
-          childAspectRatio: 2.8,
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          children: [
-            _statCard(
-              title: 'Reuniones',
-              value: 'Abrir',
-              icon: Icons.groups,
-              onTap: () => _navigate(context, AReuniones(escuela: escuela)),
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Resumen',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w900,
+              color: Colors.grey.shade800,
             ),
-            _statCard(
-              title: 'Pagos',
-              value: 'Ver',
-              icon: Icons.payment,
-              onTap: () => _navigate(context, APagos(escuela: escuela)),
-            ),
-          ],
-        );
-      },
-    );
-  }
+          ),
+          const SizedBox(height: 12),
+          GridView.count(
+            crossAxisCount: crossAxisCount,
+            mainAxisSpacing: 16,
+            crossAxisSpacing: 16,
+            childAspectRatio: 2.8,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            children: [
+              _statCard(
+                title: 'Reuniones',
+                value: 'Ver',
+                icon: Icons.event,
+                onTap: () => _navigate(
+                  context,
+                  AReuniones(escuela: escuela),
+                ),
+              ),
+              _statCard(
+                title: 'Calendario Escolar',
+                value: 'Abrir',
+                icon: Icons.calendar_month,
+                onTap: () => _navigate(
+                  context,
+                  ACalendarioEscolar(escuela: escuela),
+                ),
+              ),
+            ],
+          ),
+        ],
+      );
+    },
+  );
+}
 
   Widget _buildQuickActionsCard(BuildContext context) {
     return Container(
@@ -202,7 +272,10 @@ class APizarra extends StatelessWidget {
             runSpacing: 10,
             children: [
               FilledButton.icon(
-                onPressed: () => _navigate(context, APlanificacionAcademica(escuela: escuela)),
+                onPressed: () => _navigate(
+                  context,
+                  APlanificacionAcademica(escuela: escuela),
+                ),
                 icon: const Icon(Icons.event_available),
                 label: const Text('Planificación'),
                 style: FilledButton.styleFrom(backgroundColor: _blue),
@@ -213,16 +286,6 @@ class APizarra extends StatelessWidget {
                 label: const Text('Evaluaciones'),
                 style: FilledButton.styleFrom(backgroundColor: _blue),
               ),
-              OutlinedButton.icon(
-                onPressed: () => _navigate(context, AReporteYAnalisis(escuela: escuela)),
-                icon: const Icon(Icons.analytics),
-                label: const Text('Reportes'),
-              ),
-              OutlinedButton.icon(
-                onPressed: () => _navigate(context, ACalendarioAcademico(escuela: escuela)),
-                icon: const Icon(Icons.calendar_today),
-                label: const Text('Calendario'),
-              ),
             ],
           ),
         ],
@@ -230,167 +293,131 @@ class APizarra extends StatelessWidget {
     );
   }
 
-  Widget _buildChatPreviewCard(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.grey.shade200),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 10,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.chat_bubble_outline, color: _orange, size: 20),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'Chat de administración',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w900,
-                    color: Colors.grey.shade800,
-                  ),
-                ),
+  Widget _actionCard(_ActionItem a) {
+    return InkWell(
+      onTap: a.onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.grey.shade200),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.04),
+              blurRadius: 10,
+              offset: const Offset(0, 3),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: a.accent.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(12),
               ),
-              TextButton.icon(
-                onPressed: () => _navigate(
-                  context,
-                  AChatAdministracionScreen(escuela: escuela),
-                ),
-                icon: const Icon(Icons.open_in_new, size: 18),
-                label: const Text('Abrir'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'Canales para comunicarte con docentes: todos, uno a uno, o grupos seleccionados.',
-            style: TextStyle(color: Colors.grey.shade700),
-          ),
-          const SizedBox(height: 12),
-
-          // Botones rápidos que abren el chat ya “parado” en el modo.
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: [
-              FilledButton.tonalIcon(
-                onPressed: () => _navigate(
-                  context,
-                  AChatAdministracionScreen(
-                    escuela: escuela,
-                    initialMode: AdminChatMode.todosDocentes,
-                  ),
-                ),
-                icon: const Icon(Icons.groups),
-                label: const Text('Todos los docentes'),
-              ),
-              FilledButton.tonalIcon(
-                onPressed: () => _navigate(
-                  context,
-                  AChatAdministracionScreen(
-                    escuela: escuela,
-                    initialMode: AdminChatMode.unDocente,
-                  ),
-                ),
-                icon: const Icon(Icons.person),
-                label: const Text('A un docente'),
-              ),
-              FilledButton.tonalIcon(
-                onPressed: () => _navigate(
-                  context,
-                  AChatAdministracionScreen(
-                    escuela: escuela,
-                    initialMode: AdminChatMode.grupoSeleccionado,
-                  ),
-                ),
-                icon: const Icon(Icons.group_add),
-                label: const Text('Grupo'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-
-          // Preview de conversaciones (las últimas 3) sin index compuesto
-          AdminRecentThreadsPreview(escuela: escuela, maxItems: 3),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildNotificacionesCard() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.grey.shade200),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 10,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.notifications, color: _orange, size: 20),
-              const SizedBox(width: 8),
-              Text(
-                'Últimas notificaciones',
+              child: Icon(a.icon, color: a.accent),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                a.label,
                 style: TextStyle(
-                  fontSize: 16,
                   fontWeight: FontWeight.w900,
                   color: Colors.grey.shade800,
                 ),
+                overflow: TextOverflow.ellipsis,
               ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          ListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.person_add),
-            title: const Text('Nuevo estudiante registrado'),
-            subtitle: Text('Hoy • ${DateFormat.Hm().format(DateTime.now())}'),
-            trailing: TextButton(onPressed: () {}, child: const Text('Ver')),
-          ),
-          Divider(height: 1, color: Colors.grey.shade200),
-          ListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.event),
-            title: const Text('Recordatorio: entrega de notas'),
-            subtitle: Text(
-              'Mañana • ${DateFormat.Hm().format(DateTime.now().add(const Duration(days: 1)))}',
             ),
-            trailing: TextButton(onPressed: () {}, child: const Text('Ver')),
-          ),
-        ],
+            Icon(Icons.chevron_right, color: Colors.grey.shade400),
+          ],
+        ),
       ),
     );
   }
+
+  Widget _buildPrimaryActions(
+  BuildContext context, {
+  required List<_ActionItem> primary,
+}) {
+  return LayoutBuilder(
+    builder: (context, c) {
+      final isNarrow = c.maxWidth < 700;
+      final crossAxisCount = isNarrow ? 1 : 2;
+
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Accesos principales',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w900,
+              color: Colors.grey.shade800,
+            ),
+          ),
+          const SizedBox(height: 12),
+          GridView.count(
+            crossAxisCount: crossAxisCount,
+            mainAxisSpacing: 12,
+            crossAxisSpacing: 12,
+            childAspectRatio: 3.5,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            children: [
+              ...primary.map(_actionCard),
+            ],
+          ),
+        ],
+      );
+    },
+  );
+}
+
 
   @override
   Widget build(BuildContext context) {
     final isMobile = MediaQuery.of(context).size.width < 920;
 
-    final nombre = (escuela.nombre ?? '—').trim().isEmpty ? '—' : escuela.nombre!.trim();
+    final nombre =
+        (escuela.nombre ?? '—').trim().isEmpty ? '—' : escuela.nombre!.trim();
     final creado = escuela.fecha ?? DateTime.now();
+
+    // Acciones (jerarquizadas)
+   final primaryActions = <_ActionItem>[
+  _ActionItem(
+    label: 'Registro',
+    icon: Icons.how_to_reg,
+    accent: _blue,
+    primary: true,
+    onTap: () => _navigate(context, ARegistro(escuela: escuela)),
+  ),
+  _ActionItem(
+    label: 'Grados',
+    icon: Icons.view_agenda,
+    accent: _orange,
+    primary: true,
+    onTap: () => _navigate(context, AGrados(escuela: escuela)),
+  ),
+  _ActionItem(
+    label: 'Asignaturas',
+    icon: Icons.import_contacts,
+    accent: _orange,
+    primary: true,
+    onTap: () => _navigate(context, AAsignaturas(escuela: escuela)),
+  ),
+  _ActionItem(
+    label: 'Alumnos',
+    icon: Icons.person_search,
+    accent: _orange,
+    primary: true,
+    onTap: () => _navigate(context, AEstudiantes(escuela: escuela)),
+  ),
+];
+
 
     final side = Column(
       children: [
@@ -400,7 +427,7 @@ class APizarra extends StatelessWidget {
           child: Row(
             children: [
               CircleAvatar(
-                backgroundColor: _orange,
+                backgroundColor: _blue,
                 child: const Icon(Icons.school, color: Colors.white),
               ),
               const SizedBox(width: 12),
@@ -411,7 +438,7 @@ class APizarra extends StatelessWidget {
                     Text(
                       nombre,
                       style: const TextStyle(
-                        fontSize: 18,
+                        fontSize: 16,
                         fontWeight: FontWeight.w900,
                         color: _blue,
                       ),
@@ -429,11 +456,12 @@ class APizarra extends StatelessWidget {
             ],
           ),
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 8),
         Expanded(
           child: ListView(
             padding: const EdgeInsets.symmetric(vertical: 8),
             children: [
+              _sectionLabel('Panel'),
               _menuTile(
                 context: context,
                 icon: Icons.dashboard,
@@ -443,6 +471,8 @@ class APizarra extends StatelessWidget {
                   if (onNavigate != null) onNavigate!(0);
                 },
               ),
+
+              _sectionLabel('Personal'),
               _menuTile(
                 context: context,
                 icon: Icons.people,
@@ -461,6 +491,20 @@ class APizarra extends StatelessWidget {
               ),
               _menuTile(
                 context: context,
+                icon: Icons.track_changes,
+                label: 'Monitoreo de Docentes',
+                onTap: () {
+                  if (onNavigate != null) {
+                    onNavigate!(4);
+                  } else {
+                    _navigate(context, AMonitoreoDocentes(escuela: escuela));
+                  }
+                },
+              ),
+
+              _sectionLabel('Académico'),
+              _menuTile(
+                context: context,
                 icon: Icons.calendar_today,
                 label: 'Calendario Académico',
                 onTap: () {
@@ -471,6 +515,8 @@ class APizarra extends StatelessWidget {
                   }
                 },
               ),
+
+              _sectionLabel('Analítica'),
               _menuTile(
                 context: context,
                 icon: Icons.analytics,
@@ -483,27 +529,29 @@ class APizarra extends StatelessWidget {
                   }
                 },
               ),
+
+              _sectionLabel('Comunicación'),
               _menuTile(
                 context: context,
-                icon: Icons.track_changes,
-                label: 'Monitoreo de Docentes',
-                onTap: () {
-                  if (onNavigate != null) {
-                    onNavigate!(4);
-                  } else {
-                    _navigate(context, AMonitoreoDocentes(escuela: escuela));
-                  }
-                },
+                icon: Icons.chat_bubble_outline,
+                label: 'Chat de administración',
+                onTap: () => _navigate(
+                  context,
+                  AChatAdministracionScreen(escuela: escuela),
+                ),
               ),
               _menuTile(
                 context: context,
                 icon: Icons.notifications,
-                label: 'Notificaciones y Reportes',
+                label: 'Notificaciones',
                 onTap: () {
                   if (onNavigate != null) {
                     onNavigate!(5);
                   } else {
-                    _navigate(context, ANotificacionesYRecomendacion(escuela: escuela));
+                    _navigate(
+                      context,
+                      ANotificacionesYRecomendacion(escuela: escuela),
+                    );
                   }
                 },
               ),
@@ -512,178 +560,151 @@ class APizarra extends StatelessWidget {
         ),
         Padding(
           padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              ElevatedButton.icon(
-                onPressed: () {
-                  final links = <String>[];
-                  if (escuela.adminLink != null) links.add('Admin: ${escuela.adminLink}');
-                  if (escuela.profLink != null) links.add('Profesores: ${escuela.profLink}');
-                  if (escuela.alumLink != null) links.add('Alumnos: ${escuela.alumLink}');
+          child: Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.grey.shade200),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.04),
+                  blurRadius: 10,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Herramientas',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w900,
+                    color: Colors.grey.shade800,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                OutlinedButton.icon(
+                  onPressed: () => _copyLinks(context),
+                  icon: const Icon(Icons.copy),
+                  label: const Text('Copiar enlaces'),
+                ),
+const SizedBox(height: 8),
+OutlinedButton.icon(
+  onPressed: () async {
+    final changed = await _navigate<bool>(
+      context,
+      APagos(escuela: escuela), // 👈 aquí navega a A_pagos.dart
+    );
 
-                  if (links.isNotEmpty) {
-                    Clipboard.setData(ClipboardData(text: links.join('\n')));
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Enlaces copiados al portapapeles')),
-                    );
-                  } else {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('No hay enlaces disponibles')),
-                    );
-                  }
-                },
-                icon: const Icon(Icons.copy),
-                label: const Text('Copiar enlaces'),
-                style: ElevatedButton.styleFrom(backgroundColor: _blue),
-              ),
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: () async {
-                  final changed = await _navigate<bool>(
-                    context,
-                    AAsignaturas(escuela: escuela, service: sharedSubjectsService),
-                  );
-                  if (changed == true) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Asignaturas actualizadas')),
-                    );
-                  }
-                },
-                icon: const Icon(Icons.import_contacts),
-                label: const Text('Asignaturas'),
-              ),
-            ],
+    if (changed == true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pagos actualizados')),
+      );
+    }
+  },
+  icon: const Icon(Icons.payment),
+  label: const Text('Pagos'),
+),
+
+              ],
+            ),
           ),
         ),
       ],
     );
 
-    final body = SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
-      child: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 1100),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+final body = SingleChildScrollView(
+  padding: const EdgeInsets.all(24),
+  child: Center(
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 1100),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header (sin PopupMenu)
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              // Header + accesos principales
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          nombre,
-                          style: const TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.w900,
-                            color: _blue,
-                          ),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          'Creada: ${_formatDate(creado)}',
-                          style: TextStyle(color: Colors.grey.shade700),
-                        ),
-                      ],
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      nombre,
+                      style: const TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.w900,
+                        color: _blue,
+                      ),
+                      overflow: TextOverflow.ellipsis,
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Wrap(
-                    spacing: 10,
-                    runSpacing: 8,
-                    alignment: WrapAlignment.end,
-                    children: [
-                      FilledButton.icon(
-                        onPressed: () => _navigate(context, ARegistro(escuela: escuela)),
-                        icon: const Icon(Icons.how_to_reg),
-                        label: const Text('Registro'),
-                        style: FilledButton.styleFrom(backgroundColor: _orange),
-                      ),
-                      FilledButton.icon(
-                        onPressed: () => _navigate(context, AUsuarios(escuela: escuela)),
-                        icon: const Icon(Icons.person_search),
-                        label: const Text('Usuarios'),
-                        style: FilledButton.styleFrom(backgroundColor: _orange),
-                      ),
-                      FilledButton.icon(
-                        onPressed: () => _navigate(context, AGrados(escuela: escuela)),
-                        icon: const Icon(Icons.view_agenda),
-                        label: const Text('Grados'),
-                        style: FilledButton.styleFrom(backgroundColor: _orange),
-                      ),
-                      FilledButton.icon(
-                        onPressed: () async {
-                          final changed = await _navigate<bool>(
-                            context,
-                            AAsignaturas(escuela: escuela, service: sharedSubjectsService),
-                          );
-                          if (changed == true) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Asignaturas actualizadas')),
-                            );
-                          }
-                        },
-                        icon: const Icon(Icons.import_contacts),
-                        label: const Text('Asignaturas'),
-                        style: FilledButton.styleFrom(backgroundColor: _orange),
-                      ),
-                    ],
-                  ),
-                ],
+                    const SizedBox(height: 6),
+                    Text(
+                      'Creada: ${_formatDate(creado)}',
+                      style: TextStyle(color: Colors.grey.shade700),
+                    ),
+                  ],
+                ),
               ),
-
-              const SizedBox(height: 18),
-              Divider(color: Colors.grey.shade300),
-              const SizedBox(height: 18),
-
-              // Métricas + acciones rápidas
-              LayoutBuilder(
-                builder: (context, constraints) {
-                  final isNarrowContent = constraints.maxWidth < 800;
-
-                  if (isNarrowContent) {
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _buildStatsGrid(context),
-                        const SizedBox(height: 18),
-                        _buildQuickActionsCard(context),
-                      ],
-                    );
-                  }
-
-                  return Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(flex: 3, child: _buildStatsGrid(context)),
-                      const SizedBox(width: 18),
-                      Expanded(flex: 2, child: _buildQuickActionsCard(context)),
-                    ],
-                  );
-                },
+              const SizedBox(width: 8),
+              IconButton(
+                tooltip: 'Copiar enlaces',
+                onPressed: () => _copyLinks(context),
+                icon: const Icon(Icons.copy),
               ),
-
-              const SizedBox(height: 22),
-
-              // Chat (mejor ubicado y funcional)
-              _buildChatPreviewCard(context),
-
-              const SizedBox(height: 22),
-
-              // Notificaciones
-              _buildNotificacionesCard(),
-
-              const SizedBox(height: 40),
             ],
           ),
-        ),
+
+          const SizedBox(height: 18),
+          Divider(color: Colors.grey.shade300),
+          const SizedBox(height: 12),
+
+          // Accesos principales (tarjetas)
+          _buildPrimaryActions(
+            context,
+            primary: primaryActions,
+          ),
+
+          const SizedBox(height: 18),
+          Divider(color: Colors.grey.shade300),
+          const SizedBox(height: 18),
+
+          // Métricas + acciones rápidas
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final isNarrowContent = constraints.maxWidth < 800;
+
+              if (isNarrowContent) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildStatsGrid(context),
+                    const SizedBox(height: 18),
+                    _buildQuickActionsCard(context),
+                  ],
+                );
+              }
+
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(flex: 3, child: _buildStatsGrid(context)),
+                  const SizedBox(width: 18),
+                  Expanded(flex: 2, child: _buildQuickActionsCard(context)),
+                ],
+              );
+            },
+          ),
+
+          const SizedBox(height: 40),
+        ],
       ),
-    );
+    ),
+  ),
+);
+
 
     final scaffold = Scaffold(
       drawer: isMobile ? Drawer(child: side) : null,
@@ -698,7 +719,7 @@ class APizarra extends StatelessWidget {
           : Row(
               children: [
                 Container(
-                  width: 260,
+                  width: 280,
                   color: _blue.withOpacity(0.04),
                   child: side,
                 ),

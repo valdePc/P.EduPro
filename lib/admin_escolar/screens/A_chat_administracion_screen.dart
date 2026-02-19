@@ -525,7 +525,7 @@ class AdminRecentThreadsPreview extends StatelessWidget {
   Widget build(BuildContext context) {
     final db = FirebaseFirestore.instance;
     final schoolId = normalizeSchoolIdFromEscuela(escuela);
-    final threadsCol = db.collection('escuelas').doc(schoolId).collection('chats_admin');
+    final threadsCol = db.collection('schools').doc(schoolId).collection('chats_admin');
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: threadsCol.orderBy('updatedAt', descending: true).limit(maxItems).snapshots(),

@@ -8,8 +8,7 @@ import 'package:edupro/utils/school_utils.dart' show normalizeSchoolIdFromEscuel
 
 import '../nav/mensajes_alumnos_screen.dart';
 import '../nav/avisos_alumnos_screen.dart';
-import 'package:edupro/calendario/ui/calendario_screen.dart';
-import 'package:edupro/calendario/models/user_role.dart';
+import 'package:edupro/alumnos/tabs/academico_tab.dart';
 
 class PerfilInicialScreen extends StatefulWidget {
   final Escuela escuela;
@@ -38,34 +37,16 @@ class _PerfilInicialScreenState extends State<PerfilInicialScreen> {
   static const Color _bg = Color(0xFFF6F7FB);
 
   DocumentReference<Map<String, dynamic>> get _estRef => _db
-      .collection('escuelas')
+      .collection('schools')
       .doc(_schoolId)
-      .collection('estudiantes')
+      .collection('alumnos')
       .doc(widget.estudianteId);
 
-DocumentReference<Map<String, dynamic>> get _cfgRef =>
-    _db.collection('schools')
+  DocumentReference<Map<String, dynamic>> get _cfgRef => _db
+      .collection('schools')
       .doc(_schoolId)
       .collection('config')
       .doc('alumnos');
-
-
-void _openCalendarioAlumno() {
-  final gradoFallback = (widget.gradoSeleccionado ?? 'Inicial').trim();
-
-  Navigator.of(context).push(
-    MaterialPageRoute(
-      builder: (_) => CalendarioScreen(
-        schoolId: _schoolId,
-        role: UserRole.student,
-        userUid: widget.estudianteId,
-        userGroups: [
-          gradoFallback, // lo mínimo viable
-        ],
-      ),
-    ),
-  );
-}
 
   @override
   void initState() {
@@ -88,6 +69,24 @@ void _openCalendarioAlumno() {
         ),
       );
 
+  /// ✅ AHORA: “Calendario” (o cualquier acceso que llame a esto) debe ir a Académico.
+  /// Lo dejamos para no romper llamadas existentes.
+  //Future<void> _openCalendarioAlumno() async {
+ //   _openAcademico();
+  //}
+
+  /// ✅ ÚNICA función para abrir Académico (sin duplicados).
+  void _openAcademico() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => _InicialAcademicoScreen(
+          estRef: _estRef,
+          escuelaNombre: (widget.escuela.nombre ?? 'EduPro').toString(),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final nombreFallback = (widget.nombreAlumno ?? 'Alumno').trim();
@@ -96,7 +95,7 @@ void _openCalendarioAlumno() {
     return Scaffold(
       backgroundColor: _bg,
       appBar: AppBar(
-        title: Text('Inicial • ${widget.escuela.nombre}'),
+        title: Text('Inicial • ${(widget.escuela.nombre ?? 'EduPro').toString()}'),
         backgroundColor: _blue,
         actions: [
           if (kDebugMode)
@@ -127,33 +126,6 @@ void _openCalendarioAlumno() {
           final tanda = (data['tanda'] ?? '').toString().trim();
           final matricula = (data['matricula'] ?? '').toString().trim();
           final idGlobal = (data['idGlobal'] ?? '').toString().trim();
-         final seccion = (data['seccion'] ?? '').toString().trim();
-final nivel = 'INICIAL'; // en primaria pon 'PRIMARIA', en secundaria 'SECUNDARIA'
-
-// 1) Eventos para todo el grado:
-final gGrado = '$nivel|$grado';
-
-// 2) Eventos para la sección/aula:
-final gAula = seccion.isEmpty ? null : '$nivel|$grado|$seccion';
-
-final groups = <String>[
-  gGrado,
-  if (gAula != null) gAula!,
-];
-
-void openCalendario() {
-  Navigator.of(context).push(
-    MaterialPageRoute(
-      builder: (_) => CalendarioScreen(
-        schoolId: _schoolId,
-        role: UserRole.student,
-        userUid: widget.estudianteId,
-        userGroups: groups,
-      ),
-    ),
-  );
-}
-
 
           return ListView(
             padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
@@ -174,13 +146,7 @@ void openCalendario() {
                 icon: const Icon(Icons.auto_awesome, color: _orange),
                 child: const Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _Bullet('Actividades y progreso (más visual, menos “frío”)'),
-                    _Bullet('Asistencia (rápida y simple)'),
-                    _Bullet('Tareas / Proyectos (con recordatorios)'),
-                    _Bullet('Conducta y observaciones'),
-                    _Bullet('(Futuro) fotos / evidencias y portafolio'),
-                  ],
+
                 ),
               ),
               const SizedBox(height: 12),
@@ -256,14 +222,24 @@ void openCalendario() {
                           subtitle: 'Comunicados',
                           onTap: _openAvisos,
                         ),
-_ActionTile(
-  width: tileW,
-  icon: Icons.calendar_month_rounded,
-  title: 'Calendario',
-  subtitle: 'Eventos',
-  onTap: openCalendario,
-),
 
+                        /// ✅ ESTE era el “Calendario”. Ahora abre Académico (horario académico).
+                //        _ActionTile(
+                 //         width: tileW,
+                //          icon: Icons.calendar_month_rounded,
+                 //         title: 'Calendario',
+                //          subtitle: 'Horario académico',
+                 //         onTap: _openAcademico,
+                 //       ),
+
+                        /// ✅ Si quieres mantener también “Académico” como tile separado, aquí queda.
+                        _ActionTile(
+                          width: tileW,
+                          icon: Icons.calendar_month_rounded,
+                          title: 'Calendario Escolar',
+                          subtitle: 'Materias / notas',
+                          onTap: _openAcademico,
+                        ),
                       ],
                     );
                   },
@@ -289,6 +265,32 @@ _ActionTile(
       MaterialPageRoute(
         builder: (_) => _PlaceholderModuloScreen(modulo: modulo, nivel: nivel),
       ),
+    );
+  }
+}
+
+/// Pantalla envolvente para mostrar el Tab Académico como pantalla completa.
+class _InicialAcademicoScreen extends StatelessWidget {
+  final DocumentReference<Map<String, dynamic>> estRef;
+  final String escuelaNombre;
+
+  static const Color _blue = Color.fromARGB(255, 21, 101, 192);
+  static const Color _bg = Color(0xFFF6F7FB);
+
+  const _InicialAcademicoScreen({
+    required this.estRef,
+    required this.escuelaNombre,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: _bg,
+      appBar: AppBar(
+        title: Text('Inicial • Académico'),
+        backgroundColor: _blue,
+      ),
+      body: AcademicoTab(estRef: estRef),
     );
   }
 }

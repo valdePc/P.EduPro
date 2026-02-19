@@ -461,7 +461,7 @@ class _DocentesScreenState extends State<DocentesScreen> {
       if (tdStatus != 'active') {
         setState(() {
           _invalidLogin = true;
-          _errorMessage = 'Tu cuenta no está activa. La administración debe aprobarla.';
+          _errorMessage = 'Tu cuenta aun no está activa. seguimos esperando a que la administracion lo apruebe.';
         });
         return;
       }
@@ -528,7 +528,7 @@ class _DocentesScreenState extends State<DocentesScreen> {
         setState(() {
           _invalidLogin = true;
           _errorMessage =
-              'Ese Google ($googleEmail) no coincide con el correo registrado ($expectedEmail).';
+              'Este correo ($googleEmail) no coincide con el correo autorizado.';
         });
         return;
       }

@@ -48,17 +48,19 @@ class _PerfilSecundariaScreenState extends State<PerfilSecundariaScreen> {
   static const Color _orange = Color(0xFFFFA000);
   static const Color _bg = Color(0xFFF6F7FB);
 
-  DocumentReference<Map<String, dynamic>> get _estRef => _db
-      .collection('escuelas')
-      .doc(_schoolId)
-      .collection('estudiantes')
-      .doc(widget.estudianteId);
+DocumentReference<Map<String, dynamic>> get _estRef => _db
+    .collection('schools')
+    .doc(_schoolId)
+    .collection('alumnos')
+    .doc(widget.estudianteId);
 
-  DocumentReference<Map<String, dynamic>> get _cfgRef => _db
-      .collection('escuelas')
-      .doc(_schoolId)
-      .collection('config')
-      .doc('alumnos');
+
+DocumentReference<Map<String, dynamic>> get _cfgRef => _db
+    .collection('schools')
+    .doc(_schoolId)
+    .collection('config')
+    .doc('alumnos');
+
 
 
 Future<void> _openCalendarioAlumno() async {

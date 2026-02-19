@@ -1,4 +1,5 @@
 // lib/docentes/screens/paneldedocentes.dart
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -12,9 +13,14 @@ import 'package:edupro/calendario/models/user_role.dart';
 
 // ✅ CALENDARIO
 import 'package:edupro/calendario/ui/calendario_screen.dart';
+import 'package:edupro/docentes/screens/calendario_escolar.dart';
+
 
 // ✅ CHAT NUEVO (docentes)
 import 'D_chat_docente_screen.dart';
+
+// ✅ ESTUDIANTES (docentes)
+import 'estudiantes.dart'; // ajusta si tu path es distinto
 
 class PaneldedocentesScreen extends StatefulWidget {
   final Escuela escuela;
@@ -33,7 +39,7 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
   bool _loading = true;
   String? _error;
 
-  // ✅ resueltos por members
+  // ✅ resueltos por members / teachers
   String _rootCol = 'schools'; // o 'escuelas'
   String? _schoolIdAuth;
   String? _teacherDocIdAuth;
@@ -43,13 +49,31 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
   List<String> _teacherGrades = [];
   List<String> _teacherSubjects = [];
 
+  // ✅ NUEVO: para mapear label -> gradoKey
+  List<String> _teacherGradeKeys = [];
+  Map<String, String> _gradeLabelToKey = {};
+
+  // ✅ NUEVO: mapping desde catálogo grados (name/label -> gradoKey/docId)
+  Map<String, String> _catalogGradeLabelToKey = {};
+
   List<String> _schoolGrades = [];
   List<String> _schoolSubjects = [];
 
   String? _selectedGrade;
   String? _selectedSubject;
 
-  // ✅ school doc id: eduproapp_admin_ITVB9J7T (tu “modo actual”)
+  // ✅ NUEVO: listener en vivo al docente (teachers_public)
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _teacherPublicSub;
+  DocumentReference<Map<String, dynamic>>? _teacherPublicRef;
+
+  // cache de identidad para resolver doc en teachers_public
+  String _emailLowerCache = '';
+  String _emailRawCache = '';
+  String _phoneE164Cache = '';
+  String _phoneLocalCache = '';
+  String _uidCache = '';
+
+  // ✅ school doc id: eduproapp_admin_<CODIGO> (tu “modo actual”)
   String get _schoolDocId {
     final raw = normalizeSchoolIdFromEscuela(widget.escuela).toString().trim();
 
@@ -63,7 +87,14 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
   @override
   void initState() {
     super.initState();
-    _loadFromMembers();
+    _loadTeacherFromTeachers(); // ✅ buscar directo en schools/.../teachers
+  }
+
+  @override
+  void dispose() {
+    _teacherPublicSub?.cancel();
+    _teacherPublicSub = null;
+    super.dispose();
   }
 
   // ------------------------------------------------------------
@@ -146,16 +177,38 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
         .toString()
         .trim();
   }
+List<String> _readGrades(Map<String, dynamic> data) {
+  // ✅ Primero el campo nuevo
+  final b = _asStringListOrMapKeys(data['grades']);
+  if (b.isNotEmpty) return b;
 
-  List<String> _readGrades(Map<String, dynamic> data) {
-    final a = _asStringListOrMapKeys(data['grados']);
-    if (a.isNotEmpty) return a;
-    final b = _asStringListOrMapKeys(data['grades']);
-    if (b.isNotEmpty) return b;
-    final c = _asStringListOrMapKeys(data['gradeIds']);
-    if (c.isNotEmpty) return c;
-    return const [];
-  }
+  // ✅ Luego compat con campo viejo
+  final a = _asStringListOrMapKeys(data['grados']);
+  if (a.isNotEmpty) return a;
+
+  final c = _asStringListOrMapKeys(data['gradeIds']);
+  if (c.isNotEmpty) return c;
+
+  return const [];
+}
+
+// ✅ leer gradeKeys/keys reales (gradoKey) del docente
+List<String> _readGradeKeys(Map<String, dynamic> data) {
+  final a = _asStringListOrMapKeys(data['gradosKeys']);
+  if (a.isNotEmpty) return a;
+
+  final b = _asStringListOrMapKeys(data['gradoKeys']);
+  if (b.isNotEmpty) return b;
+
+  final c = _asStringListOrMapKeys(data['gradeKeys']);
+  if (c.isNotEmpty) return c;
+
+  final d = _asStringListOrMapKeys(data['gradosAsignadosKeys']);
+  if (d.isNotEmpty) return d;
+
+  return const [];
+}
+
 
   List<String> _readSubjects(Map<String, dynamic> data) {
     final a = _asStringListOrMapKeys(data['subjects']);
@@ -200,7 +253,182 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
   }
 
   // -------------------------
-  // 1) Resolver members + schoolId real
+  // ✅ NUEVO: construir mapping label->key combinando:
+  // - catálogo de grados (name/label -> gradoKey/docId)
+  // - info del docente (si viene alineado label[i] -> key[i])
+  // -------------------------
+  Map<String, String> _buildGradeLabelToKeyMap({
+    required List<String> gradesLabels,
+    required List<String> gradeKeys,
+  }) {
+    final map = <String, String>{};
+
+    // 1) base catálogo
+    map.addAll(_catalogGradeLabelToKey);
+
+    // 2) si vienen alineados por índice: label[i] -> key[i]
+    if (gradesLabels.isNotEmpty &&
+        gradeKeys.isNotEmpty &&
+        gradesLabels.length == gradeKeys.length) {
+      for (int i = 0; i < gradesLabels.length; i++) {
+        final label = gradesLabels[i].trim();
+        final key = gradeKeys[i].trim();
+        if (label.isNotEmpty && key.isNotEmpty) {
+          map[label] = key;
+          map[label.toLowerCase().trim()] = key;
+        }
+      }
+    }
+
+    // 3) fallback: key -> key
+    for (final k in gradeKeys) {
+      final key = k.trim();
+      if (key.isEmpty) continue;
+      map[key] = key;
+      map[key.toLowerCase().trim()] = key;
+    }
+
+    return map;
+  }
+
+  // -------------------------
+  // ✅ NUEVO: aplica estado docente + revalida dropdowns en 1 setState
+  // -------------------------
+  void _applyTeacherDataToState(Map<String, dynamic> data) {
+    final user = FirebaseAuth.instance.currentUser;
+
+    final name = _readName(data);
+    final grades = _readGrades(data);
+    final subjects = _readSubjects(data);
+    final gradeKeys = _readGradeKeys(data);
+
+    final map = _buildGradeLabelToKeyMap(
+      gradesLabels: grades,
+      gradeKeys: gradeKeys,
+    );
+
+    final nextTeacherName = name.isNotEmpty ? name : userFallbackName();
+    final nextTeacherGrades = grades;
+    final nextTeacherSubjects = subjects;
+
+    final gradesOptions = nextTeacherGrades.isNotEmpty ? nextTeacherGrades : _schoolGrades;
+    final subjectsOptions = nextTeacherSubjects.isNotEmpty ? nextTeacherSubjects : _schoolSubjects;
+
+    final nextGrade = gradesOptions.isNotEmpty
+        ? ((_selectedGrade != null && gradesOptions.contains(_selectedGrade))
+            ? _selectedGrade
+            : gradesOptions.first)
+        : null;
+
+    final nextSubject = subjectsOptions.isNotEmpty
+        ? ((_selectedSubject != null && subjectsOptions.contains(_selectedSubject))
+            ? _selectedSubject
+            : subjectsOptions.first)
+        : null;
+
+    if (!mounted) return;
+    setState(() {
+      _teacherName = nextTeacherName;
+      _teacherGrades = nextTeacherGrades;
+      _teacherSubjects = nextTeacherSubjects;
+
+      _teacherGradeKeys = gradeKeys;
+      _gradeLabelToKey = map;
+
+      _selectedGrade = nextGrade;
+      _selectedSubject = nextSubject;
+
+      // si el stream era el que estaba controlando, quitamos error viejo
+      _error = null;
+    });
+  }
+
+  // -------------------------
+  // ✅ NUEVO: resolver docId real en teachers_public y suscribirse
+  // -------------------------
+  Future<DocumentReference<Map<String, dynamic>>?> _resolveTeachersPublicDocRef({
+    required String root,
+    required String schoolId,
+    required String teacherDocId,
+  }) async {
+    final col = _db.collection(root).doc(schoolId).collection('teachers_public');
+
+    // 0) docId directo (ideal)
+    try {
+      final direct = col.doc(teacherDocId);
+      final snap = await direct.get();
+      if (snap.exists) return direct;
+    } catch (_) {}
+
+    // 1) buscar por teacherDocId / teacherId
+    Future<DocumentReference<Map<String, dynamic>>?> byField(String field, String value) async {
+      if (value.trim().isEmpty) return null;
+      try {
+        final q = await col.where(field, isEqualTo: value.trim()).limit(1).get();
+        if (q.docs.isNotEmpty) return q.docs.first.reference;
+      } catch (_) {}
+      return null;
+    }
+
+    final ref1 = await byField('teacherDocId', teacherDocId);
+    if (ref1 != null) return ref1;
+
+    final ref2 = await byField('teacherId', teacherDocId);
+    if (ref2 != null) return ref2;
+
+    // 2) fallback por authUid/email/phone (por si el docId no es teacherDocId)
+    final ref3 = await byField('authUid', _uidCache);
+    if (ref3 != null) return ref3;
+
+    final ref4 = await byField('emailLower', _emailLowerCache);
+    if (ref4 != null) return ref4;
+
+    final ref5 = await byField('phoneLocal', _phoneLocalCache);
+    if (ref5 != null) return ref5;
+
+    final ref6 = await byField('phone', _phoneE164Cache);
+    if (ref6 != null) return ref6;
+
+    return null;
+  }
+
+  Future<void> _attachTeacherPublicRealtime() async {
+    final sid = _schoolIdAuth;
+    final tid = _teacherDocIdAuth;
+    if (sid == null || tid == null) return;
+
+    // evitar duplicar
+    if (_teacherPublicSub != null) return;
+
+    final ref = await _resolveTeachersPublicDocRef(
+      root: _rootCol,
+      schoolId: sid,
+      teacherDocId: tid,
+    );
+
+    if (ref == null) {
+      debugPrint('⚠️ No pude resolver doc en teachers_public para tid=$tid');
+      return;
+    }
+
+    _teacherPublicRef = ref;
+
+    debugPrint('🔴 Subscribing teachers_public => ${ref.path}');
+
+    _teacherPublicSub = ref.snapshots(includeMetadataChanges: true).listen(
+      (snap) {
+        if (!snap.exists) return;
+        final data = snap.data() ?? <String, dynamic>{};
+        _applyTeacherDataToState(data);
+      },
+      onError: (e) {
+        debugPrint('⚠️ teachers_public stream error => $e');
+      },
+    );
+  }
+
+  // -------------------------
+  // 1) Resolver members + schoolId real (no usado ahora, pero lo dejo)
   // -------------------------
   Future<DocumentSnapshot<Map<String, dynamic>>?> _tryMember(
     String root,
@@ -222,7 +450,7 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
     }
   }
 
-  Future<void> _loadFromMembers() async {
+  Future<void> _loadTeacherFromTeachers() async {
     setState(() {
       _loading = true;
       _error = null;
@@ -238,142 +466,203 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
     }
 
     final uid = user.uid;
-    final emailLower = (user.email ?? '').toLowerCase().trim();
+    _uidCache = uid;
+
+    final emailRaw = (user.email ?? '').trim();
+    final emailLower = emailRaw.toLowerCase();
+    _emailRawCache = emailRaw;
+    _emailLowerCache = emailLower;
+
+    final phoneE164 = (user.phoneNumber ?? '').trim();
+    _phoneE164Cache = phoneE164;
+
+    String digitsOnly(String s) => s.replaceAll(RegExp(r'\D'), '');
+    final phoneDigits = digitsOnly(phoneE164);
+    final phoneLocal =
+        phoneDigits.length >= 10 ? phoneDigits.substring(phoneDigits.length - 10) : phoneDigits;
+    _phoneLocalCache = phoneLocal;
 
     final schoolCandidates = _candidateSchoolIds();
     const rootCandidates = ['schools', 'escuelas'];
 
-    Future<DocumentSnapshot<Map<String, dynamic>>?> _tryMemberByQuery(
-      String root,
-      String schoolId,
-    ) async {
-      final membersRef = _db.collection(root).doc(schoolId).collection('members');
-
-      try {
-        final q = await membersRef.where('authUid', isEqualTo: uid).limit(1).get();
-        if (q.docs.isNotEmpty) return q.docs.first;
-      } catch (_) {}
-
-      try {
-        final q = await membersRef.where('uid', isEqualTo: uid).limit(1).get();
-        if (q.docs.isNotEmpty) return q.docs.first;
-      } catch (_) {}
-
-      if (emailLower.isNotEmpty) {
-        try {
-          final q = await membersRef.where('emailLower', isEqualTo: emailLower).limit(1).get();
-          if (q.docs.isNotEmpty) return q.docs.first;
-        } catch (_) {}
-
-        try {
-          final q = await membersRef.where('email', isEqualTo: emailLower).limit(1).get();
-          if (q.docs.isNotEmpty) return q.docs.first;
-        } catch (_) {}
-      }
-
-      return null;
-    }
-
-    DocumentSnapshot<Map<String, dynamic>>? memberSnap;
+    DocumentSnapshot<Map<String, dynamic>>? teacherSnap;
     String? resolvedSchoolId;
     String resolvedRoot = 'schools';
 
+    Future<QueryDocumentSnapshot<Map<String, dynamic>>?> _findOne(
+      CollectionReference<Map<String, dynamic>> ref,
+      String field,
+      String value,
+    ) async {
+      if (value.trim().isEmpty) return null;
+      try {
+        final q = await ref.where(field, isEqualTo: value).limit(1).get();
+        if (q.docs.isNotEmpty) return q.docs.first;
+      } catch (e) {
+        debugPrint('⚠️ where($field == $value) => $e');
+      }
+      return null;
+    }
+
     for (final root in rootCandidates) {
       for (final sid in schoolCandidates) {
-        final direct = await _tryMember(root, sid, uid);
-        if (direct != null) {
-          memberSnap = direct;
-          resolvedSchoolId = sid;
-          resolvedRoot = root;
-          break;
-        }
+        final teachersRef = _db.collection(root).doc(sid).collection('teachers');
 
-        final byQuery = await _tryMemberByQuery(root, sid);
-        if (byQuery != null) {
-          debugPrint('✅ MEMBER FOUND (QUERY) => ${byQuery.reference.path}');
-          memberSnap = byQuery;
-          resolvedSchoolId = sid;
-          resolvedRoot = root;
-          break;
-        }
-      }
-      if (memberSnap != null) break;
-    }
-
-    if (memberSnap == null || resolvedSchoolId == null) {
-      setState(() {
-        _loading = false;
-        _error =
-            'No encontré tu member.\nProbé schoolId: ${schoolCandidates.join(", ")}\nEn: schools y escuelas.';
-      });
-      return;
-    }
-
-    final md = memberSnap.data() ?? {};
-    final role = (md['role'] ?? md['rol'] ?? '').toString().trim().toLowerCase();
-
-    String teacherDocId = (md['teacherDocId'] ??
-            md['teacherDocID'] ??
-            md['teacherId'] ??
-            md['docenteId'] ??
-            '')
-        .toString()
-        .trim();
-
-    // ✅ fallback: si el member no trae teacherDocId, búscalo en teachers_public/teacher_public
-    if (teacherDocId.isEmpty) {
-      final resolved = await _resolveTeacherDocIdFromPublicIndex(
-        resolvedRoot,
-        resolvedSchoolId,
-        user,
-      );
-
-      if (resolved.isNotEmpty) {
-        teacherDocId = resolved;
-
-        // ✅ intenta guardar el teacherDocId en el member para la próxima
+        // 0) docId == uid (por si acaso)
         try {
-          await memberSnap.reference.set({
-            'teacherDocId': teacherDocId,
-            'updatedAt': FieldValue.serverTimestamp(),
-          }, SetOptions(merge: true));
-        } catch (e) {
-          debugPrint('⚠️ No pude guardar teacherDocId en member: $e');
+          final byId = await teachersRef.doc(uid).get();
+          if (byId.exists) {
+            teacherSnap = byId;
+            resolvedSchoolId = sid;
+            resolvedRoot = root;
+            break;
+          }
+        } catch (_) {}
+
+        // 1) authUid
+        final byAuthUid = await _findOne(teachersRef, 'authUid', uid);
+        if (byAuthUid != null) {
+          teacherSnap = byAuthUid;
+          resolvedSchoolId = sid;
+          resolvedRoot = root;
+          break;
         }
+
+        // 2) emailLower / email
+        if (emailLower.isNotEmpty) {
+          final byEmailLower = await _findOne(teachersRef, 'emailLower', emailLower);
+          if (byEmailLower != null) {
+            teacherSnap = byEmailLower;
+            resolvedSchoolId = sid;
+            resolvedRoot = root;
+            break;
+          }
+
+          final byEmail = await _findOne(teachersRef, 'email', emailLower);
+          if (byEmail != null) {
+            teacherSnap = byEmail;
+            resolvedSchoolId = sid;
+            resolvedRoot = root;
+            break;
+          }
+        }
+
+        // 3) phone / phoneLocal ✅
+        if (phoneE164.isNotEmpty) {
+          final byPhone = await _findOne(teachersRef, 'phone', phoneE164);
+          if (byPhone != null) {
+            teacherSnap = byPhone;
+            resolvedSchoolId = sid;
+            resolvedRoot = root;
+            break;
+          }
+        }
+        if (phoneLocal.isNotEmpty) {
+          final byPhoneLocal = await _findOne(teachersRef, 'phoneLocal', phoneLocal);
+          if (byPhoneLocal != null) {
+            teacherSnap = byPhoneLocal;
+            resolvedSchoolId = sid;
+            resolvedRoot = root;
+            break;
+          }
+        }
+
+        // 4) fallback: teachers_public -> sacar teacherDocId y luego leer teachers/{id}
+        final pubCols = ['teachers_public', 'teacher_public'];
+        for (final pub in pubCols) {
+          final pubRef = _db.collection(root).doc(sid).collection(pub);
+
+          QueryDocumentSnapshot<Map<String, dynamic>>? pubSnap;
+
+          if (emailLower.isNotEmpty) {
+            pubSnap = await _findOne(pubRef, 'emailLower', emailLower) ?? pubSnap;
+            pubSnap = await _findOne(pubRef, 'email', emailLower) ?? pubSnap;
+          }
+          if (pubSnap == null && phoneLocal.isNotEmpty) {
+            pubSnap = await _findOne(pubRef, 'phoneLocal', phoneLocal);
+          }
+          if (pubSnap == null && phoneE164.isNotEmpty) {
+            pubSnap = await _findOne(pubRef, 'phone', phoneE164);
+          }
+          if (pubSnap == null) {
+            pubSnap = await _findOne(pubRef, 'authUid', uid);
+          }
+
+          if (pubSnap != null) {
+            final pd = pubSnap.data();
+            final teacherId =
+                (pd['teacherDocId'] ?? pd['teacherId'] ?? pubSnap.id).toString().trim();
+            if (teacherId.isNotEmpty) {
+              try {
+                final real = await teachersRef.doc(teacherId).get();
+                if (real.exists) {
+                  teacherSnap = real;
+                  resolvedSchoolId = sid;
+                  resolvedRoot = root;
+                  break;
+                }
+              } catch (_) {}
+            }
+          }
+        }
+        if (teacherSnap != null) break;
       }
+      if (teacherSnap != null) break;
     }
 
-    // ❌ si sigue vacío => muestra error y corta
-    if (teacherDocId.isEmpty) {
+    if (teacherSnap == null || resolvedSchoolId == null) {
       setState(() {
-        _rootCol = resolvedRoot;
-        _schoolIdAuth = resolvedSchoolId;
-        _memberRole = role;
         _loading = false;
         _error =
-            'Encontré el member, pero NO pude resolver teacherDocId.\n'
-            'Ruta: $resolvedRoot/$resolvedSchoolId/members/(docId puede no ser uid)\n'
-            'Revisa teachers_public/teacher_public: authUid/emailLower/teacherId.';
+            'No encontré tu registro en teachers.\n'
+            'Probé schoolId: ${schoolCandidates.join(", ")}\n'
+            'Ruta: /schools/{schoolId}/teachers\n'
+            'emailLower: ${emailLower.isEmpty ? "(vacío)" : emailLower}\n'
+            'phoneLocal: ${phoneLocal.isEmpty ? "(vacío)" : phoneLocal}';
       });
       return;
     }
 
-    // ✅ ok: ya tenemos root + schoolId + teacherDocId
+    final data = teacherSnap.data() ?? {};
+
+    // ✅ vincular authUid para que NUNCA vuelva a fallar
+    final hasAuthUid = (data['authUid'] ?? '').toString().trim().isNotEmpty;
+    if (!hasAuthUid) {
+      try {
+        await teacherSnap.reference.set({
+          'authUid': uid,
+          if (emailLower.isNotEmpty) 'emailLower': emailLower,
+          if (emailRaw.isNotEmpty) 'email': emailRaw,
+          if (phoneE164.isNotEmpty) 'phone': phoneE164,
+          if (phoneLocal.isNotEmpty) 'phoneLocal': phoneLocal,
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      } catch (e) {
+        debugPrint('⚠️ No pude guardar authUid en teacher: $e');
+      }
+    }
+
     _rootCol = resolvedRoot;
     _schoolIdAuth = resolvedSchoolId;
-    _teacherDocIdAuth = teacherDocId;
-    _memberRole = role;
+    _teacherDocIdAuth = teacherSnap.id;
+    _memberRole = 'teacher';
 
+    // ✅ Catálogos (por si teacher no trae grades/subjects completos)
     await Future.wait([
-      _loadTeacherByDocId(),
       _loadCatalogGrades(),
       _loadCatalogSubjects(),
     ]);
 
-    _applySelections();
+    // ✅ aplica info inicial (desde teachers) para no dejar UI vacía
+    _applyTeacherDataToState(data);
+
+    // ✅ NUEVO: escucha en vivo teachers_public (para reflejar cambios del admin)
+    await _attachTeacherPublicRealtime();
 
     if (!mounted) return;
-    setState(() => _loading = false);
+    setState(() {
+      _loading = false;
+    });
   }
 
   // -------------------------
@@ -383,8 +672,10 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
     final sid = _schoolIdAuth!;
     final root = _rootCol;
 
+    // ✅ Incluyo ambos nombres por si tu DB usa plural
     final paths = [
       _db.collection(root).doc(sid).collection('teacher_directory').doc(teacherDocId),
+      _db.collection(root).doc(sid).collection('teachers_directory').doc(teacherDocId),
       _db.collection(root).doc(sid).collection('teachers').doc(teacherDocId),
       _db.collection(root).doc(sid).collection('teachers_public').doc(teacherDocId),
     ];
@@ -412,21 +703,14 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
         _teacherName = userFallbackName();
         _teacherGrades = [];
         _teacherSubjects = [];
+        _teacherGradeKeys = [];
+        _gradeLabelToKey = _buildGradeLabelToKeyMap(gradesLabels: const [], gradeKeys: const []);
         _error = 'No pude leer el documento del docente (teacher_directory/teachers/teachers_public).';
       });
       return;
     }
 
-    final name = _readName(data);
-    final grades = _readGrades(data);
-    final subjects = _readSubjects(data);
-
-    if (!mounted) return;
-    setState(() {
-      _teacherName = name.isNotEmpty ? name : userFallbackName();
-      _teacherGrades = grades;
-      _teacherSubjects = subjects;
-    });
+    _applyTeacherDataToState(data);
   }
 
   String userFallbackName() {
@@ -464,16 +748,43 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
       final docs = await _safeFetch(ref);
       final out = <String>{};
 
+      final map = <String, String>{};
+
       for (final d in docs) {
         final m = d.data();
-        final name = (m['name'] ?? m['gradoKey'] ?? m['nombre'] ?? d.id).toString().trim();
-        if (name.isNotEmpty) out.add(name);
+
+        final label = (m['name'] ?? m['nombre'] ?? m['label'] ?? m['gradoKey'] ?? d.id)
+            .toString()
+            .trim();
+
+        // key real (prioridad: gradoKey)
+        final key = (m['gradoKey'] ?? m['key'] ?? d.id).toString().trim();
+
+        if (label.isNotEmpty) out.add(label);
+
+        if (label.isNotEmpty && key.isNotEmpty) {
+          map[label] = key;
+          map[label.toLowerCase().trim()] = key;
+        }
+        if (key.isNotEmpty) {
+          map[key] = key;
+          map[key.toLowerCase().trim()] = key;
+        }
       }
 
       final list = out.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
 
       if (!mounted) return;
-      setState(() => _schoolGrades = list);
+      setState(() {
+        _schoolGrades = list;
+        _catalogGradeLabelToKey = map;
+
+        // refresca mapping combinado (sin tocar teacherGrades si aún no existen)
+        _gradeLabelToKey = _buildGradeLabelToKeyMap(
+          gradesLabels: _teacherGrades,
+          gradeKeys: _teacherGradeKeys,
+        );
+      });
     } catch (e) {
       debugPrint('ERROR _loadCatalogGrades => $e');
     }
@@ -503,29 +814,6 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
 
     if (!mounted) return;
     setState(() => _schoolSubjects = list);
-  }
-
-  void _applySelections() {
-    final gradesOptions = _teacherGrades.isNotEmpty ? _teacherGrades : _schoolGrades;
-    final subjectsOptions = _teacherSubjects.isNotEmpty ? _teacherSubjects : _schoolSubjects;
-
-    final nextGrade = gradesOptions.isNotEmpty
-        ? ((_selectedGrade != null && gradesOptions.contains(_selectedGrade))
-            ? _selectedGrade
-            : gradesOptions.first)
-        : null;
-
-    final nextSubject = subjectsOptions.isNotEmpty
-        ? ((_selectedSubject != null && subjectsOptions.contains(_selectedSubject))
-            ? _selectedSubject
-            : subjectsOptions.first)
-        : null;
-
-    if (!mounted) return;
-    setState(() {
-      _selectedGrade = nextGrade;
-      _selectedSubject = nextSubject;
-    });
   }
 
   // -------------------------
@@ -567,8 +855,69 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
     );
   }
 
+  void _openCalendarioEscolarDocente() {
+    final sid = (_schoolIdAuth ?? normalizeSchoolIdFromEscuela(widget.escuela))
+        .toString()
+        .trim();
+
+    final selectedLabel = (_selectedGrade ?? '').trim();
+
+    final key = selectedLabel.isNotEmpty
+        ? (_gradeLabelToKey[selectedLabel] ??
+            _gradeLabelToKey[selectedLabel.toLowerCase().trim()] ??
+            '')
+        : '';
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CalendarioEscolarDocenteScreen(
+          escuela: widget.escuela,
+          schoolId: sid,
+          initialGradeLabel: selectedLabel.isNotEmpty ? selectedLabel : null,
+          initialGradeKey: key.isNotEmpty ? key : null,
+        ),
+      ),
+    );
+  }
+
+  // ✅ abrir Estudiantes ya “amarrado” al grado seleccionado del panel
+  void _openEstudiantesDocente() {
+    final sid = _schoolIdAuth;
+    if (sid == null || sid.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No pude resolver el schoolId.')),
+      );
+      return;
+    }
+
+    final selectedLabel = (_selectedGrade ?? '').trim();
+    if (selectedLabel.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Selecciona un grado primero.')),
+      );
+      return;
+    }
+
+    final gradeKey = _gradeLabelToKey[selectedLabel] ??
+        _gradeLabelToKey[selectedLabel.toLowerCase().trim()] ??
+        selectedLabel; // fallback: si ya era key
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DocenteEstudiantesScreen(
+          escuela: widget.escuela,
+          schoolIdOverride: sid,
+          gradeKeyOverride: gradeKey,
+          gradeLabelOverride: selectedLabel,
+        ),
+      ),
+    );
+  }
+
   // -------------------------
-  // UI (más compacto, mismas funciones)
+  // UI
   // -------------------------
   Widget _errorBox(String msg) {
     return Container(
@@ -700,7 +1049,6 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // fila superior (nombre + meta)
               Row(
                 children: [
                   CircleAvatar(
@@ -754,10 +1102,7 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
                   ),
                 ],
               ),
-
               const SizedBox(height: 10),
-
-              // controles compactos (en una línea si cabe)
               if (isNarrow) ...[
                 gradeDrop(),
                 const SizedBox(height: 10),
@@ -806,23 +1151,17 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
                     _errorBox(_error!),
                     const SizedBox(height: 10),
                   ],
-
-                  // ✅ Header MUCHO más compacto (mismas funciones)
                   _compactHeader(
                     gradesOptions: gradesOptions,
                     subjectsOptions: subjectsOptions,
                   ),
-
                   const SizedBox(height: 12),
-
-                  // ✅ Menú (más denso y sin “gigantismo”)
                   Expanded(
                     child: LayoutBuilder(
                       builder: (context, constraints) {
                         final width = constraints.maxWidth;
                         final crossAxisCount = width < 600 ? 2 : 4;
 
-                        // tiles más compactos
                         final tileHeight = width < 600 ? 130.0 : 120.0;
                         final childAspect = (width / crossAxisCount) / tileHeight;
 
@@ -873,16 +1212,21 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
                                 arguments: widget.escuela,
                               ),
                             ),
+
+                            // ✅ abre Estudiantes filtrado por el grado seleccionado
                             _menuItem(
                               context,
                               Icons.group,
                               'Estudiantes',
-                              onTap: () => Navigator.pushNamed(
-                                context,
-                                '/estudiantes',
-                                arguments: widget.escuela,
-                              ),
+                              onTap: _openEstudiantesDocente,
                             ),
+                             _menuItem(
+                              context,
+                              Icons.schedule,
+                              'Calendario\nEscolar',
+                              onTap: _openCalendarioEscolarDocente,
+                            ),
+
                             _menuItem(
                               context,
                               Icons.chat_bubble,

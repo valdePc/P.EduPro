@@ -24,40 +24,21 @@ class PeriodoAcademico {
         'activo': activo,
       };
 
-  factory PeriodoAcademico.fromMap(String id, Map<String, dynamic> map) =>
-      PeriodoAcademico(
-        id: id,
-        nombre: map['nombre'] ?? '',
-        inicio: (map['inicio'] as Timestamp).toDate(),
-        fin: (map['fin'] as Timestamp).toDate(),
-        activo: map['activo'] ?? true,
-      );
-}
+  static DateTime _readDate(dynamic v) {
+    if (v is Timestamp) return v.toDate();
+    if (v is DateTime) return v;
+    return DateTime.now();
+    }
 
-class PlanificacionAnual {
-  final String id;
-  final String schoolId;
-  final String anioEscolar;// Ej: 2025-2026
-  final String nivel; // Inicial, Primaria, Secundaria
-  final String grado;
-  final List<UnidadDidactica> unidades;
-
-  PlanificacionAnual({
-    required this.id,
-    required this.schoolId,
-    required this.anioEscolar,
-    required this.nivel,
-    required this.grado,
-    this.unidades = const [],
-  });
-
-  Map<String, dynamic> toMap() => {
-        'schoolId': schoolId,
-        'anioEscolar': anioEscolar,
-        'nivel': nivel,
-        'grado': grado,
-        'updatedAt': FieldValue.serverTimestamp(),
-      };
+  factory PeriodoAcademico.fromMap(String id, Map<String, dynamic> map) {
+    return PeriodoAcademico(
+      id: id,
+      nombre: (map['nombre'] ?? '').toString(),
+      inicio: _readDate(map['inicio']),
+      fin: _readDate(map['fin']),
+      activo: (map['activo'] is bool) ? map['activo'] as bool : true,
+    );
+  }
 }
 
 class UnidadDidactica {
@@ -78,10 +59,77 @@ class UnidadDidactica {
   });
 
   Map<String, dynamic> toMap() => {
+        'id': id,
         'titulo': titulo,
         'mes': mes,
         'competenciasEspecificas': competenciasEspecificas,
         'contenidos': contenidos,
         'indicadoresLogro': indicadoresLogro,
       };
+
+  factory UnidadDidactica.fromMap(Map<String, dynamic> map) {
+    return UnidadDidactica(
+      id: (map['id'] ?? '').toString(),
+      titulo: (map['titulo'] ?? '').toString(),
+      mes: (map['mes'] ?? '').toString(),
+      competenciasEspecificas: (map['competenciasEspecificas'] as List?)
+              ?.map((e) => e.toString())
+              .toList() ??
+          const [],
+      contenidos:
+          (map['contenidos'] as List?)?.map((e) => e.toString()).toList() ??
+              const [],
+      indicadoresLogro: (map['indicadoresLogro'] as List?)
+              ?.map((e) => e.toString())
+              .toList() ??
+          const [],
+    );
+  }
+}
+
+class PlanificacionAnual {
+  final String id;
+  final String schoolId;
+  final String anioEscolar; // Ej: 2025-2026
+  final String nivel; // Inicial, Primaria, Secundaria
+  final String grado;
+  final List<UnidadDidactica> unidades;
+
+  PlanificacionAnual({
+    required this.id,
+    required this.schoolId,
+    required this.anioEscolar,
+    required this.nivel,
+    required this.grado,
+    this.unidades = const [],
+  });
+
+  Map<String, dynamic> toMap() => {
+        'schoolId': schoolId,
+        'anioEscolar': anioEscolar,
+        'nivel': nivel,
+        'grado': grado,
+        'unidades': unidades.map((u) => u.toMap()).toList(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+
+  factory PlanificacionAnual.fromMap(String id, Map<String, dynamic> map) {
+    final raw = map['unidades'];
+    final unidades = (raw is List)
+        ? raw
+            .where((e) => e is Map)
+            .map((e) => UnidadDidactica.fromMap(
+                Map<String, dynamic>.from(e as Map)))
+            .toList()
+        : <UnidadDidactica>[];
+
+    return PlanificacionAnual(
+      id: id,
+      schoolId: (map['schoolId'] ?? '').toString(),
+      anioEscolar: (map['anioEscolar'] ?? '').toString(),
+      nivel: (map['nivel'] ?? '').toString(),
+      grado: (map['grado'] ?? '').toString(),
+      unidades: unidades,
+    );
+  }
 }

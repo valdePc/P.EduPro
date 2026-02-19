@@ -558,68 +558,104 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
       return;
     }
 
-    final grado = (_gradoSeleccionadoForm ?? '').trim();
-    if (grado.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Selecciona un grado')),
-      );
-      return;
+   final grado = (_gradoSeleccionadoForm ?? '').trim();
+if (grado.isEmpty) {
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(content: Text('Selecciona un grado')),
+  );
+  return;
+}
+
+final tanda = (_tandaSel ?? '').trim();
+if (tanda.isEmpty) {
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(content: Text('Selecciona la tanda')),
+  );
+  return;
+}
+
+final numero = _matriculaCtrl.text.trim();
+
+// ✅ Nivel DB + label
+final nivelDb = nivelToDb(_nivelSel);
+final nivelTxt = nivelLabel(_nivelSel);
+
+// ✅ Resolver gradeId real (docId del grado) de forma segura: gradoKey + nivel
+String? gradoIdReal;
+try {
+  final gradoKey = _nameKey(grado);
+
+  final q1 = await _gradosCol
+      .where('gradoKey', isEqualTo: gradoKey)
+      .where('nivel', isEqualTo: nivelDb)
+      .limit(1)
+      .get();
+
+  if (q1.docs.isNotEmpty) {
+    gradoIdReal = q1.docs.first.id;
+  } else {
+    final q2 = await _gradosCol
+        .where('name', isEqualTo: grado)
+        .where('nivel', isEqualTo: nivelDb)
+        .limit(1)
+        .get();
+
+    if (q2.docs.isNotEmpty) {
+      gradoIdReal = q2.docs.first.id;
     }
+  }
+} catch (_) {
+  gradoIdReal = null;
+}
 
-    final tanda = (_tandaSel ?? '').trim();
-    if (tanda.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Selecciona la tanda')),
-      );
-      return;
-    }
+// ✅ (Recomendado) si no se pudo resolver el grado real, no guardes “a medias”
+if (gradoIdReal == null || gradoIdReal!.isEmpty) {
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(content: Text('No pude vincular el grado (gradoIdReal). Revisa tus grados.')),
+  );
+  return;
+}
 
-    // ✅ Accesos por correo (Google)
-    List<Map<String, dynamic>> accesos;
-    try {
-      accesos = _buildAccesosOrThrow();
-    } catch (msg) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(msg.toString())),
-      );
-      return;
-    }
+// ✅ Accesos por correo (Google)
+List<Map<String, dynamic>> accesos;
+try {
+  accesos = _buildAccesosOrThrow();
+} catch (msg) {
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text(msg.toString())),
+  );
+  return;
+}
 
-    if (accesos.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content:
-              Text('Agrega al menos un correo con acceso (email + usuario).'),
-        ),
-      );
-      return;
-    }
+if (accesos.isEmpty) {
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(
+      content: Text('Agrega al menos un correo con acceso (email + usuario).'),
+    ),
+  );
+  return;
+}
 
-    final accessEmails = accesos.map((a) => a['emailLower'] as String).toList();
+final accessEmails = accesos.map((a) => a['emailLower'] as String).toList();
 
-    final numero = _matriculaCtrl.text.trim();
+setState(() => _saving = true);
+try {
+  final dup = await _yaExistePorNumeroEnGradoYTanda(
+    numero: numero,
+    grado: grado,
+    tanda: tanda,
+    nivelDb: nivelDb,
+  );
 
-    final nivelDb = nivelToDb(_nivelSel);
-    final nivelTxt = nivelLabel(_nivelSel);
+  if (dup) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Ese número ya existe en este grado, tanda y nivel')),
+    );
+    return;
+  }
 
-    setState(() => _saving = true);
-    try {
-      final dup = await _yaExistePorNumeroEnGradoYTanda(
-        numero: numero,
-        grado: grado,
-        tanda: tanda,
-        nivelDb: nivelDb,
-      );
-
-      if (dup) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Ese número ya existe en este grado, tanda y nivel'),
-          ),
-        );
-        return;
-      }
+  // ...
 
       final dup2 = await _yaExistePorNombreDob(
         nombresKey: _nameKey(nombres),
@@ -710,6 +746,9 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
         'ingresoAt': FieldValue.serverTimestamp(),
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
+        'gradoId': gradoIdReal,
+         'gradeId': gradoIdReal, // alias por si tu calendario usa gradeId
+
       };
 
       final batch = _db.batch();
@@ -740,6 +779,9 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
         'updatedAt': FieldValue.serverTimestamp(),
         'status': estadoToDb(_estadoSel),
         'enabled': _estadoSel != EstadoAlumno.bloqueado,
+        'gradoId': gradoIdReal,
+         'gradeId': gradoIdReal,
+
       });
 
       // 3) alumnos_login (por emailLower) -> agrega studentIds

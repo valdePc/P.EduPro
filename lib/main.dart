@@ -56,6 +56,9 @@ import 'package:intl/date_symbol_data_local.dart';
 // Auth
 import 'package:firebase_auth/firebase_auth.dart' as fa;
 
+import 'package:edupro/docentes/screens/estudiantes.dart' as docente;
+
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -206,7 +209,7 @@ class EduProApp extends StatelessWidget {
 
             case '/estudiantes':
               return MaterialPageRoute(
-                builder: (_) => EstudiantesScreen(escuela: args),
+                builder: (_) => docente.DocenteEstudiantesScreen(escuela: args),
                 settings: settings,
               );
 

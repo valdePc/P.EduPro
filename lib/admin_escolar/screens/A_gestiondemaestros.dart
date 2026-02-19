@@ -137,15 +137,24 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
     return s.trim().isEmpty ? const [] : [s.trim()];
   }
 
-  List<String> _teacherGrades(Map<String, dynamic> t) {
-    final list = _normalizeStringList(t['grades']);
-    if (list.isNotEmpty) return list;
+List<String> _teacherGrades(Map<String, dynamic> t) {
+  // nuevo
+  final listNew = _normalizeStringList(t['grades']);
+  if (listNew.isNotEmpty) return listNew;
 
-    final g = (t['grade'] ?? '').toString().trim();
-    if (g.isEmpty) return const [];
-    if (g.contains(',')) return _parseCommaList(g);
-    return [g];
-  }
+  // compat
+  final listOld = _normalizeStringList(t['grados']);
+  if (listOld.isNotEmpty) return listOld;
+
+  final gNew = (t['grade'] ?? '').toString().trim();
+  if (gNew.isNotEmpty) return gNew.contains(',') ? _parseCommaList(gNew) : [gNew];
+
+  final gOld = (t['grado'] ?? '').toString().trim();
+  if (gOld.isNotEmpty) return gOld.contains(',') ? _parseCommaList(gOld) : [gOld];
+
+  return const [];
+}
+
 
   String _normalizeStatus(dynamic raw) {
     final s = (raw ?? '').toString().trim().toLowerCase();
@@ -293,65 +302,6 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
   }
-
-  // LO HICE YOOOOO
-
-  Future<void> _setTeacherStatus(String docId, String status) async {
-  if (!mounted) return;
-  setState(() => _loading = true);
-
-  final payload = <String, dynamic>{
-    'status': status,
-    'statusLower': status,
-    'statusLabel': _statusLabel(status),
-    'statusChangedAt': FieldValue.serverTimestamp(),
-    if (status == _statusActive) 'approvedAt': FieldValue.serverTimestamp(),
-
-    // ✅ opcional pero MUY útil para el login
-    'isActive': status == _statusActive,
-    'updatedAt': FieldValue.serverTimestamp(),
-  };
-
-  try {
-    final schoolDoc = _db.collection('schools').doc(_teachersSchoolId);
-
-    final batch = _db.batch();
-
-    // teachers
-    batch.set(
-      schoolDoc.collection('teachers').doc(docId),
-      payload,
-      SetOptions(merge: true),
-    );
-
-    // teacher_directory
-    batch.set(
-      schoolDoc.collection('teacher_directory').doc(docId),
-      payload,
-      SetOptions(merge: true),
-    );
-
-    // ✅ teachers_public
-    batch.set(
-      schoolDoc.collection('teachers_public').doc(docId),
-      payload,
-      SetOptions(merge: true),
-    );
-
-    await batch.commit();
-
-    if (!mounted) return;
-    setState(() {
-      final idx = _teachers.indexWhere((t) => t['__id'] == docId);
-      if (idx >= 0) _teachers[idx] = {..._teachers[idx], ...payload};
-    });
-  } catch (e) {
-    _snack('Error actualizando estado: $e');
-  } finally {
-    if (mounted) setState(() => _loading = false);
-  }
-}
-
 
   // ------------------------------------------------------------
   //  Resolve teachers schoolId
@@ -1046,6 +996,67 @@ try {
       ),
     );
   }
+
+  Future<void> _setTeacherStatus(String docId, String status) async {
+  if (!mounted) return;
+  setState(() => _loading = true);
+
+  final normalized = _normalizeStatus(status);
+
+  final payload = <String, dynamic>{
+    'status': normalized,
+    'statusLower': normalized,
+    'statusLabel': _statusLabel(normalized),
+    'statusChangedAt': FieldValue.serverTimestamp(),
+    if (normalized == _statusActive) 'approvedAt': FieldValue.serverTimestamp(),
+
+    // ✅ útil para login / queries
+    'isActive': normalized == _statusActive,
+
+    // ✅ timestamps generales
+    'updatedAt': FieldValue.serverTimestamp(),
+    'lastEditedAt': FieldValue.serverTimestamp(),
+  };
+
+  try {
+    final schoolDoc = _db.collection('schools').doc(_teachersSchoolId);
+    final batch = _db.batch();
+
+    // schools/{sid}/teachers/{docId}
+    batch.set(
+      schoolDoc.collection('teachers').doc(docId),
+      payload,
+      SetOptions(merge: true),
+    );
+
+    // schools/{sid}/teacher_directory/{docId}
+    batch.set(
+      schoolDoc.collection('teacher_directory').doc(docId),
+      payload,
+      SetOptions(merge: true),
+    );
+
+    // schools/{sid}/teachers_public/{docId}
+    batch.set(
+      schoolDoc.collection('teachers_public').doc(docId),
+      payload,
+      SetOptions(merge: true),
+    );
+
+    await batch.commit();
+
+    if (!mounted) return;
+    setState(() {
+      final idx = _teachers.indexWhere((t) => t['__id'] == docId);
+      if (idx >= 0) _teachers[idx] = {..._teachers[idx], ...payload};
+    });
+  } catch (e) {
+    _snack('Error actualizando estado: $e');
+  } finally {
+    if (mounted) setState(() => _loading = false);
+  }
+}
+
 
   Future<void> _deleteTeacher(String docId) async {
     final ok = await showDialog<bool>(

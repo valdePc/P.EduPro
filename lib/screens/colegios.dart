@@ -15,7 +15,6 @@ class ColegiosScreen extends StatelessWidget {
 
   // 🔧 Cambia si tus Functions están en otra región
   static const String _functionsRegion = 'us-central1';
-
   FirebaseFunctions get _fn => FirebaseFunctions.instanceFor(region: _functionsRegion);
 
   // =========================
@@ -70,8 +69,7 @@ class ColegiosScreen extends StatelessWidget {
   }
 
   bool _adminPasswordSetFromDoc(Map<String, dynamic> d) {
-    return (d['adminPasswordSet'] == true) ||
-        ((d['adminUid'] ?? '').toString().trim().isNotEmpty);
+    return (d['adminPasswordSet'] == true) || ((d['adminUid'] ?? '').toString().trim().isNotEmpty);
   }
 
   // =========================
@@ -169,7 +167,59 @@ class ColegiosScreen extends StatelessWidget {
   }
 
   // =========================
-  // Admin creds -> Auth via Cloud Function + Firestore solo email/flags
+  // (Opcional) Registro admin en subcolección /admins (tus rules lo permiten SOLO superadmin)
+  // =========================
+  Future<void> _upsertAdminRecord({
+    required String schoolId,
+    required String adminUid,
+    required String email,
+    required String schoolName,
+  }) async {
+    final uid = adminUid.trim();
+    if (uid.isEmpty) return;
+
+    final e = email.trim().toLowerCase();
+    await FirebaseFirestore.instance
+        .collection('schools')
+        .doc(schoolId)
+        .collection('admins')
+        .doc(uid)
+        .set({
+      'uid': uid,
+      'email': e,
+      'role': 'admin_escolar',
+      'schoolId': schoolId,
+      'schoolName': schoolName,
+      'enabled': true,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> _disableOldAdminRecordIfChanged({
+    required String schoolId,
+    required String oldAdminUid,
+    required String newAdminUid,
+  }) async {
+    final oldUid = oldAdminUid.trim();
+    final newUid = newAdminUid.trim();
+    if (oldUid.isEmpty) return;
+    if (newUid.isEmpty) return;
+    if (oldUid == newUid) return;
+
+    await FirebaseFirestore.instance
+        .collection('schools')
+        .doc(schoolId)
+        .collection('admins')
+        .doc(oldUid)
+        .set({
+      'enabled': false,
+      'note': 'Admin anterior (uid cambiado)',
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  // =========================
+  // Admin creds -> Auth via Cloud Function + Firestore solo email/flags (SERVER)
   // =========================
   Future<void> _editAdminCredsDialog(
     BuildContext context, {
@@ -177,6 +227,7 @@ class ColegiosScreen extends StatelessWidget {
     required String schoolName,
     required String currentEmail,
     required bool adminPasswordSet,
+    required String currentAdminUid, // ✅ nuevo (para no perderlo)
   }) async {
     final emailCtrl = TextEditingController(text: currentEmail);
     final passCtrl = TextEditingController(text: ''); // NO autogenerar
@@ -192,11 +243,13 @@ class ColegiosScreen extends StatelessWidget {
             final passNow = passCtrl.text;
             final passProvided = passNow.trim().isNotEmpty;
 
-            final emailChanged =
-                currentEmail.trim().toLowerCase() != emailNow.trim().toLowerCase();
+            final emailChanged = currentEmail.trim().toLowerCase() != emailNow.trim().toLowerCase();
 
-            final needsCloudFunction =
-                (!adminPasswordSet) || passProvided || emailChanged;
+            // ✅ Solo tocamos Auth/SchoolDoc si:
+            // - no existe adminPasswordSet aún, o
+            // - se escribió password, o
+            // - cambió el email
+            final needsCloudFunction = (!adminPasswordSet) || passProvided || emailChanged;
 
             return AlertDialog(
               title: Text('Acceso Admin Escolar • $schoolName'),
@@ -218,9 +271,7 @@ class ColegiosScreen extends StatelessWidget {
                     Align(
                       alignment: Alignment.centerLeft,
                       child: Text(
-                        adminPasswordSet
-                            ? 'Contraseña actual: Asignada (no visible)'
-                            : 'Contraseña actual: No asignada',
+                        adminPasswordSet ? 'Contraseña actual: Asignada (no visible)' : 'Contraseña actual: No asignada',
                         style: TextStyle(
                           fontWeight: FontWeight.w700,
                           color: adminPasswordSet ? Colors.green : Colors.orange,
@@ -233,14 +284,10 @@ class ColegiosScreen extends StatelessWidget {
                       obscureText: !show,
                       onChanged: (_) => setSt(() {}),
                       decoration: InputDecoration(
-                        labelText: adminPasswordSet
-                            ? 'Nueva contraseña (opcional)'
-                            : 'Contraseña (requerida para crear el admin)',
+                        labelText: adminPasswordSet ? 'Nueva contraseña (opcional)' : 'Contraseña (requerida para crear el admin)',
                         helperText: adminPasswordSet
-                            ? 'Déjala vacía para mantener la contraseña actual.\n'
-                                'Si escribes una nueva, se RESETEA en Auth.'
-                            : 'Escribe una contraseña o usa “Generar”.\n'
-                                'Guárdala ahora; luego no podrás verla aquí.',
+                            ? 'Déjala vacía para mantener la contraseña actual.\nSi escribes una nueva, se RESETEA en Auth.'
+                            : 'Escribe una contraseña o usa “Generar”.\nGuárdala ahora; luego no podrás verla aquí.',
                         border: const OutlineInputBorder(),
                         suffixIcon: Wrap(
                           spacing: 0,
@@ -250,17 +297,14 @@ class ColegiosScreen extends StatelessWidget {
                               onPressed: loading
                                   ? null
                                   : () => setSt(() {
-                                        passCtrl.text =
-                                            _generateStrongPassword(length: 14);
+                                        passCtrl.text = _generateStrongPassword(length: 14);
                                       }),
                               icon: const Icon(Icons.auto_fix_high),
                             ),
                             if (adminPasswordSet && passProvided)
                               IconButton(
                                 tooltip: 'Mantener actual (vaciar)',
-                                onPressed: loading
-                                    ? null
-                                    : () => setSt(() => passCtrl.clear()),
+                                onPressed: loading ? null : () => setSt(() => passCtrl.clear()),
                                 icon: const Icon(Icons.undo),
                               ),
                             IconButton(
@@ -274,8 +318,7 @@ class ColegiosScreen extends StatelessWidget {
                     ),
                     const SizedBox(height: 8),
                     const Text(
-                      'Seguridad: la contraseña NO se guarda en Firestore.\n'
-                      'Se aplica en Firebase Auth mediante Cloud Function.',
+                      'Seguridad: la contraseña NO se guarda en Firestore.\nSe aplica en Firebase Auth mediante Cloud Function (callable).',
                       style: TextStyle(color: Colors.grey),
                       textAlign: TextAlign.center,
                     ),
@@ -289,11 +332,7 @@ class ColegiosScreen extends StatelessWidget {
                 ),
                 ElevatedButton.icon(
                   icon: loading
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
+                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                       : const Icon(Icons.save),
                   label: Text(loading ? 'Guardando...' : 'Guardar'),
                   onPressed: loading
@@ -309,8 +348,7 @@ class ColegiosScreen extends StatelessWidget {
                           }
 
                           if (!adminPasswordSet && !passProvidedNow) {
-                            _snack(context,
-                                'Debes asignar una contraseña para crear el admin por primera vez.');
+                            _snack(context, 'Debes asignar una contraseña para crear el admin por primera vez.');
                             return;
                           }
 
@@ -322,11 +360,17 @@ class ColegiosScreen extends StatelessWidget {
                             return;
                           }
 
+                          // si no cambió nada
+                          if (!emailChanged && !passProvidedNow) {
+                            if (ctx.mounted) Navigator.pop(ctx);
+                            _snack(context, 'Sin cambios. ✅');
+                            return;
+                          }
+
                           final ok = await _confirm(
                             context,
                             title: 'Confirmar cambios',
-                            message:
-                                'Colegio: $schoolId\n'
+                            message: 'Colegio: $schoolId\n'
                                 'Correo: $email\n'
                                 'Contraseña: ${passProvidedNow ? 'SE CAMBIA (reset)' : 'se mantiene igual'}\n\n'
                                 '¿Deseas continuar?',
@@ -337,77 +381,58 @@ class ColegiosScreen extends StatelessWidget {
                           setSt(() => loading = true);
 
                           try {
-                            // 1) Firestore: guardar correo SIEMPRE
-                            await FirebaseFirestore.instance
-                                .collection('schools')
-                                .doc(schoolId)
-                                .set(
-                              {
-                                'adminEmail': email,
-                                'adminUpdatedAt': FieldValue.serverTimestamp(),
-                              },
-                              SetOptions(merge: true),
-                            );
+                            String adminUidFinal = currentAdminUid.trim();
 
-                            // 2) Si no hay que tocar Auth: cerrar y listo ✅
-                            if (!needsCloudFunction) {
-                              if (ctx.mounted) Navigator.pop(ctx);
-                              _snack(context, 'Listo ✅ (no se tocó la contraseña).');
-                              return;
+                            // ✅ SOLO callable. El servidor actualiza schools/{schoolId}
+                            if (needsCloudFunction) {
+                              final callable = _fn.httpsCallable(
+                                'upsertSchoolAdmin',
+                                options: HttpsCallableOptions(timeout: const Duration(seconds: 25)),
+                              );
+
+                              final payload = <String, dynamic>{
+                                'schoolId': schoolId,
+                                'email': email,
+                                // compat
+                                'adminEmail': email,
+                                if (passProvidedNow) ...{
+                                  'password': pass,
+                                  'adminPassword': pass,
+                                },
+                              };
+
+                              final res = await callable.call(payload);
+
+                              final data = (res.data is Map)
+                                  ? Map<String, dynamic>.from(res.data as Map)
+                                  : <String, dynamic>{};
+
+                              final uidFromFn = (data['uid'] ?? '').toString().trim();
+                              if (uidFromFn.isNotEmpty) {
+                                adminUidFinal = uidFromFn;
+                              }
                             }
 
-                            _snack(
-                              context,
-                              passProvidedNow
-                                  ? 'Correo guardado ✅. Actualizando contraseña en Auth...'
-                                  : 'Correo guardado ✅. Verificando/actualizando acceso...',
-                            );
+                            // (Opcional) registrar admin en /admins/{uid} (solo si tenemos uid)
+                            if (adminUidFinal.isNotEmpty) {
+                              await _disableOldAdminRecordIfChanged(
+                                schoolId: schoolId,
+                                oldAdminUid: currentAdminUid,
+                                newAdminUid: adminUidFinal,
+                              );
+                              await _upsertAdminRecord(
+                                schoolId: schoolId,
+                                adminUid: adminUidFinal,
+                                email: email,
+                                schoolName: schoolName,
+                              );
+                            }
 
-                            // 3) Cloud Function con timeout REAL
-                            final callable = _fn.httpsCallable(
-                              'upsertSchoolAdmin',
-                              options: HttpsCallableOptions(
-                                timeout: const Duration(seconds: 25),
-                              ),
-                            );
-
-                            final payload = <String, dynamic>{
-                              'schoolId': schoolId,
-                              'email': email,
-                              'adminEmail': email,
-                              if (passProvidedNow) ...{
-                                'password': pass,
-                                'adminPassword': pass,
-                              },
-                            };
-
-                            final res = await callable.call(payload);
-
-                            final data = (res.data is Map)
-                                ? Map<String, dynamic>.from(res.data as Map)
-                                : <String, dynamic>{};
-
-                            final adminUid = (data['uid'] ?? '').toString().trim();
-
-                            // 4) Flags en Firestore
-                            await FirebaseFirestore.instance
-                                .collection('schools')
-                                .doc(schoolId)
-                                .set(
-                              {
-                                if (adminUid.isNotEmpty) 'adminUid': adminUid,
-                                'adminPasswordSet': true,
-                                'adminUpdatedAt': FieldValue.serverTimestamp(),
-                              },
-                              SetOptions(merge: true),
-                            );
-
-                            // 5) Cerrar modal
+                            // Cerrar modal
                             if (ctx.mounted) Navigator.pop(ctx);
-
                             if (!context.mounted) return;
 
-                            // 6) Mostrar credenciales SOLO si creaste/cambiaste contraseña
+                            // Mostrar credenciales SOLO si creaste/cambiaste contraseña
                             if (passProvidedNow || !adminPasswordSet) {
                               await showDialog<void>(
                                 context: context,
@@ -451,16 +476,24 @@ class ColegiosScreen extends StatelessWidget {
                             } else {
                               _snack(context, 'Correo actualizado ✅ (contraseña se mantuvo).');
                             }
+                          } on FirebaseException catch (e) {
+                            if (e.code == 'permission-denied') {
+                              _snack(
+                                context,
+                                'Permiso denegado. Este cambio requiere superadmin según tus reglas.',
+                              );
+                            } else {
+                              _snack(context, 'Firestore falló: ${e.code} • ${e.message ?? ''}');
+                            }
                           } on FirebaseFunctionsException catch (e) {
                             _snack(
                               context,
-                              'Auth falló: ${e.code} • ${e.message ?? ''}',
+                              'Cloud Function falló: ${e.code} • ${e.message ?? ''}',
                             );
                           } on TimeoutException {
                             _snack(
                               context,
-                              'Auth tardó demasiado (timeout). Reintenta. '
-                              'Si pasa siempre, revisa región/logs de Functions.',
+                              'Auth tardó demasiado (timeout). Reintenta. Si pasa siempre, revisa región/logs de Functions.',
                             );
                           } catch (e) {
                             _snack(context, 'Ocurrió un error: $e');
@@ -555,6 +588,7 @@ class ColegiosScreen extends StatelessWidget {
             final nombre = (d['name'] ?? d['nombre'] ?? '').toString();
             final activo = (d['active'] ?? d['activo'] ?? true) == true;
             final adminEmail = (d['adminEmail'] ?? '').toString().trim();
+            final adminUid = (d['adminUid'] ?? '').toString().trim();
 
             final adminPasswordSet = _adminPasswordSetFromDoc(d);
             final adminReady = adminEmail.isNotEmpty && adminPasswordSet;
@@ -591,6 +625,7 @@ class ColegiosScreen extends StatelessWidget {
                             schoolName: nombre,
                             currentEmail: adminEmail,
                             adminPasswordSet: adminPasswordSet,
+                            currentAdminUid: adminUid,
                           );
                         }
                       },
@@ -670,6 +705,7 @@ class ColegiosScreen extends StatelessWidget {
                     final nombre = (d['name'] ?? d['nombre'] ?? '').toString();
                     final activo = (d['active'] ?? d['activo'] ?? true) == true;
                     final adminEmail = (d['adminEmail'] ?? '').toString().trim();
+                    final adminUid = (d['adminUid'] ?? '').toString().trim();
                     final adminPasswordSet = _adminPasswordSetFromDoc(d);
 
                     return DataRow(cells: [
@@ -698,6 +734,7 @@ class ColegiosScreen extends StatelessWidget {
                               schoolName: nombre,
                               currentEmail: adminEmail,
                               adminPasswordSet: adminPasswordSet,
+                              currentAdminUid: adminUid,
                             );
                           },
                           child: Text(
@@ -734,6 +771,7 @@ class ColegiosScreen extends StatelessWidget {
                                   schoolName: nombre,
                                   currentEmail: adminEmail,
                                   adminPasswordSet: adminPasswordSet,
+                                  currentAdminUid: adminUid,
                                 );
                               },
                             ),
