@@ -48,6 +48,7 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
   String _teacherName = '';
   List<String> _teacherGrades = [];
   List<String> _teacherSubjects = [];
+  List<String> _teacherGradeIds = [];
 
   // ✅ NUEVO: para mapear label -> gradoKey
   List<String> _teacherGradeKeys = [];
@@ -55,6 +56,7 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
 
   // ✅ NUEVO: mapping desde catálogo grados (name/label -> gradoKey/docId)
   Map<String, String> _catalogGradeLabelToKey = {};
+  Map<String, String> _catalogGradeLabelToId = {};
 
   List<String> _schoolGrades = [];
   List<String> _schoolSubjects = [];
@@ -72,6 +74,25 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
   String _phoneE164Cache = '';
   String _phoneLocalCache = '';
   String _uidCache = '';
+
+  String _resolveSelectedGradeId(String selectedLabel) {
+  final sel = selectedLabel.trim().toLowerCase();
+  if (sel.isEmpty) return '';
+
+  // Caso ideal: grades y gradeIds alineados por índice
+  if (_teacherGrades.isNotEmpty &&
+      _teacherGradeIds.isNotEmpty &&
+      _teacherGrades.length == _teacherGradeIds.length) {
+    final idx = _teacherGrades.indexWhere((g) => g.trim().toLowerCase() == sel);
+    if (idx >= 0) return _teacherGradeIds[idx].trim();
+  }
+
+  // Fallback: si el label ya vino siendo un id y está dentro de gradeIds
+  final maybeId = selectedLabel.trim();
+  if (_teacherGradeIds.contains(maybeId)) return maybeId;
+
+  return '';
+}
 
   // ✅ school doc id: eduproapp_admin_<CODIGO> (tu “modo actual”)
   String get _schoolDocId {
@@ -192,6 +213,22 @@ List<String> _readGrades(Map<String, dynamic> data) {
   return const [];
 }
 
+List<String> _readGradeIds(Map<String, dynamic> data) {
+  final a = _asStringListOrMapKeys(data['gradeIds']);
+  if (a.isNotEmpty) return a;
+
+  final b = _asStringListOrMapKeys(data['gradoIds']);
+  if (b.isNotEmpty) return b;
+
+  final c = _asStringListOrMapKeys(data['gradosIds']);
+  if (c.isNotEmpty) return c;
+
+  final d = _asStringListOrMapKeys(data['gradesIds']);
+  if (d.isNotEmpty) return d;
+
+  return const [];
+}
+
 // ✅ leer gradeKeys/keys reales (gradoKey) del docente
 List<String> _readGradeKeys(Map<String, dynamic> data) {
   final a = _asStringListOrMapKeys(data['gradosKeys']);
@@ -300,6 +337,7 @@ List<String> _readGradeKeys(Map<String, dynamic> data) {
     final name = _readName(data);
     final grades = _readGrades(data);
     final subjects = _readSubjects(data);
+    final gradeIds = _readGradeIds(data);
     final gradeKeys = _readGradeKeys(data);
 
     final map = _buildGradeLabelToKeyMap(
@@ -308,8 +346,11 @@ List<String> _readGradeKeys(Map<String, dynamic> data) {
     );
 
     final nextTeacherName = name.isNotEmpty ? name : userFallbackName();
-    final nextTeacherGrades = grades;
-    final nextTeacherSubjects = subjects;
+  final nextTeacherGrades =
+    grades.isNotEmpty ? grades : _teacherGrades;
+
+final nextTeacherSubjects =
+    subjects.isNotEmpty ? subjects : _teacherSubjects;
 
     final gradesOptions = nextTeacherGrades.isNotEmpty ? nextTeacherGrades : _schoolGrades;
     final subjectsOptions = nextTeacherSubjects.isNotEmpty ? nextTeacherSubjects : _schoolSubjects;
@@ -331,6 +372,7 @@ List<String> _readGradeKeys(Map<String, dynamic> data) {
       _teacherName = nextTeacherName;
       _teacherGrades = nextTeacherGrades;
       _teacherSubjects = nextTeacherSubjects;
+      _teacherGradeIds = gradeIds;
 
       _teacherGradeKeys = gradeKeys;
       _gradeLabelToKey = map;
@@ -610,20 +652,28 @@ List<String> _readGradeKeys(Map<String, dynamic> data) {
       if (teacherSnap != null) break;
     }
 
-    if (teacherSnap == null || resolvedSchoolId == null) {
-      setState(() {
-        _loading = false;
-        _error =
-            'No encontré tu registro en teachers.\n'
-            'Probé schoolId: ${schoolCandidates.join(", ")}\n'
-            'Ruta: /schools/{schoolId}/teachers\n'
-            'emailLower: ${emailLower.isEmpty ? "(vacío)" : emailLower}\n'
-            'phoneLocal: ${phoneLocal.isEmpty ? "(vacío)" : phoneLocal}';
-      });
-      return;
-    }
+ if (teacherSnap == null || resolvedSchoolId == null) {
+  setState(() {
+    _loading = false;
+    _error =
+        'No encontré tu registro en teachers.\n'
+        'Probé schoolId: ${schoolCandidates.join(", ")}\n'
+        'Ruta: /schools/{schoolId}/teachers\n'
+        'emailLower: ${emailLower.isEmpty ? "(vacío)" : emailLower}\n'
+        'phoneLocal: ${phoneLocal.isEmpty ? "(vacío)" : phoneLocal}';
+  });
+  return;
+}
 
-    final data = teacherSnap.data() ?? {};
+// 🔥 DEBUG AQUÍ
+debugPrint("=================================");
+debugPrint("DOCENTE ENCONTRADO => ${teacherSnap.reference.path}");
+debugPrint("SCHOOL RESUELTO => $resolvedSchoolId");
+debugPrint("ROOT RESUELTO => $resolvedRoot");
+debugPrint("DATA => ${teacherSnap.data()}");
+debugPrint("=================================");
+
+final data = teacherSnap.data() ?? {};
 
     // ✅ vincular authUid para que NUNCA vuelva a fallar
     final hasAuthUid = (data['authUid'] ?? '').toString().trim().isNotEmpty;
@@ -738,57 +788,95 @@ List<String> _readGradeKeys(Map<String, dynamic> data) {
     }
   }
 
-  Future<void> _loadCatalogGrades() async {
-    final sid = _schoolIdAuth;
-    if (sid == null) return;
+Future<void> _loadCatalogGrades() async {
+  final sid = _schoolIdAuth;
+  if (sid == null) return;
 
-    final ref = _db.collection(_rootCol).doc(sid).collection('grados');
+  final ref = _db.collection(_rootCol).doc(sid).collection('grados');
 
-    try {
-      final docs = await _safeFetch(ref);
-      final out = <String>{};
+  try {
+    final docs = await _safeFetch(ref);
 
-      final map = <String, String>{};
+    // ✅ log 1 vez
+    debugPrint('📚 _loadCatalogGrades => ref=${ref.path} docs=${docs.length}');
+    if (docs.isNotEmpty) {
+      debugPrint('📚 ejemplo primero => id=${docs.first.id} data=${docs.first.data()}');
+    }
 
-      for (final d in docs) {
-        final m = d.data();
+    final out = <String>{};
+    final map = <String, String>{};   // label -> gradoKey
+    final mapId = <String, String>{}; // label -> gradeId (docId)
 
-        final label = (m['name'] ?? m['nombre'] ?? m['label'] ?? m['gradoKey'] ?? d.id)
-            .toString()
-            .trim();
+    int i = 0;
+    for (final d in docs) {
+      final m = d.data();
 
-        // key real (prioridad: gradoKey)
-        final key = (m['gradoKey'] ?? m['key'] ?? d.id).toString().trim();
+      // ✅ IMPORTANTE: label preferido es name/nombre
+      final label = (m['name'] ?? m['nombre'] ?? m['label'] ?? m['gradoKey'] ?? d.id)
+          .toString()
+          .trim();
 
-        if (label.isNotEmpty) out.add(label);
+      // key real (prioridad: gradoKey)
+      final key = (m['gradoKey'] ?? m['key'] ?? d.id).toString().trim();
 
-        if (label.isNotEmpty && key.isNotEmpty) {
-          map[label] = key;
-          map[label.toLowerCase().trim()] = key;
-        }
-        if (key.isNotEmpty) {
-          map[key] = key;
-          map[key.toLowerCase().trim()] = key;
-        }
+      // gradeId real: docId del grado (ideal)
+      final gradeId = (m['gradeId'] ?? d.id).toString().trim();
+
+      // ✅ log solo primeros 3
+      if (i < 3) {
+        debugPrint('📚 grado[$i] => label="$label" key="$key" gradeId="$gradeId" docId=${d.id}');
+      }
+      i++;
+
+      // ✅ map label -> gradeId
+      if (label.isNotEmpty && gradeId.isNotEmpty) {
+        mapId[label] = gradeId;
+        mapId[label.toLowerCase().trim()] = gradeId;
+      }
+      // fallback: id->id
+      if (gradeId.isNotEmpty) {
+        mapId[gradeId] = gradeId;
+        mapId[gradeId.toLowerCase().trim()] = gradeId;
       }
 
-      final list = out.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      // ✅ lista para dropdown
+      if (label.isNotEmpty) out.add(label);
 
-      if (!mounted) return;
-      setState(() {
-        _schoolGrades = list;
-        _catalogGradeLabelToKey = map;
-
-        // refresca mapping combinado (sin tocar teacherGrades si aún no existen)
-        _gradeLabelToKey = _buildGradeLabelToKeyMap(
-          gradesLabels: _teacherGrades,
-          gradeKeys: _teacherGradeKeys,
-        );
-      });
-    } catch (e) {
-      debugPrint('ERROR _loadCatalogGrades => $e');
+      // ✅ map label -> gradoKey
+      if (label.isNotEmpty && key.isNotEmpty) {
+        map[label] = key;
+        map[label.toLowerCase().trim()] = key;
+      }
+      if (key.isNotEmpty) {
+        map[key] = key;
+        map[key.toLowerCase().trim()] = key;
+      }
     }
+
+    final list = out.toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+
+    // ✅ log final 1 vez
+    debugPrint(
+      '📚 gradesOptions=${list.length} | tiene "1 de Primaria"=${mapId.containsKey("1 de Primaria")} | id="${mapId["1 de Primaria"] ?? ""}"',
+    );
+
+    if (!mounted) return;
+    setState(() {
+      _schoolGrades = list;
+      _catalogGradeLabelToKey = map;
+      _catalogGradeLabelToId = mapId;
+
+      // refresca mapping combinado
+      _gradeLabelToKey = _buildGradeLabelToKeyMap(
+        gradesLabels: _teacherGrades,
+        gradeKeys: _teacherGradeKeys,
+      );
+    });
+  } catch (e) {
+    debugPrint('ERROR _loadCatalogGrades => $e');
   }
+}
 
   Future<void> _loadCatalogSubjects() async {
     final sid = _schoolIdAuth;
@@ -891,18 +979,28 @@ List<String> _readGradeKeys(Map<String, dynamic> data) {
       return;
     }
 
-    final selectedLabel = (_selectedGrade ?? '').trim();
-    if (selectedLabel.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Selecciona un grado primero.')),
-      );
-      return;
-    }
+final selectedLabel = (_selectedGrade ?? '').trim();
+if (selectedLabel.isEmpty) {
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(content: Text('Selecciona un grado primero.')),
+  );
+  return;
+}
 
-    final gradeKey = _gradeLabelToKey[selectedLabel] ??
-        _gradeLabelToKey[selectedLabel.toLowerCase().trim()] ??
-        selectedLabel; // fallback: si ya era key
+final resolvedGradeId = _resolveSelectedGradeId(selectedLabel);
+debugPrint('🧪 Estudiantes => selectedLabel="$selectedLabel" | gradeId="$resolvedGradeId" | schoolId="$sid"');
 
+final gradeKey = _gradeLabelToKey[selectedLabel] ??
+    _gradeLabelToKey[selectedLabel.toLowerCase().trim()] ??
+    selectedLabel;
+
+final gradeId = _catalogGradeLabelToId[selectedLabel] ??
+    _catalogGradeLabelToId[selectedLabel.toLowerCase().trim()] ??
+    '';
+
+debugPrint(
+  '🧪 Estudiantes => selectedLabel="$selectedLabel" | gradeKey="$gradeKey" | gradeId="$gradeId" | schoolId="$sid"',
+);
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -911,6 +1009,8 @@ List<String> _readGradeKeys(Map<String, dynamic> data) {
           schoolIdOverride: sid,
           gradeKeyOverride: gradeKey,
           gradeLabelOverride: selectedLabel,
+         // gradeIdOverride: gradeId.isNotEmpty ? gradeId : null,
+          gradeIdOverride: resolvedGradeId.isNotEmpty ? resolvedGradeId : null,
         ),
       ),
     );

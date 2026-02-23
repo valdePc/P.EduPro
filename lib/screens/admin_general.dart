@@ -7,7 +7,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import 'package:edupro/models/escuela.dart';
-import 'package:edupro/models/freelancer.dart';
 
 class AdminGeneralScreen extends StatefulWidget {
   const AdminGeneralScreen({Key? key}) : super(key: key);
@@ -22,21 +21,22 @@ class _AdminGeneralScreenState extends State<AdminGeneralScreen>
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
   String filtroColegio = '';
-  String filtroFreelancer = '';
+
+  // ✅ FIX: prefijo de docs internos que NO deben mostrarse como “colegios”
+  static const String _adminPrefix = 'eduproapp_admin_';
 
   // OJO: esto es solo “doble confirmación” UI. La seguridad real la ponen las Rules.
   final String adminPassword = 'emma';
 
   // Mejor que por índice (porque cambia con streams)
   final Set<String> _visibleSchoolPasswords = {};
-  final Set<String> _visibleFreelancerPasswords = {};
 
   late final TabController _tabController;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 1, vsync: this);
   }
 
   @override
@@ -180,7 +180,8 @@ class _AdminGeneralScreenState extends State<AdminGeneralScreen>
 
     final e = Escuela(
       nombre: (d['name'] ?? '').toString(),
-      adminLink: (d['adminLink'] ?? 'https://edupro.app/admin/${doc.id}').toString(),
+      adminLink:
+          (d['adminLink'] ?? 'https://edupro.app/admin/${doc.id}').toString(),
       profLink: (d['profLink'] ?? '').toString(),
       alumLink: (d['alumLink'] ?? '').toString(),
       fecha: fecha,
@@ -196,65 +197,6 @@ class _AdminGeneralScreenState extends State<AdminGeneralScreen>
     } catch (_) {}
 
     return e;
-  }
-
-  // ---------------- FIRESTORE: FREELANCERS ----------------
-
-  Future<void> _crearFreelancerFirestore(String nombre) async {
-    final id = _genCode();
-    final codeTeacher = _genCode();
-    final codeStudent = _genCode();
-    final pwd = _genCode();
-
-    final data = <String, dynamic>{
-      'name': nombre,
-      'id': id,
-      'teacherLink': 'https://edupro.app/freelancer/maestro/$codeTeacher',
-      'studentLink': 'https://edupro.app/freelancer/estudiante/$codeStudent',
-      'password': pwd,
-      'active': true,
-      'createdAt': Timestamp.now(),
-      'updatedAt': Timestamp.now(),
-      'createdByUid': _auth.currentUser?.uid,
-    };
-
-    await _db.collection('freelancers').doc(id).set(data);
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Contraseña para $nombre: $pwd')),
-    );
-    Clipboard.setData(ClipboardData(text: pwd));
-  }
-
-  Freelancer _freelancerFromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
-    final d = doc.data() ?? {};
-    final ts = d['createdAt'];
-    final fecha = ts is Timestamp ? ts.toDate() : DateTime.now();
-
-    final f = Freelancer(
-      nombre: (d['name'] ?? '').toString(),
-      teacherLink: (d['teacherLink'] ?? '').toString(),
-      studentLink: (d['studentLink'] ?? '').toString(),
-      fecha: fecha,
-      password: (d['password'] ?? '').toString(),
-    );
-
-    try {
-      f.activo = (d['active'] ?? true) == true;
-    } catch (_) {}
-
-    return f;
-  }
-
-  Future<void> _toggleFreelancerActivo(String id, bool activo) async {
-    await _db.collection('freelancers').doc(id).update({
-      'active': activo,
-      'updatedAt': Timestamp.now(),
-    });
-  }
-
-  Future<void> _deleteFreelancer(String id) async {
-    await _db.collection('freelancers').doc(id).delete();
   }
 
   // ---------------- BUILD ----------------
@@ -278,7 +220,7 @@ class _AdminGeneralScreenState extends State<AdminGeneralScreen>
     }
 
     return DefaultTabController(
-      length: 2,
+      length: 1,
       child: Scaffold(
         drawer: isMobile
             ? Drawer(
@@ -298,7 +240,6 @@ class _AdminGeneralScreenState extends State<AdminGeneralScreen>
                 indicatorColor: Colors.amber,
                 tabs: const [
                   Tab(text: 'Colegios', icon: Icon(Icons.school)),
-                  Tab(text: 'Freelancers', icon: Icon(Icons.person)),
                 ],
               ),
             ),
@@ -309,7 +250,6 @@ class _AdminGeneralScreenState extends State<AdminGeneralScreen>
                 controller: _tabController,
                 children: [
                   _buildColegiosView(context),
-                  _buildFreelancersView(context),
                 ],
               )
             : Row(
@@ -324,7 +264,6 @@ class _AdminGeneralScreenState extends State<AdminGeneralScreen>
                       controller: _tabController,
                       children: [
                         _buildColegiosView(context),
-                        _buildFreelancersView(context),
                       ],
                     ),
                   ),
@@ -352,7 +291,6 @@ class _AdminGeneralScreenState extends State<AdminGeneralScreen>
           const SizedBox(height: 30),
           _sidebarItem(Icons.dashboard, 'Panel principal', '/panel', currentRoute),
           _sidebarItem(Icons.school, 'Colegios', '/colegios', currentRoute),
-          _sidebarItem(Icons.person, 'Freelancers', '/freelancers', currentRoute),
           _sidebarItem(Icons.receipt_long, 'Facturación', '/facturacion', currentRoute),
           _sidebarItem(Icons.settings, 'Configuración', '/configuracion', currentRoute),
         ],
@@ -391,7 +329,10 @@ class _AdminGeneralScreenState extends State<AdminGeneralScreen>
           return const Center(child: CircularProgressIndicator());
         }
 
-        final docs = snap.data!.docs;
+        // ✅ FIX: aquí está la solución del duplicado en Admin General
+        final docs = snap.data!.docs
+            .where((d) => !d.id.startsWith(_adminPrefix))
+            .toList();
 
         final escuelas = docs.map(_escuelaFromDoc).toList();
 
@@ -465,29 +406,30 @@ class _AdminGeneralScreenState extends State<AdminGeneralScreen>
                                 IconButton(
                                   icon: const Icon(Icons.admin_panel_settings,
                                       color: Colors.blue),
-  onPressed: () {
-    Navigator.pushNamed(context, '/admincole', arguments: c);
-  },
+                                  onPressed: () {
+                                    Navigator.pushNamed(context, '/admincole',
+                                        arguments: c);
+                                  },
                                 ),
                               ),
                               DataCell(
                                 IconButton(
                                   icon: const Icon(Icons.person_outline,
                                       color: Colors.green),
-onPressed: () {
-  Navigator.pushNamed(context, '/docentes', arguments: c);
-},
-
+                                  onPressed: () {
+                                    Navigator.pushNamed(context, '/docentes',
+                                        arguments: c);
+                                  },
                                 ),
                               ),
                               DataCell(
                                 IconButton(
                                   icon: const Icon(Icons.school,
                                       color: Colors.orange),
-onPressed: () {
-  Navigator.pushNamed(context, '/alumnos', arguments: c);
-},
-
+                                  onPressed: () {
+                                    Navigator.pushNamed(context, '/alumnos',
+                                        arguments: c);
+                                  },
                                 ),
                               ),
                               DataCell(
@@ -548,187 +490,6 @@ onPressed: () {
                                         'Confirmar eliminación');
                                     if (pass == adminPassword) {
                                       await _deleteColegio(code);
-                                    } else if (pass != null) {
-                                      _mostrarError();
-                                    }
-                                  },
-                                ),
-                              ),
-                            ]);
-                          }),
-                        ),
-                      ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  // ---------------- VISTA FREELANCERS ----------------
-
-  Widget _buildFreelancersView(BuildContext context) {
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: _db.collection('freelancers').snapshots(),
-      builder: (ctx, snap) {
-        if (snap.hasError) {
-          return Center(child: Text('Error leyendo freelancers: ${snap.error}'));
-        }
-        if (!snap.hasData) {
-          return const Center(child: CircularProgressIndicator());
-        }
-
-        final docs = snap.data!.docs;
-        final freelancers = docs.map(_freelancerFromDoc).toList();
-
-        final lista = freelancers
-            .where((f) => f.nombre
-                .toLowerCase()
-                .contains(filtroFreelancer.trim().toLowerCase()))
-            .toList()
-          ..sort((a, b) => b.fecha.compareTo(a.fecha));
-
-        return Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      decoration: const InputDecoration(
-                        labelText: 'Buscar freelancer...',
-                        prefixIcon: Icon(Icons.search),
-                        border: OutlineInputBorder(),
-                      ),
-                      onChanged: (v) =>
-                          setState(() => filtroFreelancer = v.toLowerCase()),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  ElevatedButton.icon(
-                    icon: const Icon(Icons.person_add),
-                    label: const Text('Freelancer'),
-                    onPressed: () => _showAddDialog(
-                      title: 'Nuevo freelancer',
-                      hint: 'Nombre del freelancer',
-                      onSave: _crearFreelancerFirestore,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 20),
-              Expanded(
-                child: lista.isEmpty
-                    ? const Center(child: Text('No hay freelancers registrados'))
-                    : SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: DataTable(
-                          columnSpacing: 18,
-                          headingRowColor:
-                              MaterialStateProperty.all(Colors.blue.shade50),
-                          columns: const [
-                            DataColumn(label: Text('Freelancer')),
-                            DataColumn(label: Text('Fecha')),
-                            DataColumn(label: Text('Contraseña')),
-                            DataColumn(label: Text('Maestro')),
-                            DataColumn(label: Text('Estudiante')),
-                            DataColumn(label: Text('Estado')),
-                            DataColumn(label: Text('Eliminar')),
-                          ],
-                          rows: List.generate(lista.length, (i) {
-                            final f = lista[i];
-
-                            // Doc id = último segmento del link o ID guardado
-                            final id = f.teacherLink.isNotEmpty
-                                ? (f.teacherLink.split('/').first)
-                                : '';
-
-                            // Mejor: usa password como clave visible, pero aquí
-                            // para toggle reveal usamos un “key” único estable:
-                            final key = '${f.nombre}-${f.fecha.millisecondsSinceEpoch}';
-
-                            return DataRow(cells: [
-                              DataCell(Text(f.nombre)),
-                              DataCell(Text(
-                                  '${f.fecha.day}/${f.fecha.month}/${f.fecha.year}')),
-                              DataCell(
-                                Row(
-                                  children: [
-                                    Text(
-                                      _visibleFreelancerPasswords.contains(key)
-                                          ? f.password
-                                          : '••••••••',
-                                      style: const TextStyle(
-                                          fontFamily: 'monospace'),
-                                    ),
-                                    IconButton(
-                                      icon: Icon(
-                                        _visibleFreelancerPasswords.contains(key)
-                                            ? Icons.visibility_off
-                                            : Icons.visibility,
-                                      ),
-                                      onPressed: () {
-                                        setState(() {
-                                          if (_visibleFreelancerPasswords
-                                              .contains(key)) {
-                                            _visibleFreelancerPasswords.remove(key);
-                                          } else {
-                                            _visibleFreelancerPasswords.add(key);
-                                          }
-                                        });
-                                      },
-                                    ),
-                                    IconButton(
-                                      tooltip: 'Copiar contraseña',
-                                      icon: const Icon(Icons.copy),
-                                      onPressed: () => copiar(f.password),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              DataCell(
-                                IconButton(
-                                  icon: const Icon(Icons.person, color: Colors.blue),
-                                  onPressed: () => copiar(f.teacherLink),
-                                ),
-                              ),
-                              DataCell(
-                                IconButton(
-                                  icon: const Icon(Icons.person_outline,
-                                      color: Colors.green),
-                                  onPressed: () => copiar(f.studentLink),
-                                ),
-                              ),
-                              DataCell(
-                                _stateCell(
-                                  activo: f.activo,
-                                  onChanged: (v) async {
-                                    final pass = await _solicitarPassword(
-                                        'Confirmar estado');
-                                    if (pass == adminPassword) {
-                                      // OJO: aquí realmente necesitamos el docId (id).
-                                      // Por simplicidad, si quieres te ajusto el modelo
-                                      // para guardar el ID real en Freelancer.
-                                      // Mientras tanto, usa el doc.id en vez de este mapping.
-                                      _mostrarError('Falta mapear el docId real del freelancer para actualizarlo.');
-                                    } else if (pass != null) {
-                                      _mostrarError();
-                                    }
-                                  },
-                                ),
-                              ),
-                              DataCell(
-                                IconButton(
-                                  icon: const Icon(Icons.delete_forever,
-                                      color: Colors.red),
-                                  onPressed: () async {
-                                    final pass = await _solicitarPassword(
-                                        'Confirmar eliminación');
-                                    if (pass == adminPassword) {
-                                      _mostrarError('Falta mapear el docId real del freelancer para eliminarlo.');
                                     } else if (pass != null) {
                                       _mostrarError();
                                     }

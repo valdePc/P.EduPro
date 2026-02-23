@@ -746,8 +746,8 @@ try {
         'ingresoAt': FieldValue.serverTimestamp(),
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
-        'gradoId': gradoIdReal,
-         'gradeId': gradoIdReal, // alias por si tu calendario usa gradeId
+        
+         'gradeId': gradoIdReal, // 'gradoId': gradoIdReal,alias por si tu calendario usa gradeId
 
       };
 

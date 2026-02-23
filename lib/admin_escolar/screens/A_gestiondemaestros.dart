@@ -47,6 +47,7 @@ class _AGestionDeMaestrosState extends State<AGestionDeMaestros> {
   final List<StreamSubscription> _catalogSubs = [];
   final Map<String, Set<String>> _subjectsCache = {};
   final Map<String, Set<String>> _gradesCache = {};
+  Map<String, String> _gradeNameToId = {};
 
   bool _formattingName = false;
 
@@ -276,33 +277,38 @@ List<String> _teacherGrades(Map<String, dynamic> t) {
   //  (Opcional) Directorio: solo para búsquedas/sugerencias
   //  *No toca passwords, no toca Auth.*
   // ------------------------------------------------------------
-  Future<void> _upsertTeacherDirectoryFromData({
-    required String teacherId,
-    required Map<String, dynamic> data,
-  }) async {
-    final loginKey = (data['loginKey'] ?? '').toString().trim();
-    final name = (data['name'] ?? '').toString().trim();
-    final status = _normalizeStatus(data['status']);
-    final emailLower = (data['emailLower'] ?? data['email'] ?? '').toString().trim().toLowerCase();
+Future<void> _upsertTeacherDirectoryFromData({
+  required String teacherId,
+  required Map<String, dynamic> data,
+}) async {
+  final loginKey = (data['loginKey'] ?? '').toString().trim();
+  final name = (data['name'] ?? '').toString().trim();
+  final status = _normalizeStatus(data['status']);
+  final emailLower =
+      (data['emailLower'] ?? data['email'] ?? '').toString().trim().toLowerCase();
 
-    await _db
-        .collection('schools')
-        .doc(_teachersSchoolId)
-        .collection('teacher_directory')
-        .doc(teacherId)
-        .set({
-      'teacherId': teacherId,
-      'schoolId': _teachersSchoolId,
-      if (loginKey.isNotEmpty) 'loginKey': loginKey,
-      if (name.isNotEmpty) 'name': name,
-      'status': status,
-      'statusLower': status,
-      'statusLabel': _statusLabel(status),
-      if (emailLower.isNotEmpty) 'emailLower': emailLower,
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-  }
+  final grades = _teacherGrades(data);
+  final subjects = _teacherSubjects(data);
 
+  await _db
+      .collection('schools')
+      .doc(_teachersSchoolId)
+      .collection('teacher_directory')
+      .doc(teacherId)
+      .set({
+    'teacherId': teacherId,
+    'schoolId': _teachersSchoolId,
+    if (loginKey.isNotEmpty) 'loginKey': loginKey,
+    if (name.isNotEmpty) 'name': name,
+    'grades': grades,
+    'subjects': subjects,
+    'status': status,
+    'statusLower': status,
+    'statusLabel': _statusLabel(status),
+    if (emailLower.isNotEmpty) 'emailLower': emailLower,
+    'updatedAt': FieldValue.serverTimestamp(),
+  }, SetOptions(merge: true));
+}
   // ------------------------------------------------------------
   //  Resolve teachers schoolId
   // ------------------------------------------------------------
@@ -392,19 +398,32 @@ List<String> _teacherGrades(Map<String, dynamic> t) {
     }
   }
 
-  Future<void> _loadGradesOnce() async {
-    try {
-      for (final sid in _catalogSchoolIds) {
-        final gradesSnap = await _db.collection('schools').doc(sid).collection('grados').get();
-        final names = gradesSnap.docs
-            .map((d) => (d.data()['name'] ?? d.id).toString().trim())
-            .where((s) => s.isNotEmpty)
-            .toSet();
-        if (names.isNotEmpty) _gradesCache[sid] = names;
+Future<void> _loadGradesOnce() async {
+  try {
+    _gradeNameToId.clear();
+
+    for (final sid in _catalogSchoolIds) {
+      final gradesSnap =
+          await _db.collection('schools').doc(sid).collection('grados').get();
+
+      final Set<String> names = {};
+
+      for (final d in gradesSnap.docs) {
+        final name = (d.data()['name'] ?? d.id).toString().trim();
+        if (name.isNotEmpty) {
+          names.add(name);
+          _gradeNameToId[name] = d.id; // 🔥 aquí guardamos el ID real
+        }
       }
-      _recomputeGradesFromCache();
-    } catch (_) {}
-  }
+
+      if (names.isNotEmpty) {
+        _gradesCache[sid] = names;
+      }
+    }
+
+    _recomputeGradesFromCache();
+  } catch (_) {}
+}
 
   String _subjectNameFromMap(Map<String, dynamic> m, String fallbackId) {
     return (m['name'] ??
@@ -913,39 +932,47 @@ List<String> _teacherGrades(Map<String, dynamic> t) {
               try {
                 final safeName = _titleCasePreserveSpaces(rawName).trim();
 
-                final gradesFinal = selectedGrades
-                    .map((e) => e.trim())
-                    .where((e) => e.isNotEmpty)
-                    .toSet()
-                    .toList()
-                  ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+final gradesFinal = selectedGrades
+    .map((e) => e.trim())
+    .where((e) => e.isNotEmpty)
+    .toSet()
+    .toList()
+  ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
 
-                final subjectsFinal = selectedSubjects
-                    .map((e) => e.trim())
-                    .where((e) => e.isNotEmpty)
-                    .toSet()
-                    .toList()
-                  ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+final subjectsFinal = selectedSubjects
+    .map((e) => e.trim())
+    .where((e) => e.isNotEmpty)
+    .toSet()
+    .toList()
+  ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
 
-                final phoneLocal = phoneLocalCtrl.text.trim();
-                final phoneFull = phoneLocal.isEmpty ? '' : '$dialCode$phoneLocal';
+// 🔥 PRIMERO construir gradeIds
+final gradeIdsFinal = gradesFinal
+    .map((name) => _gradeNameToId[name])
+    .where((id) => id != null && id.isNotEmpty)
+    .toList();
 
-                final payload = <String, dynamic>{
-                  'name': safeName,
-                  'grade': gradesFinal.isNotEmpty ? gradesFinal.first : '',
-                  'grades': gradesFinal,
-                  'subjects': subjectsFinal,
-                  'status': status,
-                  'statusLower': status,
-                  'statusLabel': _statusLabel(status),
-                  'phone': phoneFull,
-                  'phoneDialCode': dialCode,
-                  'phoneLocal': phoneLocal,
-                  if (email.isNotEmpty) 'email': email,
-                  if (email.isNotEmpty) 'emailLower': email,
-                  'updatedAt': FieldValue.serverTimestamp(),
-                  'lastEditedAt': FieldValue.serverTimestamp(),
-                };
+final phoneLocal = phoneLocalCtrl.text.trim();
+final phoneFull = phoneLocal.isEmpty ? '' : '$dialCode$phoneLocal';
+
+final payload = <String, dynamic>{
+  'name': safeName,
+  'grade': gradesFinal.isNotEmpty ? gradesFinal.first : '',
+  'grades': gradesFinal,
+  'gradeIds': gradeIdsFinal, // ✅ ahora sí correcto
+  'subjects': subjectsFinal,
+  'status': status,
+  'statusLower': status,
+  'statusLabel': _statusLabel(status),
+  'phone': phoneFull,
+  'phoneDialCode': dialCode,
+  'phoneLocal': phoneLocal,
+  if (email.isNotEmpty) 'email': email,
+  if (email.isNotEmpty) 'emailLower': email,
+  'updatedAt': FieldValue.serverTimestamp(),
+  'lastEditedAt': FieldValue.serverTimestamp(),
+};
+
 
                 await _db
                     .collection('schools')
@@ -997,46 +1024,51 @@ try {
     );
   }
 
-  Future<void> _setTeacherStatus(String docId, String status) async {
+Future<void> _setTeacherStatus(String docId, String status) async {
   if (!mounted) return;
   setState(() => _loading = true);
 
   final normalized = _normalizeStatus(status);
 
-  final payload = <String, dynamic>{
-    'status': normalized,
-    'statusLower': normalized,
-    'statusLabel': _statusLabel(normalized),
-    'statusChangedAt': FieldValue.serverTimestamp(),
-    if (normalized == _statusActive) 'approvedAt': FieldValue.serverTimestamp(),
-
-    // ✅ útil para login / queries
-    'isActive': normalized == _statusActive,
-
-    // ✅ timestamps generales
-    'updatedAt': FieldValue.serverTimestamp(),
-    'lastEditedAt': FieldValue.serverTimestamp(),
-  };
-
   try {
     final schoolDoc = _db.collection('schools').doc(_teachersSchoolId);
+
+    final teacherSnap =
+        await schoolDoc.collection('teachers').doc(docId).get();
+
+    final teacherData = teacherSnap.data() ?? {};
+
+  final payload = <String, dynamic>{
+  'status': normalized,
+  'statusLower': normalized,
+  'statusLabel': _statusLabel(normalized),
+  'statusChangedAt': FieldValue.serverTimestamp(),
+  if (normalized == _statusActive)
+    'approvedAt': FieldValue.serverTimestamp(),
+  'isActive': normalized == _statusActive,
+  'updatedAt': FieldValue.serverTimestamp(),
+  'lastEditedAt': FieldValue.serverTimestamp(),
+
+  // 🔹 PRESERVAR TODO
+  'grades': teacherData['grades'] ?? [],
+  'gradeIds': teacherData['gradeIds'] ?? [],  // ✅ AGREGAR ESTO
+  'subjects': teacherData['subjects'] ?? [],
+};
+
     final batch = _db.batch();
 
-    // schools/{sid}/teachers/{docId}
     batch.set(
       schoolDoc.collection('teachers').doc(docId),
       payload,
       SetOptions(merge: true),
     );
 
-    // schools/{sid}/teacher_directory/{docId}
     batch.set(
       schoolDoc.collection('teacher_directory').doc(docId),
       payload,
       SetOptions(merge: true),
     );
 
-    // schools/{sid}/teachers_public/{docId}
     batch.set(
       schoolDoc.collection('teachers_public').doc(docId),
       payload,
@@ -1046,10 +1078,12 @@ try {
     await batch.commit();
 
     if (!mounted) return;
+
     setState(() {
       final idx = _teachers.indexWhere((t) => t['__id'] == docId);
       if (idx >= 0) _teachers[idx] = {..._teachers[idx], ...payload};
     });
+
   } catch (e) {
     _snack('Error actualizando estado: $e');
   } finally {

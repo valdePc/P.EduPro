@@ -18,7 +18,6 @@ import 'package:edupro/screens/admin_general.dart';
 
 // Pantallas principales
 import 'package:edupro/screens/colegios.dart';
-import 'package:edupro/screens/freelancers.dart';
 import 'package:edupro/screens/facturacion.dart';
 import 'package:edupro/screens/configuracion.dart';
 import 'package:edupro/screens/gestiondeacceso.dart' hide User;
@@ -27,7 +26,6 @@ import 'package:edupro/screens/seguridad.dart';
 import 'package:edupro/screens/notificaciones.dart';
 import 'package:edupro/screens/pagos_facturacion.dart';
 import 'package:edupro/screens/branding_y_apariencia.dart';
-import 'package:edupro/screens/freelancer_detail.dart';
 import 'package:edupro/screens/coleAdmin.dart';
 
 // Admin escolar
@@ -111,7 +109,6 @@ class EduProApp extends StatelessWidget {
         '/panel': (_) => const AdminGeneralScreen(),
 
         '/colegios': (_) => const ColegiosScreen(),
-        '/freelancers': (_) => const FreelancersScreen(),
         '/facturacion': (_) => const FacturacionScreen(),
         '/configuracion': (_) => const ConfiguracionScreen(),
         '/pagos-facturacion': (_) => const PagosFacturacionScreen(),
@@ -120,7 +117,6 @@ class EduProApp extends StatelessWidget {
         '/branding': (_) => const BrandingYAparienciaScreen(),
         '/seguridad': (_) => const SeguridadScreen(),
         '/notificaciones': (_) => const NotificacionesScreen(),
-        '/freelancerDetalle': (_) => const FreelancerDetailScreen(),
         '/coleAdmin': (_) => const ColeAdminScreen(),
       },
 

@@ -10,9 +10,8 @@ import '../widgets/config_menu.dart' as config;
 
 // Repositorios / modelos — ajusta rutas si en tu proyecto están en otra carpeta
 import '../data/escuela_repository.dart';
-import '../data/freelancer_repository.dart';
 import '../models/escuela.dart';
-import '../models/freelancer.dart';
+
 
 class PagosFacturacionScreen extends StatefulWidget {
   const PagosFacturacionScreen({Key? key}) : super(key: key);
@@ -181,63 +180,50 @@ class _PagosFacturacionScreenState extends State<PagosFacturacionScreen>
     );
   }
 
-  /// Construye métricas desde los repositorios reales
-  Widget _buildTopMetrics({required bool isMobile}) {
-    final List<Escuela> escuelas = EscuelaRepository.escuelas;
-    final List<Freelancer> freelancers = FreelancerRepository.freelancers;
+/// Construye métricas solo con colegios
+Widget _buildTopMetrics({required bool isMobile}) {
+  final List<Escuela> escuelas = EscuelaRepository.escuelas;
+  final totalColegios = escuelas.length;
 
-    final totalColegios = escuelas.length;
-    final totalFreelancers = freelancers.length;
+  const montoColegio = 50.0;
+  final expectedRevenue = totalColegios * montoColegio;
 
-    // Asumimos tarifa fija — si lo tienes variable, cámbialo
-    const montoColegio = 50.0;
-    const montoFreelancer = 10.0;
-
-    final expectedRevenue =
-        (totalColegios * montoColegio) + (totalFreelancers * montoFreelancer);
-
-    if (isMobile) {
-      // En móvil: 3 cards en columna para evitar overflow
-      return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Column(
-          children: [
-            _buildMetricsCard('Colegios registrados', '$totalColegios'),
-            const SizedBox(height: 10),
-            _buildMetricsCard('Freelancers registrados', '$totalFreelancers'),
-            const SizedBox(height: 10),
-            _buildMetricsCard(
-              'Facturación estimada',
-              _currency.format(expectedRevenue),
-              color: Colors.green.shade700,
-            ),
-          ],
-        ),
-      );
-    }
-
+  if (isMobile) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      child: Row(
+      child: Column(
         children: [
-          Expanded(
-              child: _buildMetricsCard('Colegios registrados', '$totalColegios')),
-          const SizedBox(width: 12),
-          Expanded(
-              child:
-                  _buildMetricsCard('Freelancers registrados', '$totalFreelancers')),
-          const SizedBox(width: 12),
-          Expanded(
-            child: _buildMetricsCard(
-              'Facturación estimada',
-              _currency.format(expectedRevenue),
-              color: Colors.green.shade700,
-            ),
+          _buildMetricsCard('Colegios registrados', '$totalColegios'),
+          const SizedBox(height: 10),
+          _buildMetricsCard(
+            'Facturación estimada',
+            _currency.format(expectedRevenue),
+            color: Colors.green.shade700,
           ),
         ],
       ),
     );
   }
+
+  return Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+    child: Row(
+      children: [
+        Expanded(
+          child: _buildMetricsCard('Colegios registrados', '$totalColegios'),
+        ),
+        const SizedBox(width: 20),
+        Expanded(
+          child: _buildMetricsCard(
+            'Facturación estimada',
+            _currency.format(expectedRevenue),
+            color: Colors.green.shade700,
+          ),
+        ),
+      ],
+    ),
+  );
+}
 
   Widget _buildPaymentMethodsTab() {
     return Padding(

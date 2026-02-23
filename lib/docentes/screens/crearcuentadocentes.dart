@@ -736,13 +736,14 @@ class _CrearCuentaDocentesScreenState extends State<CrearCuentaDocentesScreen> {
         'phoneDialCode': _dialCode,
         'phoneLocal': phoneLocal,
         if (phoneHash.isNotEmpty) 'phoneHash': phoneHash,
+        'teacherDocId': teacherId,
         'grados': grados,
         'gradosLower': gradosLower,
         'gradosKeys': gradosKeys,
         'subjects': List<String>.from(_asignaturasSeleccionadas),
-        'status': 'blocked',
-        'statusLower': 'blocked',
-        'statusLabel': 'Bloqueado',
+      'status': 'pending',
+'statusLower': 'pending',
+'statusLabel': 'Pendiente',
         'createdFrom': 'self_signup_google',
         'createdAt': now,
         'updatedAt': now,
@@ -771,25 +772,34 @@ class _CrearCuentaDocentesScreenState extends State<CrearCuentaDocentesScreen> {
         'createdAt': now,
       }, SetOptions(merge: true));
 
-      // ✅ teachers_public (público: SOLO para autocomplete / selección antes del login)
-      await _db
-          .collection('schools')
-          .doc(schoolId)
-          .collection('teachers_public')
-          .doc(teacherId)
-          .set({
-        'teacherId': teacherId,
-        'schoolId': schoolId,
-        'loginKey': loginKey,
-        'name': name,
-        'emailLower': emailLower,
-        if (phoneHash.isNotEmpty) 'phoneHash': phoneHash,
-        'status': 'blocked',
-        'statusLower': 'blocked',
-        'statusLabel': 'Bloqueado',
-        'updatedAt': now,
-        'createdAt': now,
-      }, SetOptions(merge: true));
+// ✅ teachers_public (para autocomplete / selección antes del login)
+await _db
+    .collection('schools')
+    .doc(schoolId)
+    .collection('teachers_public')
+    .doc(teacherId)
+    .set({
+  'teacherId': teacherId,
+  'schoolId': schoolId,
+  'loginKey': loginKey,
+  'name': name,
+  'emailLower': emailLower,
+  if (phoneHash.isNotEmpty) 'phoneHash': phoneHash,
+
+  // 🔥 SINCRONIZACIÓN COMPLETA
+  'grades': grados,
+  'gradesLower': gradosLower,
+  'gradesKeys': gradosKeys,
+  'subjects': List<String>.from(_asignaturasSeleccionadas),
+
+  'status': 'blocked',
+  'statusLower': 'blocked',
+  'statusLabel': 'Bloqueado',
+  'isActive': false,
+
+  'updatedAt': now,
+  'createdAt': now,
+}, SetOptions(merge: true));
 
       // limpiar UI
       _gradosSeleccionados.clear();

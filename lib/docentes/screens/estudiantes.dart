@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:edupro/models/escuela.dart';
 
 /// ✅ OJO: Este archivo NO debe tener una clase llamada "DocentesScreen".
+///
 /// Solo "DocenteEstudiantesScreen" para evitar el choque de nombres.
 class DocenteEstudiantesScreen extends StatelessWidget {
   final Escuela escuela;
@@ -12,6 +13,7 @@ class DocenteEstudiantesScreen extends StatelessWidget {
   final String? schoolIdOverride;
   final String? gradeKeyOverride;
   final String? gradeLabelOverride;
+  final String? gradeIdOverride;
 
   const DocenteEstudiantesScreen({
     super.key,
@@ -19,6 +21,7 @@ class DocenteEstudiantesScreen extends StatelessWidget {
     this.schoolIdOverride,
     this.gradeKeyOverride,
     this.gradeLabelOverride,
+    this.gradeIdOverride,
   });
 
   @override
@@ -26,14 +29,9 @@ class DocenteEstudiantesScreen extends StatelessWidget {
     final gradeLabel = (gradeLabelOverride ?? '').trim();
     final gradeKey = (gradeKeyOverride ?? '').trim();
     final schoolId = (schoolIdOverride ?? '').trim();
+    final gradeId = (gradeIdOverride ?? '').trim();
 
-    // ✅ Construimos los posibles valores de grado para filtrar.
-    // (Usamos whereIn sobre el campo "grado" para cubrir si guardas key o label ahí).
-    final gradoCandidates = <String>{
-      if (gradeKey.isNotEmpty) gradeKey,
-      if (gradeLabel.isNotEmpty) gradeLabel,
-    }.toList();
-
+    // ✅ Validación: schoolId requerido
     if (schoolId.isEmpty) {
       return Scaffold(
         appBar: AppBar(
@@ -48,18 +46,33 @@ class DocenteEstudiantesScreen extends StatelessWidget {
       );
     }
 
+    // ✅ Referencia alumnos
     final alumnosRef = FirebaseFirestore.instance
         .collection('schools')
         .doc(schoolId)
         .collection('alumnos');
 
-    Query<Map<String, dynamic>> query = alumnosRef;
-
-    // ✅ Filtra por grado (si tenemos candidates).
-    // Nota: Firestore exige que el campo exista como "grado" para que este filtro funcione.
-    if (gradoCandidates.isNotEmpty && gradoCandidates.length <= 10) {
-      query = query.where('grado', whereIn: gradoCandidates);
+    // ✅ SOLO por gradeId (UID real)
+    if (gradeId.isEmpty) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('Atras', style: TextStyle(fontWeight: FontWeight.w800)),
+        ),
+        body: Center(
+          child: Text(
+            'Falta gradeId para filtrar alumnos.\n\n'
+            'schoolId: $schoolId\n'
+            'gradeLabel: $gradeLabel\n'
+            'gradeKey: $gradeKey\n\n'
+            'Solución: pásame el gradeIdOverride desde paneldedocentes.dart.',
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
     }
+
+    final Query<Map<String, dynamic>> query =
+        alumnosRef.where('gradeId', isEqualTo: gradeId);
 
     return Scaffold(
       appBar: AppBar(
@@ -76,7 +89,6 @@ class DocenteEstudiantesScreen extends StatelessWidget {
               gradeLabel: gradeLabel.isEmpty ? '--' : gradeLabel,
             ),
             const SizedBox(height: 12),
-
             Expanded(
               child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                 stream: query.snapshots(),
@@ -98,13 +110,7 @@ class DocenteEstudiantesScreen extends StatelessWidget {
                   if (docs.isEmpty) {
                     return Center(
                       child: Text(
-                        gradoCandidates.isEmpty
-                            ? 'No hay alumnos registrados en este colegio.'
-                            : 'No encontré alumnos para este grado.\n\n'
-                                'Estoy filtrando por el campo "grado" con:\n'
-                                '${gradoCandidates.join(" / ")}\n\n'
-                                'Si en tu Firestore el campo se llama distinto (ej: "gradoKey"), '
-                                'dime el nombre exacto y lo ajusto.',
+                        'No encontré alumnos para este gradeId:\n$gradeId',
                         textAlign: TextAlign.center,
                       ),
                     );
@@ -124,10 +130,9 @@ class DocenteEstudiantesScreen extends StatelessWidget {
                           ? 'Alumno sin nombre'
                           : ('$nombres $apellidos').trim();
 
-                      final matricula =
-                          (d['matricula'] ?? d['matrícula'] ?? d['codigo'] ?? docs[i].id)
-                              .toString()
-                              .trim();
+                      final matricula = (d['matricula'] ?? d['matrícula'] ?? d['codigo'] ?? docs[i].id)
+                          .toString()
+                          .trim();
 
                       return Card(
                         child: ListTile(

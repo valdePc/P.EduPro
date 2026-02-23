@@ -100,14 +100,16 @@ class _AGradosState extends State<AGrados> {
         return;
       }
 
-      await _gradosCol.add({
-        'name': finalName,
-        'gradoKey': key,
-        // ✅ Nuevo campo (no rompe nada)
-        'nivel': nivel, // inicial | primaria | secundaria
-        'createdAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+final docRef = _gradosCol.doc(); // genera el ID antes de guardar
+
+await docRef.set({
+  'gradeId': docRef.id, // ✅ NUEVO: visible y coincide con el docId
+  'name': finalName,
+  'gradoKey': key,
+  'nivel': nivel,
+  'createdAt': FieldValue.serverTimestamp(),
+  'updatedAt': FieldValue.serverTimestamp(),
+});
 
       _gradoCtrl.clear();
     } catch (e) {
