@@ -2,28 +2,28 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import 'package:edupro/models/escuela.dart';
 
 // Pantallas destino
 import 'package:edupro/admin_escolar/screens/A_calendarioacademico.dart';
 import 'package:edupro/admin_escolar/screens/A_reporteyanalisis.dart';
-import 'package:edupro/admin_escolar/screens/A_notificacionesyrecomendacion.dart';
 import 'package:edupro/admin_escolar/screens/estudiantes.dart';
-import 'package:edupro/admin_escolar/screens/A_planificacionacademica.dart';
-import 'package:edupro/admin_escolar/screens/A_evaluaciones.dart';
-import 'package:edupro/admin_escolar/screens/A_pagos.dart';
 import 'package:edupro/admin_escolar/screens/A_grados.dart';
-import 'package:edupro/admin_escolar/screens/A_reuniones.dart';
+import 'package:edupro/admin_escolar/screens/nota_competencias.dart';
 import 'package:edupro/admin_escolar/screens/A_registro.dart';
 import 'package:edupro/admin_escolar/screens/A_MonitoreoDocentes.dart';
 import 'package:edupro/admin_escolar/screens/A_calendario_escolar.dart';
-
+import 'package:edupro/admin_escolar/screens/notificaciones_admin.dart';
+import 'package:edupro/admin_escolar/screens/A_cierre_escolar.dart';
+import 'package:edupro/admin_escolar/screens/A_cambios_grado.dart';
+import 'package:edupro/admin_escolar/screens/A_gestiondemaestros.dart';
 // Wrapper de asignaturas (pantalla)
 import 'package:edupro/admin_escolar/screens/A_asignaturas.dart';
 
-// Chat admin (solo menú lateral ahora)
-import 'package:edupro/admin_escolar/screens/A_chat_administracion_screen.dart';
+import 'package:edupro/admin_escolar/screens/chat_admin_docentes_screen.dart';
+import 'package:edupro/widgets/app_info_menu.dart';
 
 // Servicio compartido
 import 'package:edupro/admin_escolar/widgets/asignaturas.dart'
@@ -47,26 +47,70 @@ class _ActionItem {
 
 class APizarra extends StatelessWidget {
   final Escuela escuela;
+  final String? schoolIdOverride;
   final bool embedded;
   final void Function(int index)? onNavigate;
 
   const APizarra({
     Key? key,
     required this.escuela,
+    this.schoolIdOverride,
     this.embedded = false,
     this.onNavigate,
-  }) : super(key: key);
+  }) : super(key: key);      //Color.fromARGB(255, 252, 154, 19)
 
-  static const _blue = Color(0xFF0D47A1);
+  static const _blue = Color(0xFF1A237E);
   static const _orange = Color(0xFFFFA000);
 
-  Future<T?> _navigate<T>(BuildContext context, Widget page) {
-    return Navigator.of(context).push<T>(
-      MaterialPageRoute(builder: (_) => page),
+  String get _schoolId => (schoolIdOverride ?? escuela.id).trim();
+
+  Route<T> _buildSoftRoute<T>(Widget page) {
+    return PageRouteBuilder<T>(
+      transitionDuration: const Duration(milliseconds: 180),
+      reverseTransitionDuration: const Duration(milliseconds: 140),
+      pageBuilder: (_, __, ___) => page,
+      transitionsBuilder: (_, animation, __, child) {
+        final fade = CurvedAnimation(
+          parent: animation,
+          curve: Curves.easeOutCubic,
+        );
+        return FadeTransition(opacity: fade, child: child);
+      },
     );
   }
 
+  Future<T?> _navigate<T>(BuildContext context, Widget page) {
+    return Navigator.of(context).push<T>(_buildSoftRoute<T>(page));
+  }
+
+  Future<T?> _navigateMenu<T>(
+    BuildContext context,
+    Widget page,
+  ) async {
+    final nav = Navigator.of(context);
+    if (Scaffold.maybeOf(context)?.isDrawerOpen ?? false) {
+      nav.pop();
+      await Future<void>.delayed(const Duration(milliseconds: 70));
+    }
+    if (!nav.mounted) return null;
+    return nav.push<T>(_buildSoftRoute<T>(page));
+  }
+
   String _formatDate(DateTime d) => DateFormat.yMMMd().format(d);
+
+  Future<void> _logout(BuildContext context) async {
+    try {
+      await FirebaseAuth.instance.signOut();
+    } catch (_) {}
+
+    if (!context.mounted) return;
+    Navigator.pushNamedAndRemoveUntil(
+      context,
+      '/admincole',
+      (route) => false,
+      arguments: escuela,
+    );
+  }
 
   Widget _menuTile({
     required BuildContext context,
@@ -74,13 +118,16 @@ class APizarra extends StatelessWidget {
     required String label,
     required VoidCallback onTap,
     bool selected = false,
+    Color? color,
   }) {
+    final tileColor = color ?? (selected ? _orange : _blue);
+
     return ListTile(
-      leading: Icon(icon, color: selected ? _orange : _blue),
+      leading: Icon(icon, color: tileColor),
       title: Text(
         label,
         style: TextStyle(
-          color: selected ? _orange : _blue,
+          color: tileColor,
           fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
         ),
       ),
@@ -105,22 +152,32 @@ class APizarra extends StatelessWidget {
     );
   }
 
-  void _copyLinks(BuildContext context) {
-    final links = <String>[];
-    if (escuela.adminLink != null) links.add('Admin: ${escuela.adminLink}');
-    if (escuela.profLink != null) links.add('Profesores: ${escuela.profLink}');
-    if (escuela.alumLink != null) links.add('Alumnos: ${escuela.alumLink}');
-
-    if (links.isNotEmpty) {
-      Clipboard.setData(ClipboardData(text: links.join('\n')));
+  Future<void> _copySingleLink(
+    BuildContext context, {
+    required String label,
+    required String? link,
+  }) async {
+    final value = link?.trim();
+    if (value == null || value.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enlaces copiados al portapapeles')),
+        SnackBar(content: Text('No hay enlace disponible para $label')),
       );
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No hay enlaces disponibles')),
-      );
+      return;
     }
+
+    await Clipboard.setData(ClipboardData(text: value));
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('$label copiado al portapapeles')),
+    );
+  }
+
+  String _roleLinkFor(Escuela escuela, String module) {
+    final schoolId = escuela.id.trim();
+    if (schoolId.isEmpty) {
+      return '';
+    }
+    return 'https://edupro-8c4fd.web.app/#/eduproapp/$schoolId/$module';
   }
 
   Widget _statCard({
@@ -192,7 +249,7 @@ Widget _buildStatsGrid(BuildContext context) {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Resumen',
+            'Configuración Académica',
             style: TextStyle(
               fontSize: 16,
               fontWeight: FontWeight.w900,
@@ -209,12 +266,12 @@ Widget _buildStatsGrid(BuildContext context) {
             physics: const NeverScrollableScrollPhysics(),
             children: [
               _statCard(
-                title: 'Reuniones',
+                title: 'Competencias',
                 value: 'Ver',
                 icon: Icons.event,
                 onTap: () => _navigate(
                   context,
-                  AReuniones(escuela: escuela),
+                  NotaCompetenciasScreen(escuela: escuela),
                 ),
               ),
               _statCard(
@@ -224,6 +281,24 @@ Widget _buildStatsGrid(BuildContext context) {
                 onTap: () => _navigate(
                   context,
                   ACalendarioEscolar(escuela: escuela),
+                ),
+              ),
+              _statCard(
+                title: 'Cierre escolar',
+                value: 'Gestionar',
+                icon: Icons.assignment_turned_in_rounded,
+                onTap: () => _navigate(
+                  context,
+                  ACierreEscolarScreen(escuela: escuela),
+                ),
+              ),
+              _statCard(
+                title: 'Cambios de grado',
+                value: 'Revisar',
+                icon: Icons.swap_horiz_rounded,
+                onTap: () => _navigate(
+                  context,
+                  ACambiosGradoScreen(escuela: escuela),
                 ),
               ),
             ],
@@ -272,19 +347,42 @@ Widget _buildStatsGrid(BuildContext context) {
             runSpacing: 10,
             children: [
               FilledButton.icon(
-                onPressed: () => _navigate(
+                onPressed: () => _copySingleLink(
                   context,
-                  APlanificacionAcademica(escuela: escuela),
+                  label: 'Link Admin',
+                  link: _roleLinkFor(escuela, 'admin'),
                 ),
-                icon: const Icon(Icons.event_available),
-                label: const Text('Planificación'),
+                icon: const Icon(Icons.admin_panel_settings_outlined),
+                label: const Text('Link Admin'),
                 style: FilledButton.styleFrom(backgroundColor: _blue),
               ),
               FilledButton.icon(
-                onPressed: () => _navigate(context, AEvaluaciones(escuela: escuela)),
-                icon: const Icon(Icons.assignment),
-                label: const Text('Evaluaciones'),
+                onPressed: () => _copySingleLink(
+                  context,
+                  label: 'Link Docentes',
+                  link: _roleLinkFor(escuela, 'docentes'),
+                ),
+                icon: const Icon(Icons.groups_2_outlined),
+                label: const Text('Link Docentes'),
                 style: FilledButton.styleFrom(backgroundColor: _blue),
+              ),
+              FilledButton.icon(
+                onPressed: () => _copySingleLink(
+                  context,
+                  label: 'Link Alumno',
+                  link: _roleLinkFor(escuela, 'alumnos'),
+                ),
+                icon: const Icon(Icons.school_outlined),
+                label: const Text('Link Alumno'),
+                style: FilledButton.styleFrom(backgroundColor: _orange),
+              ),
+              OutlinedButton.icon(
+                onPressed: () => showAppInfoMenuSheet(
+                  context,
+                  title: 'Ayuda y legal para administracion escolar',
+                ),
+                icon: const Icon(Icons.menu_book_outlined),
+                label: const Text('Ayuda y legal'),
               ),
             ],
           ),
@@ -352,7 +450,7 @@ Widget _buildStatsGrid(BuildContext context) {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Accesos principales',
+            'Gestión Escolar',
             style: TextStyle(
               fontSize: 16,
               fontWeight: FontWeight.w900,
@@ -393,7 +491,13 @@ Widget _buildStatsGrid(BuildContext context) {
     icon: Icons.how_to_reg,
     accent: _blue,
     primary: true,
-    onTap: () => _navigate(context, ARegistro(escuela: escuela)),
+    onTap: () => _navigate(
+      context,
+      ARegistro(
+        escuela: escuela,
+        schoolIdOverride: _schoolId,
+      ),
+    ),
   ),
   _ActionItem(
     label: 'Grados',
@@ -412,7 +516,7 @@ Widget _buildStatsGrid(BuildContext context) {
   _ActionItem(
     label: 'Alumnos',
     icon: Icons.person_search,
-    accent: _orange,
+    accent: _blue,
     primary: true,
     onTap: () => _navigate(context, AEstudiantes(escuela: escuela)),
   ),
@@ -481,10 +585,9 @@ Widget _buildStatsGrid(BuildContext context) {
                   if (onNavigate != null) {
                     onNavigate!(1);
                   } else {
-                    Navigator.pushNamed(
+                    _navigateMenu(
                       context,
-                      '/admin/gestion-maestros',
-                      arguments: escuela,
+                      AGestionDeMaestros(escuela: escuela),
                     );
                   }
                 },
@@ -497,7 +600,10 @@ Widget _buildStatsGrid(BuildContext context) {
                   if (onNavigate != null) {
                     onNavigate!(4);
                   } else {
-                    _navigate(context, AMonitoreoDocentes(escuela: escuela));
+                    _navigateMenu(
+                      context,
+                      AMonitoreoDocentes(escuela: escuela),
+                    );
                   }
                 },
               ),
@@ -511,7 +617,7 @@ Widget _buildStatsGrid(BuildContext context) {
                   if (onNavigate != null) {
                     onNavigate!(2);
                   } else {
-                    _navigate(context, ACalendarioAcademico(escuela: escuela));
+                    _navigateMenu(context, ACalendarioAcademico(escuela: escuela));
                   }
                 },
               ),
@@ -525,91 +631,39 @@ Widget _buildStatsGrid(BuildContext context) {
                   if (onNavigate != null) {
                     onNavigate!(3);
                   } else {
-                    _navigate(context, AReporteYAnalisis(escuela: escuela));
+                    _navigateMenu(context, AReporteYAnalisis(escuela: escuela));
                   }
                 },
               ),
-
               _sectionLabel('Comunicación'),
               _menuTile(
                 context: context,
                 icon: Icons.chat_bubble_outline,
                 label: 'Chat de administración',
-                onTap: () => _navigate(
+                onTap: () => _navigateMenu(
                   context,
-                  AChatAdministracionScreen(escuela: escuela),
+                  ChatAdminDocentesScreen(escuela: escuela),
                 ),
               ),
               _menuTile(
                 context: context,
                 icon: Icons.notifications,
                 label: 'Notificaciones',
-                onTap: () {
-                  if (onNavigate != null) {
-                    onNavigate!(5);
-                  } else {
-                    _navigate(
-                      context,
-                      ANotificacionesYRecomendacion(escuela: escuela),
-                    );
-                  }
-                },
+                onTap: () => _navigateMenu(
+                  context,
+                  NotificacionesAdminScreen(escuela: escuela),
+                ),
               ),
+              _sectionLabel('Cuenta'),
+              _menuTile(
+                context: context,
+                icon: Icons.logout_rounded,
+                label: 'Cerrar sesión',
+                color: Colors.red.shade700,
+                onTap: () => _logout(context),
+              ),
+
             ],
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.all(12),
-          child: Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: Colors.grey.shade200),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.04),
-                  blurRadius: 10,
-                  offset: const Offset(0, 3),
-                ),
-              ],
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  'Herramientas',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w900,
-                    color: Colors.grey.shade800,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                OutlinedButton.icon(
-                  onPressed: () => _copyLinks(context),
-                  icon: const Icon(Icons.copy),
-                  label: const Text('Copiar enlaces'),
-                ),
-const SizedBox(height: 8),
-OutlinedButton.icon(
-  onPressed: () async {
-    final changed = await _navigate<bool>(
-      context,
-      APagos(escuela: escuela), // 👈 aquí navega a A_pagos.dart
-    );
-
-    if (changed == true) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Pagos actualizados')),
-      );
-    }
-  },
-  icon: const Icon(Icons.payment),
-  label: const Text('Pagos'),
-),
-
-              ],
-            ),
           ),
         ),
       ],
@@ -624,42 +678,50 @@ final body = SingleChildScrollView(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // Header (sin PopupMenu)
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      nombre,
-                      style: const TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.w900,
-                        color: _blue,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      'Creada: ${_formatDate(creado)}',
-                      style: TextStyle(color: Colors.grey.shade700),
-                    ),
-                  ],
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(22),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [_blue, _blue],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(
+                  color: _blue.withOpacity(0.16),
+                  blurRadius: 20,
+                  offset: const Offset(0, 12),
                 ),
-              ),
-              const SizedBox(width: 8),
-              IconButton(
-                tooltip: 'Copiar enlaces',
-                onPressed: () => _copyLinks(context),
-                icon: const Icon(Icons.copy),
-              ),
-            ],
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  nombre,
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.w900,
+                    color: Colors.white,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Creada: ${_formatDate(creado)}',
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.82),
+                    fontSize: 15,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
           ),
 
-          const SizedBox(height: 18),
-          Divider(color: Colors.grey.shade300),
-          const SizedBox(height: 12),
+          const SizedBox(height: 24),
 
           // Accesos principales (tarjetas)
           _buildPrimaryActions(
@@ -668,7 +730,6 @@ final body = SingleChildScrollView(
           ),
 
           const SizedBox(height: 18),
-          Divider(color: Colors.grey.shade300),
           const SizedBox(height: 18),
 
           // Métricas + acciones rápidas
@@ -712,6 +773,15 @@ final body = SingleChildScrollView(
           ? AppBar(
               title: Text(nombre, overflow: TextOverflow.ellipsis),
               backgroundColor: _blue,
+              foregroundColor: Colors.white,
+              actions: [
+                IconButton(
+                  tooltip: 'Cerrar sesión',
+                  onPressed: () => _logout(context),
+                  icon: const Icon(Icons.logout_rounded),
+                ),
+                const AppInfoMenuButton(),
+              ],
             )
           : null,
       body: isMobile

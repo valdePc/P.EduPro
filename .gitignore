@@ -43,3 +43,21 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Node / Firebase Functions
+node_modules/
+functions/node_modules/
+# Lockfiles are versioned to make dependency reviews reproducible.
+
+# Local secrets / env files
+.env
+.env.*
+!.env.example
+service-account*.json
+firebase-adminsdk*.json
+
+# Local security test artifacts
+/.security-emulators/
+/security-tests/artifacts/
+/audit-*.json
+/.editor-recovery/

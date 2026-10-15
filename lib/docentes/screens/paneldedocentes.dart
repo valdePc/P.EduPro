@@ -2,6 +2,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:edupro/widgets/app_info_menu.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
@@ -9,18 +10,22 @@ import 'package:edupro/models/escuela.dart';
 import 'package:edupro/utils/school_utils.dart' show normalizeSchoolIdFromEscuela;
 
 // ✅ IMPORTA TU ENUM REAL DEL CALENDARIO
-import 'package:edupro/calendario/models/user_role.dart';
 
 // ✅ CALENDARIO
-import 'package:edupro/calendario/ui/calendario_screen.dart';
+import 'package:edupro/docentes/screens/calendario.dart';
 import 'package:edupro/docentes/screens/calendario_escolar.dart';
-
+import 'package:edupro/docentes/screens/asistencia.dart';
+import 'package:edupro/docentes/screens/tarea.dart';
+// ✅ NOTIFICACIONES DOCENTES
+import 'notificaciones_docentes.dart';
 
 // ✅ CHAT NUEVO (docentes)
-import 'D_chat_docente_screen.dart';
+import 'chat_docentes_screen.dart';
 
 // ✅ ESTUDIANTES (docentes)
 import 'estudiantes.dart'; // ajusta si tu path es distinto
+import 'promocion_docente_screen.dart';
+import 'cambio_grado_docente_screen.dart';
 
 class PaneldedocentesScreen extends StatefulWidget {
   final Escuela escuela;
@@ -31,10 +36,11 @@ class PaneldedocentesScreen extends StatefulWidget {
 }
 
 class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
-  static const Color primaryColor = Color.fromARGB(255, 255, 193, 7); // naranja
+  static const Color primaryColor = Color.fromARGB(255, 252, 154, 19); // naranja
   static const Color secondaryColor = Color.fromARGB(255, 21, 101, 192); // azul
 
   final FirebaseFirestore _db = FirebaseFirestore.instance;
+  late final String _schoolDocId;
 
   bool _loading = true;
   String? _error;
@@ -64,6 +70,10 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
   String? _selectedGrade;
   String? _selectedSubject;
 
+  // ✅ TANDAS (NUEVO)
+  List<String> _teacherTandas = [];
+  String? _selectedTanda;
+
   // ✅ NUEVO: listener en vivo al docente (teachers_public)
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _teacherPublicSub;
   DocumentReference<Map<String, dynamic>>? _teacherPublicRef;
@@ -76,38 +86,29 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
   String _uidCache = '';
 
   String _resolveSelectedGradeId(String selectedLabel) {
-  final sel = selectedLabel.trim().toLowerCase();
-  if (sel.isEmpty) return '';
+    final sel = selectedLabel.trim().toLowerCase();
+    if (sel.isEmpty) return '';
 
-  // Caso ideal: grades y gradeIds alineados por índice
-  if (_teacherGrades.isNotEmpty &&
-      _teacherGradeIds.isNotEmpty &&
-      _teacherGrades.length == _teacherGradeIds.length) {
-    final idx = _teacherGrades.indexWhere((g) => g.trim().toLowerCase() == sel);
-    if (idx >= 0) return _teacherGradeIds[idx].trim();
-  }
-
-  // Fallback: si el label ya vino siendo un id y está dentro de gradeIds
-  final maybeId = selectedLabel.trim();
-  if (_teacherGradeIds.contains(maybeId)) return maybeId;
-
-  return '';
-}
-
-  // ✅ school doc id: eduproapp_admin_<CODIGO> (tu “modo actual”)
-  String get _schoolDocId {
-    final raw = normalizeSchoolIdFromEscuela(widget.escuela).toString().trim();
-
-    if (raw.startsWith('eduproapp_admin_')) {
-      final tail = raw.replaceFirst('eduproapp_admin_', '').toUpperCase();
-      return 'eduproapp_admin_$tail';
+    // Caso ideal: grades y gradeIds alineados por índice
+    if (_teacherGrades.isNotEmpty &&
+        _teacherGradeIds.isNotEmpty &&
+        _teacherGrades.length == _teacherGradeIds.length) {
+      final idx = _teacherGrades.indexWhere((g) => g.trim().toLowerCase() == sel);
+      if (idx >= 0) return _teacherGradeIds[idx].trim();
     }
-    return 'eduproapp_admin_${raw.toUpperCase()}';
+
+    // Fallback: si el label ya vino siendo un id y está dentro de gradeIds
+    final maybeId = selectedLabel.trim();
+    if (_teacherGradeIds.contains(maybeId)) return maybeId;
+
+    return '';
   }
 
   @override
   void initState() {
     super.initState();
+
+    _schoolDocId = normalizeSchoolIdFromEscuela(widget.escuela).toString().trim();
     _loadTeacherFromTeachers(); // ✅ buscar directo en schools/.../teachers
   }
 
@@ -115,6 +116,7 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
   void dispose() {
     _teacherPublicSub?.cancel();
     _teacherPublicSub = null;
+    _teacherPublicRef = null;
     super.dispose();
   }
 
@@ -127,7 +129,8 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
     String schoolId,
     User user,
   ) async {
-    final emailLower = (user.email ?? '').toLowerCase().trim();
+    final emailRaw = (user.email ?? '').trim();
+    final emailLower = emailRaw.toLowerCase();
     final uid = user.uid;
 
     final collections = ['teachers_public', 'teacher_public'];
@@ -149,9 +152,9 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
       }
 
       // 2) por email (por si guardaste email normal)
-      if (emailLower.isNotEmpty) {
+      if (emailRaw.isNotEmpty) {
         try {
-          final q2 = await ref.where('email', isEqualTo: emailLower).limit(1).get();
+          final q2 = await ref.where('email', isEqualTo: emailRaw).limit(1).get();
           if (q2.docs.isNotEmpty) {
             final d = q2.docs.first;
             final data = d.data();
@@ -190,62 +193,71 @@ class _PaneldedocentesScreenState extends State<PaneldedocentesScreen> {
   }
 
   String _readName(Map<String, dynamic> data) {
-    return (data['name'] ??
-            data['nombre'] ??
-            data['displayName'] ??
-            data['fullName'] ??
-            '')
+    return (data['name'] ?? data['nombre'] ?? data['displayName'] ?? data['fullName'] ?? '')
         .toString()
         .trim();
   }
-List<String> _readGrades(Map<String, dynamic> data) {
-  // ✅ Primero el campo nuevo
-  final b = _asStringListOrMapKeys(data['grades']);
-  if (b.isNotEmpty) return b;
 
-  // ✅ Luego compat con campo viejo
-  final a = _asStringListOrMapKeys(data['grados']);
-  if (a.isNotEmpty) return a;
+  List<String> _readGrades(Map<String, dynamic> data) {
+    // ✅ Primero el campo nuevo
+    final b = _asStringListOrMapKeys(data['grades']);
+    if (b.isNotEmpty) return b;
 
-  final c = _asStringListOrMapKeys(data['gradeIds']);
-  if (c.isNotEmpty) return c;
+    // ✅ Luego compat con campo viejo
+    final a = _asStringListOrMapKeys(data['grados']);
+    if (a.isNotEmpty) return a;
 
-  return const [];
-}
+    final c = _asStringListOrMapKeys(data['gradeIds']);
+    if (c.isNotEmpty) return c;
 
-List<String> _readGradeIds(Map<String, dynamic> data) {
-  final a = _asStringListOrMapKeys(data['gradeIds']);
-  if (a.isNotEmpty) return a;
+    return const [];
+  }
 
-  final b = _asStringListOrMapKeys(data['gradoIds']);
-  if (b.isNotEmpty) return b;
+  List<String> _readGradeIds(Map<String, dynamic> data) {
+    final a = _asStringListOrMapKeys(data['gradeIds']);
+    if (a.isNotEmpty) return a;
 
-  final c = _asStringListOrMapKeys(data['gradosIds']);
-  if (c.isNotEmpty) return c;
+    final b = _asStringListOrMapKeys(data['gradoIds']);
+    if (b.isNotEmpty) return b;
 
-  final d = _asStringListOrMapKeys(data['gradesIds']);
-  if (d.isNotEmpty) return d;
+    final c = _asStringListOrMapKeys(data['gradosIds']);
+    if (c.isNotEmpty) return c;
 
-  return const [];
-}
+    final d = _asStringListOrMapKeys(data['gradesIds']);
+    if (d.isNotEmpty) return d;
 
-// ✅ leer gradeKeys/keys reales (gradoKey) del docente
-List<String> _readGradeKeys(Map<String, dynamic> data) {
-  final a = _asStringListOrMapKeys(data['gradosKeys']);
-  if (a.isNotEmpty) return a;
+    return const [];
+  }
 
-  final b = _asStringListOrMapKeys(data['gradoKeys']);
-  if (b.isNotEmpty) return b;
+  // ✅ leer gradeKeys/keys reales (gradoKey) del docente
+  List<String> _readGradeKeys(Map<String, dynamic> data) {
+    final a = _asStringListOrMapKeys(data['gradosKeys']);
+    if (a.isNotEmpty) return a;
 
-  final c = _asStringListOrMapKeys(data['gradeKeys']);
-  if (c.isNotEmpty) return c;
+    final b = _asStringListOrMapKeys(data['gradoKeys']);
+    if (b.isNotEmpty) return b;
 
-  final d = _asStringListOrMapKeys(data['gradosAsignadosKeys']);
-  if (d.isNotEmpty) return d;
+    final c = _asStringListOrMapKeys(data['gradeKeys']);
+    if (c.isNotEmpty) return c;
 
-  return const [];
-}
+    final d = _asStringListOrMapKeys(data['gradosAsignadosKeys']);
+    if (d.isNotEmpty) return d;
 
+    return const [];
+  }
+
+  List<String> _readTandas(Map<String, dynamic> data) {
+    final a = _asStringListOrMapKeys(data['tandas']);
+    if (a.isNotEmpty) return a;
+
+    final b = _asStringListOrMapKeys(data['tandasLower']);
+    if (b.isNotEmpty) return b;
+
+    final t = (data['tanda'] ?? '').toString().trim();
+    if (t.isNotEmpty) return [t];
+
+    return const [];
+  }
 
   List<String> _readSubjects(Map<String, dynamic> data) {
     final a = _asStringListOrMapKeys(data['subjects']);
@@ -304,9 +316,7 @@ List<String> _readGradeKeys(Map<String, dynamic> data) {
     map.addAll(_catalogGradeLabelToKey);
 
     // 2) si vienen alineados por índice: label[i] -> key[i]
-    if (gradesLabels.isNotEmpty &&
-        gradeKeys.isNotEmpty &&
-        gradesLabels.length == gradeKeys.length) {
+    if (gradesLabels.isNotEmpty && gradeKeys.isNotEmpty && gradesLabels.length == gradeKeys.length) {
       for (int i = 0; i < gradesLabels.length; i++) {
         final label = gradesLabels[i].trim();
         final key = gradeKeys[i].trim();
@@ -329,14 +339,13 @@ List<String> _readGradeKeys(Map<String, dynamic> data) {
   }
 
   // -------------------------
-  // ✅ NUEVO: aplica estado docente + revalida dropdowns en 1 setState
+  // ✅ aplica estado docente + revalida dropdowns en 1 setState
   // -------------------------
   void _applyTeacherDataToState(Map<String, dynamic> data) {
-    final user = FirebaseAuth.instance.currentUser;
-
     final name = _readName(data);
     final grades = _readGrades(data);
     final subjects = _readSubjects(data);
+    final tandas = _readTandas(data);
     final gradeIds = _readGradeIds(data);
     final gradeKeys = _readGradeKeys(data);
 
@@ -346,14 +355,22 @@ List<String> _readGradeKeys(Map<String, dynamic> data) {
     );
 
     final nextTeacherName = name.isNotEmpty ? name : userFallbackName();
-  final nextTeacherGrades =
-    grades.isNotEmpty ? grades : _teacherGrades;
 
-final nextTeacherSubjects =
-    subjects.isNotEmpty ? subjects : _teacherSubjects;
+    final nextTeacherGrades = grades.isNotEmpty ? grades : _teacherGrades;
+    final nextTeacherSubjects = subjects.isNotEmpty ? subjects : _teacherSubjects;
 
     final gradesOptions = nextTeacherGrades.isNotEmpty ? nextTeacherGrades : _schoolGrades;
     final subjectsOptions = nextTeacherSubjects.isNotEmpty ? nextTeacherSubjects : _schoolSubjects;
+
+    final tandasOptions = tandas.isNotEmpty
+        ? tandas
+        : (_teacherTandas.isNotEmpty ? _teacherTandas : const ["Mañana", "Tarde", "Noche"]);
+
+    final nextTanda = tandasOptions.isNotEmpty
+        ? ((_selectedTanda != null && tandasOptions.contains(_selectedTanda))
+            ? _selectedTanda
+            : tandasOptions.first)
+        : null;
 
     final nextGrade = gradesOptions.isNotEmpty
         ? ((_selectedGrade != null && gradesOptions.contains(_selectedGrade))
@@ -374,19 +391,21 @@ final nextTeacherSubjects =
       _teacherSubjects = nextTeacherSubjects;
       _teacherGradeIds = gradeIds;
 
+      _teacherTandas = tandasOptions;
+      _selectedTanda = nextTanda;
+
       _teacherGradeKeys = gradeKeys;
       _gradeLabelToKey = map;
 
       _selectedGrade = nextGrade;
       _selectedSubject = nextSubject;
 
-      // si el stream era el que estaba controlando, quitamos error viejo
       _error = null;
     });
   }
 
   // -------------------------
-  // ✅ NUEVO: resolver docId real en teachers_public y suscribirse
+  // ✅ resolver docId real en teachers_public y suscribirse
   // -------------------------
   Future<DocumentReference<Map<String, dynamic>>?> _resolveTeachersPublicDocRef({
     required String root,
@@ -402,7 +421,6 @@ final nextTeacherSubjects =
       if (snap.exists) return direct;
     } catch (_) {}
 
-    // 1) buscar por teacherDocId / teacherId
     Future<DocumentReference<Map<String, dynamic>>?> byField(String field, String value) async {
       if (value.trim().isEmpty) return null;
       try {
@@ -418,7 +436,7 @@ final nextTeacherSubjects =
     final ref2 = await byField('teacherId', teacherDocId);
     if (ref2 != null) return ref2;
 
-    // 2) fallback por authUid/email/phone (por si el docId no es teacherDocId)
+    // 2) fallback por authUid/email/phone
     final ref3 = await byField('authUid', _uidCache);
     if (ref3 != null) return ref3;
 
@@ -449,13 +467,11 @@ final nextTeacherSubjects =
     );
 
     if (ref == null) {
-      debugPrint('⚠️ No pude resolver doc en teachers_public para tid=$tid');
       return;
     }
 
     _teacherPublicRef = ref;
 
-    debugPrint('🔴 Subscribing teachers_public => ${ref.path}');
 
     _teacherPublicSub = ref.snapshots(includeMetadataChanges: true).listen(
       (snap) {
@@ -464,7 +480,6 @@ final nextTeacherSubjects =
         _applyTeacherDataToState(data);
       },
       onError: (e) {
-        debugPrint('⚠️ teachers_public stream error => $e');
       },
     );
   }
@@ -481,13 +496,10 @@ final nextTeacherSubjects =
       final ref = _db.collection(root).doc(schoolId).collection('members').doc(uid);
       final snap = await ref.get();
       if (snap.exists) {
-        debugPrint('✅ MEMBER FOUND => ${ref.path}');
         return snap;
       }
-      debugPrint('.. member no existe => ${ref.path}');
       return null;
     } catch (e) {
-      debugPrint('⚠️ error leyendo member $root/$schoolId => $e');
       return null;
     }
   }
@@ -500,6 +512,7 @@ final nextTeacherSubjects =
 
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
+      if (!mounted) return;
       setState(() {
         _loading = false;
         _error = 'No hay sesión activa.';
@@ -541,7 +554,6 @@ final nextTeacherSubjects =
         final q = await ref.where(field, isEqualTo: value).limit(1).get();
         if (q.docs.isNotEmpty) return q.docs.first;
       } catch (e) {
-        debugPrint('⚠️ where($field == $value) => $e');
       }
       return null;
     }
@@ -550,7 +562,7 @@ final nextTeacherSubjects =
       for (final sid in schoolCandidates) {
         final teachersRef = _db.collection(root).doc(sid).collection('teachers');
 
-        // 0) docId == uid (por si acaso)
+        // 0) docId == uid
         try {
           final byId = await teachersRef.doc(uid).get();
           if (byId.exists) {
@@ -580,7 +592,7 @@ final nextTeacherSubjects =
             break;
           }
 
-          final byEmail = await _findOne(teachersRef, 'email', emailLower);
+          final byEmail = await _findOne(teachersRef, 'email', emailRaw);
           if (byEmail != null) {
             teacherSnap = byEmail;
             resolvedSchoolId = sid;
@@ -589,7 +601,7 @@ final nextTeacherSubjects =
           }
         }
 
-        // 3) phone / phoneLocal ✅
+        // 3) phone / phoneLocal
         if (phoneE164.isNotEmpty) {
           final byPhone = await _findOne(teachersRef, 'phone', phoneE164);
           if (byPhone != null) {
@@ -609,7 +621,7 @@ final nextTeacherSubjects =
           }
         }
 
-        // 4) fallback: teachers_public -> sacar teacherDocId y luego leer teachers/{id}
+        // 4) fallback: teachers_public -> teacherDocId -> teachers/{id}
         final pubCols = ['teachers_public', 'teacher_public'];
         for (final pub in pubCols) {
           final pubRef = _db.collection(root).doc(sid).collection(pub);
@@ -618,7 +630,7 @@ final nextTeacherSubjects =
 
           if (emailLower.isNotEmpty) {
             pubSnap = await _findOne(pubRef, 'emailLower', emailLower) ?? pubSnap;
-            pubSnap = await _findOne(pubRef, 'email', emailLower) ?? pubSnap;
+            pubSnap = await _findOne(pubRef, 'email', emailRaw) ?? pubSnap;
           }
           if (pubSnap == null && phoneLocal.isNotEmpty) {
             pubSnap = await _findOne(pubRef, 'phoneLocal', phoneLocal);
@@ -632,8 +644,7 @@ final nextTeacherSubjects =
 
           if (pubSnap != null) {
             final pd = pubSnap.data();
-            final teacherId =
-                (pd['teacherDocId'] ?? pd['teacherId'] ?? pubSnap.id).toString().trim();
+            final teacherId = (pd['teacherDocId'] ?? pd['teacherId'] ?? pubSnap.id).toString().trim();
             if (teacherId.isNotEmpty) {
               try {
                 final real = await teachersRef.doc(teacherId).get();
@@ -647,33 +658,27 @@ final nextTeacherSubjects =
             }
           }
         }
+
         if (teacherSnap != null) break;
       }
       if (teacherSnap != null) break;
     }
 
- if (teacherSnap == null || resolvedSchoolId == null) {
-  setState(() {
-    _loading = false;
-    _error =
-        'No encontré tu registro en teachers.\n'
-        'Probé schoolId: ${schoolCandidates.join(", ")}\n'
-        'Ruta: /schools/{schoolId}/teachers\n'
-        'emailLower: ${emailLower.isEmpty ? "(vacío)" : emailLower}\n'
-        'phoneLocal: ${phoneLocal.isEmpty ? "(vacío)" : phoneLocal}';
-  });
-  return;
-}
+    if (teacherSnap == null || resolvedSchoolId == null) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = 'No encontré tu registro en teachers.\n'
+            'Probé schoolId: ${schoolCandidates.join(", ")}\n'
+            'Ruta: /schools/{schoolId}/teachers\n'
+            'emailLower: ${emailLower.isEmpty ? "(vacío)" : emailLower}\n'
+            'phoneLocal: ${phoneLocal.isEmpty ? "(vacío)" : phoneLocal}';
+      });
+      return;
+    }
 
-// 🔥 DEBUG AQUÍ
-debugPrint("=================================");
-debugPrint("DOCENTE ENCONTRADO => ${teacherSnap.reference.path}");
-debugPrint("SCHOOL RESUELTO => $resolvedSchoolId");
-debugPrint("ROOT RESUELTO => $resolvedRoot");
-debugPrint("DATA => ${teacherSnap.data()}");
-debugPrint("=================================");
 
-final data = teacherSnap.data() ?? {};
+    final data = teacherSnap.data() ?? <String, dynamic>{};
 
     // ✅ vincular authUid para que NUNCA vuelva a fallar
     final hasAuthUid = (data['authUid'] ?? '').toString().trim().isNotEmpty;
@@ -688,7 +693,6 @@ final data = teacherSnap.data() ?? {};
           'updatedAt': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
       } catch (e) {
-        debugPrint('⚠️ No pude guardar authUid en teacher: $e');
       }
     }
 
@@ -697,23 +701,20 @@ final data = teacherSnap.data() ?? {};
     _teacherDocIdAuth = teacherSnap.id;
     _memberRole = 'teacher';
 
-    // ✅ Catálogos (por si teacher no trae grades/subjects completos)
     await Future.wait([
       _loadCatalogGrades(),
       _loadCatalogSubjects(),
     ]);
 
-    // ✅ aplica info inicial (desde teachers) para no dejar UI vacía
     _applyTeacherDataToState(data);
 
-    // ✅ NUEVO: escucha en vivo teachers_public (para reflejar cambios del admin)
     await _attachTeacherPublicRealtime();
 
     if (!mounted) return;
     setState(() {
       _loading = false;
     });
-  }
+  } // ✅ FIN de _loadTeacherFromTeachers()
 
   // -------------------------
   // 2) Cargar docente desde teacher_directory (fallback teachers / teachers_public)
@@ -722,7 +723,6 @@ final data = teacherSnap.data() ?? {};
     final sid = _schoolIdAuth!;
     final root = _rootCol;
 
-    // ✅ Incluyo ambos nombres por si tu DB usa plural
     final paths = [
       _db.collection(root).doc(sid).collection('teacher_directory').doc(teacherDocId),
       _db.collection(root).doc(sid).collection('teachers_directory').doc(teacherDocId),
@@ -734,11 +734,9 @@ final data = teacherSnap.data() ?? {};
       try {
         final snap = await ref.get();
         if (snap.exists) {
-          debugPrint('✅ TEACHER DOC FOUND => ${ref.path}');
           return snap.data();
         }
       } catch (e) {
-        debugPrint('⚠️ error leyendo teacher doc ${ref.path} => $e');
       }
     }
     return null;
@@ -749,6 +747,7 @@ final data = teacherSnap.data() ?? {};
 
     final data = await _getTeacherDocFromAny(_teacherDocIdAuth!);
     if (data == null) {
+      if (!mounted) return;
       setState(() {
         _teacherName = userFallbackName();
         _teacherGrades = [];
@@ -788,95 +787,63 @@ final data = teacherSnap.data() ?? {};
     }
   }
 
-Future<void> _loadCatalogGrades() async {
-  final sid = _schoolIdAuth;
-  if (sid == null) return;
+  Future<void> _loadCatalogGrades() async {
+    final sid = _schoolIdAuth;
+    if (sid == null) return;
 
-  final ref = _db.collection(_rootCol).doc(sid).collection('grados');
+    final ref = _db.collection(_rootCol).doc(sid).collection('grados');
 
-  try {
-    final docs = await _safeFetch(ref);
+    try {
+      final docs = await _safeFetch(ref);
 
-    // ✅ log 1 vez
-    debugPrint('📚 _loadCatalogGrades => ref=${ref.path} docs=${docs.length}');
-    if (docs.isNotEmpty) {
-      debugPrint('📚 ejemplo primero => id=${docs.first.id} data=${docs.first.data()}');
+      final out = <String>{};
+      final map = <String, String>{}; // label -> gradoKey
+      final mapId = <String, String>{}; // label -> gradeId
+
+      for (final d in docs) {
+        final m = d.data();
+
+        final label = (m['name'] ?? m['nombre'] ?? m['label'] ?? m['gradoKey'] ?? d.id).toString().trim();
+        final key = (m['gradoKey'] ?? m['key'] ?? d.id).toString().trim();
+        final gradeId = (m['gradeId'] ?? d.id).toString().trim();
+
+        if (label.isNotEmpty) out.add(label);
+
+        if (label.isNotEmpty && key.isNotEmpty) {
+          map[label] = key;
+          map[label.toLowerCase().trim()] = key;
+        }
+        if (key.isNotEmpty) {
+          map[key] = key;
+          map[key.toLowerCase().trim()] = key;
+        }
+
+        if (label.isNotEmpty && gradeId.isNotEmpty) {
+          mapId[label] = gradeId;
+          mapId[label.toLowerCase().trim()] = gradeId;
+        }
+        if (gradeId.isNotEmpty) {
+          mapId[gradeId] = gradeId;
+          mapId[gradeId.toLowerCase().trim()] = gradeId;
+        }
+      }
+
+      final list = out.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+
+      if (!mounted) return;
+      setState(() {
+        _schoolGrades = list;
+        _catalogGradeLabelToKey = map;
+        _catalogGradeLabelToId = mapId;
+
+        _gradeLabelToKey = _buildGradeLabelToKeyMap(
+          gradesLabels: _teacherGrades,
+          gradeKeys: _teacherGradeKeys,
+        );
+      });
+    } catch (e) {
     }
-
-    final out = <String>{};
-    final map = <String, String>{};   // label -> gradoKey
-    final mapId = <String, String>{}; // label -> gradeId (docId)
-
-    int i = 0;
-    for (final d in docs) {
-      final m = d.data();
-
-      // ✅ IMPORTANTE: label preferido es name/nombre
-      final label = (m['name'] ?? m['nombre'] ?? m['label'] ?? m['gradoKey'] ?? d.id)
-          .toString()
-          .trim();
-
-      // key real (prioridad: gradoKey)
-      final key = (m['gradoKey'] ?? m['key'] ?? d.id).toString().trim();
-
-      // gradeId real: docId del grado (ideal)
-      final gradeId = (m['gradeId'] ?? d.id).toString().trim();
-
-      // ✅ log solo primeros 3
-      if (i < 3) {
-        debugPrint('📚 grado[$i] => label="$label" key="$key" gradeId="$gradeId" docId=${d.id}');
-      }
-      i++;
-
-      // ✅ map label -> gradeId
-      if (label.isNotEmpty && gradeId.isNotEmpty) {
-        mapId[label] = gradeId;
-        mapId[label.toLowerCase().trim()] = gradeId;
-      }
-      // fallback: id->id
-      if (gradeId.isNotEmpty) {
-        mapId[gradeId] = gradeId;
-        mapId[gradeId.toLowerCase().trim()] = gradeId;
-      }
-
-      // ✅ lista para dropdown
-      if (label.isNotEmpty) out.add(label);
-
-      // ✅ map label -> gradoKey
-      if (label.isNotEmpty && key.isNotEmpty) {
-        map[label] = key;
-        map[label.toLowerCase().trim()] = key;
-      }
-      if (key.isNotEmpty) {
-        map[key] = key;
-        map[key.toLowerCase().trim()] = key;
-      }
-    }
-
-    final list = out.toList()
-      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
-
-    // ✅ log final 1 vez
-    debugPrint(
-      '📚 gradesOptions=${list.length} | tiene "1 de Primaria"=${mapId.containsKey("1 de Primaria")} | id="${mapId["1 de Primaria"] ?? ""}"',
-    );
-
-    if (!mounted) return;
-    setState(() {
-      _schoolGrades = list;
-      _catalogGradeLabelToKey = map;
-      _catalogGradeLabelToId = mapId;
-
-      // refresca mapping combinado
-      _gradeLabelToKey = _buildGradeLabelToKeyMap(
-        gradesLabels: _teacherGrades,
-        gradeKeys: _teacherGradeKeys,
-      );
-    });
-  } catch (e) {
-    debugPrint('ERROR _loadCatalogGrades => $e');
   }
-}
 
   Future<void> _loadCatalogSubjects() async {
     final sid = _schoolIdAuth;
@@ -911,7 +878,7 @@ Future<void> _loadCatalogGrades() async {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => DChatDocenteScreen(
+        builder: (_) => ChatDocentesScreen(
           escuela: widget.escuela,
           docenteNombre: _teacherName.isNotEmpty ? _teacherName : null,
         ),
@@ -919,41 +886,109 @@ Future<void> _loadCatalogGrades() async {
     );
   }
 
-  void _openCalendarioDocente() {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No hay sesión activa. Inicia sesión nuevamente.')),
-      );
-      return;
-    }
-
-    final schoolId = _schoolIdAuth ?? normalizeSchoolIdFromEscuela(widget.escuela);
-
+  void _openNotificacionesDocente() {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => CalendarioScreen(
-          schoolId: schoolId,
-          role: UserRole.teacher,
-          userUid: user.uid,
-          userGroups: const [],
+        builder: (_) => DocentesNotificacionesScreen(escuela: widget.escuela),
+      ),
+    );
+  }
+
+  // ✅ filtro por destinatario
+  bool _notifIsForMe(Map<String, dynamic> n) {
+    final type = (n['targetType'] ?? 'all_teachers').toString().trim();
+
+    if (type == 'all_teachers') return true;
+
+    if (type == 'teacher') {
+      final myTeacherDocId = (_teacherDocIdAuth ?? '').toString().trim();
+      final tdoc = (n['teacherDocId'] ?? '').toString().trim();
+      return myTeacherDocId.isNotEmpty && tdoc == myTeacherDocId;
+    }
+
+    if (type == 'grade') {
+      final gid = (n['gradeId'] ?? '').toString().trim();
+      if (gid.isEmpty) return false;
+      return _teacherGradeIds.map((e) => e.toString().trim()).contains(gid);
+    }
+
+    return true;
+  }
+
+  bool _notifIsUnread(Map<String, dynamic> n) {
+    final myUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    if (myUid.isEmpty) return false;
+
+    final readBy = n['readBy'];
+    if (readBy is List) {
+      return !readBy.map((e) => e.toString()).contains(myUid);
+    }
+    return true; // compat si no existe
+  }
+
+  Widget _buildNotificacionesTile(BuildContext context) {
+    final sidRaw = (_schoolIdAuth ?? normalizeSchoolIdFromEscuela(widget.escuela).toString()).trim();
+    final schoolId = sidRaw.replaceAll('/', '_');
+
+    final myUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    if (myUid.isEmpty) {
+      return _menuItem(
+        context,
+        Icons.notifications,
+        'Notificaciones',
+        onTap: _openNotificacionesDocente,
+        showDot: false,
+      );
+    }
+
+    final col = _db.collection('schools').doc(schoolId).collection('notificaciones_docentes');
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: col.orderBy('createdAt', descending: true).limit(50).snapshots(),
+      builder: (context, snap) {
+        bool hasUnread = false;
+
+        if (snap.hasData) {
+          for (final d in snap.data!.docs) {
+            final n = d.data();
+            if (_notifIsForMe(n) && _notifIsUnread(n)) {
+              hasUnread = true;
+              break;
+            }
+          }
+        }
+
+        return _menuItem(
+          context,
+          Icons.notifications,
+          'Notificaciones',
+          onTap: _openNotificacionesDocente,
+          showDot: hasUnread,
+        );
+      },
+    );
+  }
+
+  void _openCalendarioDocente() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DocentesCalendarioScreen(
+          escuela: widget.escuela,
+          userUid: FirebaseAuth.instance.currentUser?.uid ?? '',
         ),
       ),
     );
   }
 
   void _openCalendarioEscolarDocente() {
-    final sid = (_schoolIdAuth ?? normalizeSchoolIdFromEscuela(widget.escuela))
-        .toString()
-        .trim();
+    final sid = (_schoolIdAuth ?? normalizeSchoolIdFromEscuela(widget.escuela)).toString().trim();
 
     final selectedLabel = (_selectedGrade ?? '').trim();
 
     final key = selectedLabel.isNotEmpty
-        ? (_gradeLabelToKey[selectedLabel] ??
-            _gradeLabelToKey[selectedLabel.toLowerCase().trim()] ??
-            '')
+        ? (_gradeLabelToKey[selectedLabel] ?? _gradeLabelToKey[selectedLabel.toLowerCase().trim()] ?? '')
         : '';
 
     Navigator.push(
@@ -979,45 +1014,185 @@ Future<void> _loadCatalogGrades() async {
       return;
     }
 
-final selectedLabel = (_selectedGrade ?? '').trim();
-if (selectedLabel.isEmpty) {
-  ScaffoldMessenger.of(context).showSnackBar(
-    const SnackBar(content: Text('Selecciona un grado primero.')),
-  );
-  return;
-}
+    final selectedLabel = (_selectedGrade ?? '').trim();
 
-final resolvedGradeId = _resolveSelectedGradeId(selectedLabel);
-debugPrint('🧪 Estudiantes => selectedLabel="$selectedLabel" | gradeId="$resolvedGradeId" | schoolId="$sid"');
+    final resolvedGradeId = _resolveSelectedGradeId(selectedLabel);
 
-final gradeKey = _gradeLabelToKey[selectedLabel] ??
-    _gradeLabelToKey[selectedLabel.toLowerCase().trim()] ??
-    selectedLabel;
+    final gradeKey = _gradeLabelToKey[selectedLabel] ??
+        _gradeLabelToKey[selectedLabel.toLowerCase().trim()] ??
+        selectedLabel;
 
-final gradeId = _catalogGradeLabelToId[selectedLabel] ??
-    _catalogGradeLabelToId[selectedLabel.toLowerCase().trim()] ??
-    '';
+    final tanda = (_selectedTanda ?? '').trim();
 
-debugPrint(
-  '🧪 Estudiantes => selectedLabel="$selectedLabel" | gradeKey="$gradeKey" | gradeId="$gradeId" | schoolId="$sid"',
-);
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => DocenteEstudiantesScreen(
           escuela: widget.escuela,
           schoolIdOverride: sid,
-          gradeKeyOverride: gradeKey,
-          gradeLabelOverride: selectedLabel,
-         // gradeIdOverride: gradeId.isNotEmpty ? gradeId : null,
+          gradeKeyOverride: selectedLabel.isNotEmpty ? gradeKey : null,
+          gradeLabelOverride: selectedLabel.isNotEmpty ? selectedLabel : null,
           gradeIdOverride: resolvedGradeId.isNotEmpty ? resolvedGradeId : null,
+          tandaOverride: tanda.isNotEmpty ? tanda : null,
+        ),
+      ),
+    );
+  }
+
+  void _openPromocionDocente() {
+    final sid = (_schoolIdAuth ?? _schoolDocId).trim();
+    final tid = (_teacherDocIdAuth ?? '').trim();
+    if (sid.isEmpty || tid.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se pudo resolver la identidad del docente.')),
+      );
+      return;
+    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PromocionDocenteScreen(
+          escuela: widget.escuela,
+          schoolId: sid,
+          teacherDocId: tid,
+          teacherName: _teacherName,
+          gradeIds: _teacherGradeIds,
+          gradeLabels: _teacherGrades,
+          teacherTandas: _teacherTandas,
+          initialGradeId: _resolveSelectedGradeId(_selectedGrade ?? ''),
+          initialTanda: _selectedTanda,
+        ),
+      ),
+    );
+  }
+
+  void _openCambioGradoDocente() {
+    final sid = (_schoolIdAuth ?? _schoolDocId).trim();
+    final tid = (_teacherDocIdAuth ?? '').trim();
+    if (sid.isEmpty || tid.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se pudo resolver la identidad del docente.')),
+      );
+      return;
+    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CambioGradoDocenteScreen(
+          escuela: widget.escuela,
+          schoolId: sid,
+          teacherDocId: tid,
+          teacherName: _teacherName,
+          gradeIds: _teacherGradeIds,
+          gradeLabels: _teacherGrades,
+          teacherTandas: _teacherTandas,
+          initialGradeId: _resolveSelectedGradeId(_selectedGrade ?? ''),
+          initialTanda: _selectedTanda,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _logoutDocente() async {
+    try {
+      await FirebaseAuth.instance.signOut();
+    } catch (_) {}
+
+    if (!mounted) return;
+    Navigator.pushNamedAndRemoveUntil(
+      context,
+      '/docentes',
+      (route) => false,
+      arguments: widget.escuela,
+    );
+  }
+
+  Future<void> _confirmLogoutDocente() async {
+    final shouldLogout = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Cerrar sesión'),
+          content: const Text('¿Quieres serrar tu perfil ahora?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Salir'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldLogout == true) {
+      await _logoutDocente();
+    }
+  }
+
+  Widget _buildLogoutAction(BuildContext context) {
+    final compact = MediaQuery.of(context).size.width < 700;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Tooltip(
+        message: 'Cerrar sesión',
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: _confirmLogoutDocente,
+            borderRadius: BorderRadius.circular(999),
+            child: Ink(
+              padding: EdgeInsets.symmetric(
+                horizontal: compact ? 8 : 12,
+                vertical: 6,
+              ),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.14),
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: Colors.white.withOpacity(0.22)),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Icon(
+                      Icons.logout_rounded,
+                      size: 16,
+                      color: secondaryColor,
+                    ),
+                  ),
+                  if (!compact) ...[
+                    const SizedBox(width: 8),
+                    const Text(
+                      'Cerrar sesión',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13.5,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
         ),
       ),
     );
   }
 
   // -------------------------
-  // UI
+  // UI helpers
   // -------------------------
   Widget _errorBox(String msg) {
     return Container(
@@ -1032,103 +1207,53 @@ debugPrint(
     );
   }
 
-  Widget _compactHeader({
-    required List<String> gradesOptions,
-    required List<String> subjectsOptions,
-  }) {
+  Widget _compactHeader() {
     return LayoutBuilder(
       builder: (context, c) {
-        final isNarrow = c.maxWidth < 650;
-
+        final isNarrow = c.maxWidth < 700;
         final name = _teacherName.isNotEmpty ? _teacherName : '--';
         final avatarText = _initials(name);
 
-        Widget gradeDrop() => SizedBox(
-              width: isNarrow ? double.infinity : 200,
-              child: DropdownButtonFormField<String>(
-                value: _selectedGrade,
-                isExpanded: true,
-                decoration: InputDecoration(
-                  labelText: 'Grado',
-                  isDense: true,
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-                items: gradesOptions
-                    .map((g) => DropdownMenuItem(
-                          value: g,
-                          child: Text(g, overflow: TextOverflow.ellipsis),
-                        ))
-                    .toList(),
-                onChanged: gradesOptions.isEmpty ? null : (v) => setState(() => _selectedGrade = v),
-              ),
-            );
-
-        Widget subjectDrop() => SizedBox(
-              width: isNarrow ? double.infinity : 240,
-              child: DropdownButtonFormField<String>(
-                value: _selectedSubject,
-                isExpanded: true,
-                decoration: InputDecoration(
-                  labelText: 'Asignatura',
-                  isDense: true,
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-                items: subjectsOptions
-                    .map((s) => DropdownMenuItem(
-                          value: s,
-                          child: Text(s, overflow: TextOverflow.ellipsis),
-                        ))
-                    .toList(),
-                onChanged:
-                    subjectsOptions.isEmpty ? null : (v) => setState(() => _selectedSubject = v),
-              ),
-            );
-
-        Widget actions() => SizedBox(
-              width: isNarrow ? double.infinity : 260,
-              child: Row(
-                children: [
-                  Expanded(
-                    child: SizedBox(
-                      height: 38,
-                      child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: primaryColor,
-                          foregroundColor: Colors.black,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
-                          padding: const EdgeInsets.symmetric(horizontal: 10),
-                        ),
-                        onPressed: () => Navigator.pushNamed(
-                          context,
-                          '/evaluaciones',
-                          arguments: widget.escuela,
-                        ),
-                        icon: const Icon(Icons.fact_check, size: 18),
-                        label: const Text('Evaluaciones', overflow: TextOverflow.ellipsis),
+        Widget actions() => Row(
+              children: [
+                Expanded(
+                  child: SizedBox(
+                    height: 38,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: primaryColor,
+                        foregroundColor: Colors.black,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
                       ),
+                      onPressed: () => Navigator.pushNamed(
+                        context,
+                        '/evaluaciones',
+                        arguments: widget.escuela,
+                      ),
+                      icon: const Icon(Icons.fact_check, size: 18),
+                      label: const Text('Evaluaciones', overflow: TextOverflow.ellipsis),
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: SizedBox(
-                      height: 38,
-                      child: OutlinedButton.icon(
-                        style: OutlinedButton.styleFrom(
-                          side: BorderSide(color: secondaryColor.withOpacity(0.85)),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
-                          foregroundColor: secondaryColor,
-                          padding: const EdgeInsets.symmetric(horizontal: 10),
-                        ),
-                        onPressed: _openCalendarioDocente,
-                        icon: const Icon(Icons.calendar_month, size: 18),
-                        label: const Text('Calendario', overflow: TextOverflow.ellipsis),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: SizedBox(
+                    height: 38,
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        side: BorderSide(color: secondaryColor.withOpacity(0.85)),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+                        foregroundColor: secondaryColor,
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
                       ),
+                      onPressed: _openCalendarioDocente,
+                      icon: const Icon(Icons.calendar_month, size: 18),
+                      label: const Text('Calendario', overflow: TextOverflow.ellipsis),
                     ),
                   ),
-                ],
-              ),
+                ),
+              ],
             );
 
         return Container(
@@ -1152,7 +1277,7 @@ debugPrint(
               Row(
                 children: [
                   CircleAvatar(
-                    radius: 18,
+                    radius: 22,
                     backgroundColor: secondaryColor,
                     child: Text(
                       avatarText,
@@ -1174,16 +1299,6 @@ debugPrint(
                             color: Colors.black87,
                           ),
                         ),
-                        const SizedBox(height: 2),
-                        Text(
-                          'School: ${_schoolIdAuth ?? "--"} · role: ${_memberRole.isNotEmpty ? _memberRole : "--"}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 11.5,
-                            color: Colors.black.withOpacity(0.55),
-                          ),
-                        ),
                       ],
                     ),
                   ),
@@ -1203,23 +1318,16 @@ debugPrint(
                 ],
               ),
               const SizedBox(height: 10),
-              if (isNarrow) ...[
-                gradeDrop(),
-                const SizedBox(height: 10),
-                subjectDrop(),
-                const SizedBox(height: 10),
-                actions(),
-              ] else ...[
-                Row(
-                  children: [
-                    Expanded(child: gradeDrop()),
-                    const SizedBox(width: 10),
-                    Expanded(child: subjectDrop()),
-                    const SizedBox(width: 10),
-                    Expanded(child: actions()),
-                  ],
+              if (isNarrow)
+                actions()
+              else
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: SizedBox(
+                    width: 360,
+                    child: actions(),
+                  ),
                 ),
-              ],
             ],
           ),
         );
@@ -1227,19 +1335,17 @@ debugPrint(
     );
   }
 
+  // -------------------------
+  // BUILD
+  // -------------------------
   @override
   Widget build(BuildContext context) {
-    final nombreEscuela = (widget.escuela.nombre ?? 'EduPro').trim();
-
-    final gradesOptions = _teacherGrades.isNotEmpty ? _teacherGrades : _schoolGrades;
-    final subjectsOptions = _teacherSubjects.isNotEmpty ? _teacherSubjects : _schoolSubjects;
-
     return Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: false,
-        title: Text(nombreEscuela, style: const TextStyle(fontWeight: FontWeight.bold)),
         backgroundColor: secondaryColor,
         elevation: 0,
+        actions: [_buildLogoutAction(context), const AppInfoMenuButton()],
       ),
       body: Padding(
         padding: const EdgeInsets.all(14),
@@ -1251,10 +1357,7 @@ debugPrint(
                     _errorBox(_error!),
                     const SizedBox(height: 10),
                   ],
-                  _compactHeader(
-                    gradesOptions: gradesOptions,
-                    subjectsOptions: subjectsOptions,
-                  ),
+                  _compactHeader(),
                   const SizedBox(height: 12),
                   Expanded(
                     child: LayoutBuilder(
@@ -1284,11 +1387,33 @@ debugPrint(
                             ),
                             _menuItem(
                               context,
-                              Icons.calendar_today,
-                              'Períodos\ny Boletín',
+                              Icons.assignment_turned_in_outlined,
+                              'Tareas',
                               onTap: () => Navigator.pushNamed(
                                 context,
-                                '/periodos',
+                                '/tarea',
+                                arguments: widget.escuela,
+                              ),
+                            ),
+                            _menuItem(
+                              context,
+                              Icons.fact_check_rounded,
+                              'Promocion\nEscolar',
+                              onTap: _openPromocionDocente,
+                            ),
+                            _menuItem(
+                              context,
+                              Icons.swap_horiz_rounded,
+                              'Cambio de\nGrado',
+                              onTap: _openCambioGradoDocente,
+                            ),
+                            _menuItem(
+                              context,
+                              Icons.how_to_reg,
+                              'Asistencia',
+                              onTap: () => Navigator.pushNamed(
+                                context,
+                                '/asistencia',
                                 arguments: widget.escuela,
                               ),
                             ),
@@ -1313,14 +1438,13 @@ debugPrint(
                               ),
                             ),
 
-                            // ✅ abre Estudiantes filtrado por el grado seleccionado
                             _menuItem(
                               context,
                               Icons.group,
                               'Estudiantes',
                               onTap: _openEstudiantesDocente,
                             ),
-                             _menuItem(
+                            _menuItem(
                               context,
                               Icons.schedule,
                               'Calendario\nEscolar',
@@ -1333,10 +1457,14 @@ debugPrint(
                               'Chat',
                               onTap: _openChatDocente,
                             ),
+
+                            // ✅ campana con indicador
+                            _buildNotificacionesTile(context),
+
                             _menuItem(
                               context,
                               Icons.edit,
-                              'Planificación\nDocente',
+                              'Material de apoyo',
                               onTap: () => Navigator.pushNamed(
                                 context,
                                 '/planificacionDocente',
@@ -1364,11 +1492,15 @@ debugPrint(
     );
   }
 
+  // -------------------------
+  // TILE UI (UNA SOLA VEZ)
+  // -------------------------
   Widget _menuItem(
     BuildContext context,
     IconData icon,
     String label, {
     required VoidCallback onTap,
+    bool showDot = false,
   }) {
     return InkWell(
       borderRadius: BorderRadius.circular(14),
@@ -1398,7 +1530,26 @@ debugPrint(
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(color: primaryColor.withOpacity(0.28)),
               ),
-              child: Icon(icon, size: 24, color: secondaryColor),
+              child: Stack(
+                clipBehavior: Clip.none,
+                alignment: Alignment.center,
+                children: [
+                  Icon(icon, size: 24, color: secondaryColor),
+                  if (showDot)
+                    Positioned(
+                      right: -1,
+                      top: -1,
+                      child: Container(
+                        width: 10,
+                        height: 10,
+                        decoration: const BoxDecoration(
+                          color: Colors.red,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             ),
             const SizedBox(height: 8),
             Text(
@@ -1414,3 +1565,5 @@ debugPrint(
     );
   }
 }
+
+

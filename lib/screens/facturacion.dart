@@ -7,6 +7,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
+import '../models/school_billing_dates.dart';
+import '../utils/equipo_edupro_access.dart';
 import '../widgets/sidebar_menu.dart';
 
 class FacturacionScreen extends StatefulWidget {
@@ -29,6 +31,8 @@ class _FacturacionScreenState extends State<FacturacionScreen> {
   // ✅ En vez de "staff", trabajamos con permisos reales:
   bool _canSeeBilling = false; // puede entrar a Facturación
   bool _canReviewPayments = false; // puede verificar/rechazar pagos
+  bool _canSeeFreelancers = false;
+  String _teamRole = EquipoEduProRoles.superAdmin;
 
   // Fallbacks si algún colegio no tiene planPrice todavía
   static const double tarifaPorAlumno = 1.0;
@@ -68,6 +72,13 @@ class _FacturacionScreenState extends State<FacturacionScreen> {
     bool enabled = true;
     bool isSuperAdmin = false;
     bool isStaffAdmin = false;
+    String teamRole = EquipoEduProRoles.superAdmin;
+
+    try {
+      teamRole = await EquipoEduProAccess.currentTeamRole(u);
+    } catch (_) {
+      teamRole = EquipoEduProRoles.superAdmin;
+    }
 
     // 1) ✅ Fuente principal: users/{uid} (como tu imagen)
     try {
@@ -126,15 +137,23 @@ class _FacturacionScreenState extends State<FacturacionScreen> {
     }
 
     // ✅ Política final
-    final canSee = enabled && (isSuperAdmin || isStaffAdmin || isListedByAppConfig);
+    final canSee = enabled &&
+        (EquipoEduProPermissions.canViewBilling(teamRole) ||
+            isSuperAdmin ||
+            isStaffAdmin ||
+            isListedByAppConfig);
 
     // ✅ Quien puede verificar/rechazar pagos:
     // (si quieres que solo SUPERADMIN pueda, cambia a: enabled && isSuperAdmin)
-    final canReview = enabled && (isSuperAdmin || isStaffAdmin);
+    final canReview = enabled &&
+        (teamRole == EquipoEduProRoles.superAdmin || isSuperAdmin || isStaffAdmin);
 
     setState(() {
+      _teamRole = teamRole;
       _canSeeBilling = canSee;
       _canReviewPayments = canReview;
+      _canSeeFreelancers =
+          teamRole == EquipoEduProRoles.superAdmin || isSuperAdmin;
       _loadingRole = false;
     });
   }
@@ -217,8 +236,9 @@ class _FacturacionScreenState extends State<FacturacionScreen> {
   }
 
   String _schoolStatus(Map<String, dynamic> school) {
-    final due = _tsToDate(school['billingNextDueAt']);
-    final lastPaid = _tsToDate(school['billingLastPaidAt']);
+    final billingDates = SchoolBillingDates.fromMap(school);
+    final due = billingDates.nextDueAt;
+    final lastPaid = billingDates.lastPaidAt;
 
     if (due == null) return 'Pendiente';
     if (_isPastDue(due)) return 'Vencido';
@@ -380,6 +400,185 @@ class _FacturacionScreenState extends State<FacturacionScreen> {
     return filtered;
   }
 
+  List<_BillingRow> _buildRows(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> schoolDocs,
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> freeDocs,
+  ) {
+    final rows = <_BillingRow>[];
+
+    for (final d in schoolDocs) {
+      final data = d.data();
+      final nombre = (data['nombre'] ?? data['name'] ?? 'Colegio').toString();
+      final currency = (data['billingCurrency'] ?? 'DOP').toString();
+      final due = SchoolBillingDates.fromMap(data).nextDueAt;
+      final fecha = due ?? DateTime.now();
+
+      rows.add(
+        _BillingRow(
+          id: d.id,
+          nombre: nombre,
+          tipo: 'Colegio',
+          monto: _calcSchoolAmount(data),
+          currency: currency,
+          fecha: fecha,
+          estado: _schoolStatus(data),
+        ),
+      );
+    }
+
+    for (final d in freeDocs) {
+      final data = d.data();
+      final nombre = (data['nombre'] ?? data['name'] ?? 'Freelancer').toString();
+      final currency = (data['billingCurrency'] ?? 'DOP').toString();
+      final due = _tsToDate(data['billingNextDueAt']);
+      final fecha = due ?? DateTime.now();
+
+      rows.add(
+        _BillingRow(
+          id: d.id,
+          nombre: nombre,
+          tipo: 'Freelancer',
+          monto: _calcFreelancerAmount(data),
+          currency: currency,
+          fecha: fecha,
+          estado: _freelancerStatus(data),
+        ),
+      );
+    }
+
+    return rows;
+  }
+
+  Widget _buildBillingBody(
+    BuildContext context, {
+    required bool isMobile,
+    required String currentRoute,
+    required List<_BillingRow> rows,
+  }) {
+    final filtered = _applyFilters(rows);
+
+    Widget bodyContent() {
+      if (isMobile) {
+        return ListView.builder(
+          padding: const EdgeInsets.all(16),
+          itemCount: filtered.length,
+          itemBuilder: (_, i) {
+            final r = filtered[i];
+            final money = NumberFormat.simpleCurrency(name: r.currency);
+
+            Color estadoColor;
+            switch (r.estado) {
+              case 'Pagado':
+                estadoColor = Colors.green.shade100;
+                break;
+              case 'Pendiente':
+                estadoColor = Colors.yellow.shade100;
+                break;
+              default:
+                estadoColor = Colors.red.shade100;
+            }
+
+            return Card(
+              margin: const EdgeInsets.only(bottom: 12),
+              child: ListTile(
+                title: Text(r.nombre),
+                subtitle: Text('${_fmtDate(r.fecha)} • ${r.estado}'),
+                trailing: Text(money.format(r.monto)),
+                tileColor: estadoColor,
+                onTap: r.tipo == 'Colegio'
+                    ? () => _openPaymentsSheet(schoolId: r.id, schoolName: r.nombre)
+                    : null,
+              ),
+            );
+          },
+        );
+      }
+
+      final money = NumberFormat.currency(symbol: '');
+      return SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        scrollDirection: Axis.horizontal,
+        child: DataTable(
+          columns: const [
+            DataColumn(label: Text('Nombre')),
+            DataColumn(label: Text('Tipo')),
+            DataColumn(label: Text('Monto')),
+            DataColumn(label: Text('Fecha (Due)')),
+            DataColumn(label: Text('Estado')),
+            DataColumn(label: Text('Acciones')),
+          ],
+          rows: filtered.map((r) {
+            return DataRow(cells: [
+              DataCell(Text(r.nombre)),
+              DataCell(Text(r.tipo)),
+              DataCell(Text('${money.format(r.monto)} ${r.currency}')),
+              DataCell(Text(_fmtDate(r.fecha))),
+              DataCell(Text(r.estado)),
+              DataCell(
+                Row(
+                  children: [
+                    if (r.tipo == 'Colegio')
+                      IconButton(
+                        icon: const Icon(Icons.receipt_long, size: 18),
+                        tooltip: 'Ver reportes de pago',
+                        onPressed: () => _openPaymentsSheet(
+                          schoolId: r.id,
+                          schoolName: r.nombre,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ]);
+          }).toList(),
+        ),
+      );
+    }
+
+    return isMobile
+        ? Column(
+            children: [
+              _buildFilters(context, isMobile),
+              const Divider(height: 1),
+              Expanded(child: bodyContent()),
+            ],
+          )
+        : Column(
+            children: [
+              _buildTopBlueBar(),
+              Expanded(
+                child: Row(
+                  children: [
+                    Container(
+                      width: 220,
+                      color: Colors.blue.shade900,
+                      child: SidebarMenu(
+                        currentRoute: currentRoute,
+                        teamRole: _teamRole,
+                        onItemSelected: (route) => Navigator.pushReplacementNamed(context, route),
+                      ),
+                    ),
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24.0),
+                        child: Column(
+                          children: [
+                            _buildMetrics(isMobile, rows),
+                            const SizedBox(height: 24),
+                            _buildFilters(context, isMobile),
+                            const SizedBox(height: 16),
+                            Expanded(child: bodyContent()),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isMobile = MediaQuery.of(context).size.width < 800;
@@ -417,7 +616,6 @@ class _FacturacionScreenState extends State<FacturacionScreen> {
     }
 
     final schoolsStream = _db.collection('schools').snapshots();
-    final freelancersStream = _db.collection('freelancers').snapshots();
 
     return Scaffold(
       drawer: isMobile
@@ -426,6 +624,7 @@ class _FacturacionScreenState extends State<FacturacionScreen> {
                 color: Colors.blue.shade900,
                 child: SidebarMenu(
                   currentRoute: currentRoute,
+                  teamRole: _teamRole,
                   onItemSelected: (route) => Navigator.pushReplacementNamed(context, route),
                 ),
               ),
@@ -454,8 +653,21 @@ class _FacturacionScreenState extends State<FacturacionScreen> {
           }
           final schoolDocs = schoolSnap.data?.docs ?? [];
 
+          if (!_canSeeFreelancers) {
+            final rows = _buildRows(
+              schoolDocs,
+              const <QueryDocumentSnapshot<Map<String, dynamic>>>[],
+            );
+            return _buildBillingBody(
+              context,
+              isMobile: isMobile,
+              currentRoute: currentRoute,
+              rows: rows,
+            );
+          }
+
           return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: freelancersStream,
+            stream: _db.collection('freelancers').snapshots(),
             builder: (context, freeSnap) {
               if (freeSnap.connectionState == ConnectionState.waiting) {
                 return const Center(child: CircularProgressIndicator());
@@ -471,7 +683,7 @@ class _FacturacionScreenState extends State<FacturacionScreen> {
                 final data = d.data();
                 final nombre = (data['nombre'] ?? data['name'] ?? 'Colegio').toString();
                 final currency = (data['billingCurrency'] ?? 'DOP').toString();
-                final due = _tsToDate(data['billingNextDueAt']);
+                final due = SchoolBillingDates.fromMap(data).nextDueAt;
                 final fecha = due ?? DateTime.now();
 
                 rows.add(
@@ -606,6 +818,7 @@ class _FacturacionScreenState extends State<FacturacionScreen> {
                                 color: Colors.blue.shade900,
                                 child: SidebarMenu(
                                   currentRoute: currentRoute,
+                                  teamRole: _teamRole,
                                   onItemSelected: (route) => Navigator.pushReplacementNamed(context, route),
                                 ),
                               ),

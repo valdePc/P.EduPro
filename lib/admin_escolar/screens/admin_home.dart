@@ -8,15 +8,14 @@ import 'A_pizarra.dart';
 import 'A_calendarioacademico.dart';
 import 'A_reporteyanalisis.dart';
 import 'package:edupro/admin_escolar/screens/A_MonitoreoDocentes.dart';
-import 'A_notificacionesyrecomendacion.dart';
+import 'notificaciones_admin.dart';
 
-// ✅ IMPORTA la pantalla real de Gestión de Maestros
-import 'A_gestiondemaestros.dart'; // <-- ajusta el nombre del archivo si es distinto
+import 'A_gestiondemaestros.dart';
 
 class AdminHome extends StatefulWidget {
   final Escuela escuela;
   final int initialIndex;
-  const AdminHome({Key? key, required this.escuela, this.initialIndex = 0}) : super(key: key);
+  const AdminHome({super.key, required this.escuela, this.initialIndex = 0});
 
   @override
   State<AdminHome> createState() => _AdminHomeState();
@@ -28,7 +27,7 @@ class _AdminHomeState extends State<AdminHome> {
   @override
   void initState() {
     super.initState();
-    shellIndex = ValueNotifier<int>(widget.initialIndex);
+    shellIndex = ValueNotifier<int>(widget.initialIndex.clamp(0, 5).toInt());
   }
 
   @override
@@ -39,36 +38,62 @@ class _AdminHomeState extends State<AdminHome> {
 
   @override
   Widget build(BuildContext context) {
-    final pages = <Widget>[
-      APizarra(
-        escuela: widget.escuela,
-        embedded: true,
-        onNavigate: (i) => shellIndex.value = i,
+    final navItems = <NavItem>[
+      NavItem(
+        label: 'Inicio',
+        icon: Icons.dashboard_outlined,
+        page: APizarra(
+          escuela: widget.escuela,
+          embedded: true,
+          onNavigate: (i) => shellIndex.value = i,
+        ),
       ),
-
-      // ✅ DIRECTO, sin botón intermedio
-      AGestionDeMaestros(escuela: widget.escuela),
-
-      ACalendarioAcademico(escuela: widget.escuela),
-      AReporteYAnalisis(escuela: widget.escuela),
-      AMonitoreoDocentes(escuela: widget.escuela),
-      ANotificacionesYRecomendacion(escuela: widget.escuela),
+      NavItem(
+        label: 'Gestión de maestros',
+        icon: Icons.people_outline,
+        page: AGestionDeMaestros(
+          escuela: widget.escuela,
+          onBack: () => shellIndex.value = 0,
+        ),
+      ),
+      NavItem(
+        label: 'Calendario académico',
+        icon: Icons.calendar_month_outlined,
+        page: ACalendarioAcademico(
+          escuela: widget.escuela,
+          onBack: () => shellIndex.value = 0,
+        ),
+      ),
+      NavItem(
+        label: 'Reportes y análisis',
+        icon: Icons.assessment_outlined,
+        page: AReporteYAnalisis(
+          escuela: widget.escuela,
+          onBack: () => shellIndex.value = 0,
+        ),
+      ),
+      NavItem(
+        label: 'Monitoreo docente',
+        icon: Icons.fact_check_outlined,
+        page: AMonitoreoDocentes(
+          escuela: widget.escuela,
+          onBack: () => shellIndex.value = 0,
+        ),
+      ),
+      NavItem(
+        label: 'Notificaciones',
+        icon: Icons.notifications_outlined,
+        page: NotificacionesAdminScreen(
+          escuela: widget.escuela,
+          onBack: () => shellIndex.value = 0,
+        ),
+      ),
     ];
 
-final pages = [
-  APizarra(...),
-  AGestionDeMaestros(...),
-  ACalendarioAcademico(...),
-  AReporteYAnalisis(...),
-  AMonitoreoDocentes(escuela: escuela), // <- ESTE ES EL CLAVO
-  ANotificacionesYRecomendacion(...),
-];
-
-
     return AdminShell(
-      pages: pages,
+      pages: navItems.map((item) => item.page).toList(growable: false),
       navItems: navItems,
-      initialIndex: widget.initialIndex,
+      initialIndex: shellIndex.value,
       controller: shellIndex,
     );
   }

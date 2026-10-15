@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:table_calendar/table_calendar.dart';
 
-import '../../models/appointment_model.dart';
-import '../../services/appointments_service.dart';
+import '../../calendario/models/appointment_model.dart';
+import '../../calendario/services/appointments_service.dart';
 
 class AdminCalendarScreen extends StatefulWidget {
   final String schoolId; // ideal: normalizeSchoolIdFromEscuela(escuela)
@@ -186,7 +186,9 @@ class _AgendaPanel extends StatelessWidget {
               stream: service.watchAppointmentsForDay(schoolId: schoolId, day: selectedDay),
               builder: (context, snap) {
                 if (snap.hasError) {
-                  return _ErrorBox(text: 'Error: ${snap.error}');
+                  return const _ErrorBox(
+                    text: 'No se pudo cargar la agenda. Comprueba tu acceso e inténtalo de nuevo.',
+                  );
                 }
                 if (!snap.hasData) {
                   return const Center(child: CircularProgressIndicator());
@@ -413,11 +415,13 @@ class _CreateAppointmentDialogState extends State<_CreateAppointmentDialog> {
                       audience: _audience,
                     );
 
-                    if (mounted) Navigator.pop(context);
-                  } catch (e) {
-                    if (!mounted) return;
+                    if (context.mounted) Navigator.pop(context);
+                  } catch (_) {
+                    if (!context.mounted) return;
                     ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('$e')),
+                      const SnackBar(
+                        content: Text('No se pudo guardar la cita. Comprueba tu acceso e inténtalo de nuevo.'),
+                      ),
                     );
                   } finally {
                     if (mounted) setState(() => _saving = false);

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:edupro/docentes/widgets/docente_app_bar.dart';
 import 'package:edupro/models/escuela.dart';
 
 class RecuperarContrasenaScreen extends StatefulWidget {
@@ -8,7 +9,6 @@ class RecuperarContrasenaScreen extends StatefulWidget {
   @override
   _RecuperarContrasenaScreenState createState() => _RecuperarContrasenaScreenState();
 }
-
 class _RecuperarContrasenaScreenState extends State<RecuperarContrasenaScreen> {
   final _formKey = GlobalKey<FormState>();
   final TextEditingController _usernameCtrl = TextEditingController();
@@ -39,10 +39,7 @@ class _RecuperarContrasenaScreenState extends State<RecuperarContrasenaScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Recuperar contraseña'),
-        backgroundColor: Colors.blue.shade900,
-      ),
+      appBar: buildDocenteBackAppBar(context),
       body: SingleChildScrollView(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -54,6 +51,7 @@ class _RecuperarContrasenaScreenState extends State<RecuperarContrasenaScreen> {
                 child: Image.asset(
                   'assets/logo.png',
                   height: 100,
+                  semanticLabel: 'Logotipo de EduPro',
                 ),
               ),
               const SizedBox(height: 16),

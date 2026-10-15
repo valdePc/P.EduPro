@@ -1,19 +1,23 @@
 // lib/docentes/screens/docentes.dart
-import 'dart:convert';
-
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:crypto/crypto.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
 import 'package:edupro/models/escuela.dart';
+import 'package:edupro/services/edupro_two_factor_service.dart';
+import 'package:edupro/services/edupro_trusted_device_service.dart';
 import 'package:edupro/utils/school_utils.dart' show normalizeSchoolIdFromEscuela;
 
 import 'package:edupro/docentes/screens/paneldedocentes.dart';
-import 'package:edupro/docentes/screens/crearcuentadocentes.dart';
+
+import 'package:edupro/docentes/screens/crearcuentadocentes.dart' as create;
+
+
 
 class DocentesScreen extends StatefulWidget {
   final Escuela escuela;
@@ -24,10 +28,36 @@ class DocentesScreen extends StatefulWidget {
 }
 
 class _DocentesScreenState extends State<DocentesScreen> {
-  final _formKey = GlobalKey<FormState>();
+Future<void> _ensureTeacherUidLink({
+  required User user,
+  required String teacherDocId,
+  required String emailLower,
+}) async {
+  // 1) Amarrar teachers/{teacherDocId} SOLO con campos permitidos por tus rules
+  try {
+    await _teachersColl.doc(teacherDocId).set({
+      'authUid': user.uid,
+      'emailLower': emailLower,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  } catch (e) {
+  }
 
-  final TextEditingController _usernameCtrl = TextEditingController();
-  final FocusNode _usernameFocus = FocusNode();
+  // 2) Crear teachers_uid/{authUid} => teacherDocId (clave para CHAT v2)
+  try {
+    await _db
+        .collection('schools')
+        .doc(_schoolId)
+        .collection('teachers_uid')
+        .doc(user.uid)
+        .set({
+      'schoolId': _schoolId,
+      'teacherDocId': teacherDocId,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  } catch (e) {
+  }
+}
 
   bool _loading = false;
   bool _invalidLogin = false;
@@ -35,56 +65,101 @@ class _DocentesScreenState extends State<DocentesScreen> {
 
   final FirebaseFirestore _db = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFunctions _fn = FirebaseFunctions.instanceFor(region: 'us-central1');
 
   late final String _schoolId;
-
-  // -------------------------------
-  // Autocomplete (docentes activos)
-  // -------------------------------
-  bool _loadingTeachers = true;
-  String? _teachersLoadError;
-  List<_TeacherOption> _activeTeachers = const [];
-  _TeacherOption? _selectedTeacher;
 
   @override
   void initState() {
     super.initState();
 
     // ✅ MISMA lógica que en crear_cuenta_docente.dart (prefijo incluido)
-    final rawId = normalizeSchoolIdFromEscuela(widget.escuela);
-    _schoolId = _cleanSchoolId(
-      rawId.startsWith('eduproapp_admin_') ? rawId : 'eduproapp_admin_$rawId',
-    );
-
-    _loadActiveTeachers();
-
-    // Si el usuario escribe algo diferente a la selección, quitamos la selección.
-    _usernameCtrl.addListener(() {
-      final sel = _selectedTeacher;
-      if (sel == null) return;
-
-      final txt = _usernameCtrl.text.trim();
-      if (txt.isEmpty) {
-        if (mounted) setState(() => _selectedTeacher = null);
-        return;
-      }
-
-      final n = _norm(txt);
-
-      // ✅ No borrar selección si el usuario escribe el correo del docente
-      if (_norm(sel.name) != n &&
-          _norm(sel.loginKey) != n &&
-          _norm(_canonUserInput(sel.emailLower)) != n) {
-        if (mounted) setState(() => _selectedTeacher = null);
-      }
-    });
+final rawId = normalizeSchoolIdFromEscuela(widget.escuela);
+_schoolId = _cleanSchoolId(rawId);
   }
 
   @override
   void dispose() {
-    _usernameCtrl.dispose();
-    _usernameFocus.dispose();
     super.dispose();
+  }
+
+  Future<void> _signOutTeacherSession() async {
+    try {
+      await _auth.signOut();
+    } catch (_) {}
+
+    if (!kIsWeb) {
+      try {
+        final googleSignIn = GoogleSignIn.instance;
+        try {
+          await googleSignIn.initialize();
+        } catch (_) {}
+        await googleSignIn.signOut();
+      } catch (_) {}
+    }
+  }
+
+  Future<Map<String, dynamic>> _callSchoolAccessIp({
+    required String operation,
+    String? reason,
+  }) async {
+    final callable = _fn.httpsCallable('schoolAccessIpPing');
+    final resp = await callable.call(<String, dynamic>{
+      'operation': operation,
+      'schoolId': _schoolId,
+      'audience': 'docentes',
+      if (reason != null && reason.trim().isNotEmpty) 'reason': reason.trim(),
+    });
+    final raw = resp.data;
+    if (raw is Map) {
+      return raw.map((key, value) => MapEntry('$key', value));
+    }
+    return const <String, dynamic>{};
+  }
+
+  String _accessIpMessage(Map<String, dynamic> data) {
+    final message = (data['message'] ?? '').toString().trim();
+    if (message.isNotEmpty) return message;
+    return 'Esta IP no puede entrar en este momento.';
+  }
+
+  Future<bool> _precheckSchoolAccessIp() async {
+    try {
+      final result = await _callSchoolAccessIp(operation: 'precheck');
+      if (result['allowed'] == true) return true;
+      setState(() {
+        _invalidLogin = true;
+        _errorMessage = _accessIpMessage(result);
+      });
+      return false;
+    } catch (e) {
+      setState(() {
+        _invalidLogin = true;
+        _errorMessage = 'No se pudo validar el acceso por IP: $e';
+      });
+      return false;
+    }
+  }
+
+  Future<void> _recordSchoolAccessIpFailure(String reason) async {
+    try {
+      final result = await _callSchoolAccessIp(
+        operation: 'failure',
+        reason: reason,
+      );
+      if (result['blocked'] == true && mounted) {
+        setState(() {
+          _invalidLogin = true;
+          _errorMessage = _accessIpMessage(result);
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _recordSchoolAccessIpSuccess() async {
+    try {
+      await _callSchoolAccessIp(operation: 'success');
+    } catch (_) {}
   }
 
   // Firestore no permite "/" en docId
@@ -99,20 +174,6 @@ class _DocentesScreenState extends State<DocentesScreen> {
   CollectionReference<Map<String, dynamic>> get _teachersPublicColl =>
       _db.collection('schools').doc(_schoolId).collection('teachers_public');
 
-  // -------------------------------
-  // Normalización
-  // -------------------------------
-  String _stripAccents(String s) {
-    const from = 'ÁÀÂÄÃáàâäãÉÈÊËéèêëÍÌÎÏíìîïÓÒÔÖÕóòôöõÚÙÛÜúùûüÑñ';
-    const to = 'AAAAAaaaaaEEEEeeeeIIIIiiiiOOOOOoooooUUUUuuuuNn';
-    for (int i = 0; i < from.length; i++) {
-      s = s.replaceAll(from[i], to[i]);
-    }
-    return s;
-  }
-
-  String _norm(String s) => _stripAccents(s).trim().toLowerCase();
-
   // ✅ Canoniza input (y corrige typo común: ggmail -> gmail) SOLO para búsqueda/matching
   String _canonUserInput(String s) {
     var t = s.trim();
@@ -125,161 +186,15 @@ class _DocentesScreenState extends State<DocentesScreen> {
     return t;
   }
 
-  bool _looksLikePhone(String s) {
-    final digits = s.replaceAll(RegExp(r'\D'), '');
-    return digits.length >= 6;
-  }
-
-  String _phoneDigitsForHash(String input) {
-    final d = input.replaceAll(RegExp(r'\D'), '');
-    if (d.length <= 10) return d;
-    return d.substring(d.length - 10);
-  }
-
-  String _sha1Hex(String s) => sha1.convert(utf8.encode(s)).toString();
-
-  // -------------------------------
-  // Cargar docentes activos (NO depende solo de where)
-  // - Trae hasta 600 recientes y filtra "active" en cliente
-  // - Así no te deja fuera docs sin statusLower
-  // -------------------------------
-  Future<void> _loadActiveTeachers() async {
-    if (!mounted) return;
-    setState(() {
-      _loadingTeachers = true;
-      _teachersLoadError = null;
-    });
-
-    try {
-      final snap = await _teachersPublicColl.limit(600).get();
-
-      final list = snap.docs
-          .map(_TeacherOption.fromDoc)
-          .where((t) => t.name.trim().isNotEmpty)
-          .where((t) => t.statusLower == 'active')
-          .toList();
-
-      list.sort((a, b) => _norm(a.name).compareTo(_norm(b.name)));
-
-      if (!mounted) return;
-      setState(() {
-        _activeTeachers = list;
-        _loadingTeachers = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _activeTeachers = const [];
-        _loadingTeachers = false;
-        _teachersLoadError = e.toString();
-      });
-    }
-  }
-
-  void _clearTeacherSelection() {
-    if (!mounted) return;
-    setState(() => _selectedTeacher = null);
-    _usernameCtrl.clear();
-  }
-
-  List<_TeacherOption> _filterOptions(String query) {
-    final q = _norm(_canonUserInput(query));
-    if (q.isEmpty) return const [];
-
-    final isPhone = _looksLikePhone(query);
-    final qPhoneHash = isPhone ? _sha1Hex(_phoneDigitsForHash(query)) : null;
-
-    final out = <_TeacherOption>[];
-    for (final t in _activeTeachers) {
-      final name = _norm(t.name);
-      final user = _norm(t.loginKey);
-      final email = _norm(_canonUserInput(t.emailLower));
-
-      final matchName = name.startsWith(q) || name.contains(q);
-      final matchUser = user.isNotEmpty && (user.startsWith(q) || user.contains(q));
-      final matchEmail = email.isNotEmpty && (email.startsWith(q) || email.contains(q));
-
-      var matchPhone = false;
-      if (isPhone && qPhoneHash != null && t.phoneHash.isNotEmpty) {
-        matchPhone = (t.phoneHash == qPhoneHash);
-      }
-
-      if (matchName || matchUser || matchEmail || matchPhone) out.add(t);
-      if (out.length >= 20) break;
-    }
-
-    out.sort((a, b) {
-      final an = _norm(a.name);
-      final bn = _norm(b.name);
-      final aStarts = an.startsWith(q) ? 0 : 1;
-      final bStarts = bn.startsWith(q) ? 0 : 1;
-      if (aStarts != bStarts) return aStarts - bStarts;
-      return an.compareTo(bn);
-    });
-
-    return out;
-  }
-
-  _TeacherOption? _pickTeacherFromInput(String input) {
-    final q = _norm(_canonUserInput(input));
-    if (q.isEmpty) return null;
-
-    if (_selectedTeacher != null) return _selectedTeacher;
-
-    final isPhone = _looksLikePhone(input);
-    final phoneHash = isPhone ? _sha1Hex(_phoneDigitsForHash(input)) : null;
-
-    for (final t in _activeTeachers) {
-      if (_norm(t.name) == q) return t;
-      if (_norm(t.loginKey) == q) return t;
-      if (_norm(_canonUserInput(t.emailLower)) == q) return t;
-      if (phoneHash != null && t.phoneHash.isNotEmpty && t.phoneHash == phoneHash) return t;
-    }
-
-    for (final t in _activeTeachers) {
-      if (_norm(t.name).contains(q)) return t;
-      if (_norm(t.loginKey).contains(q)) return t;
-      if (_norm(_canonUserInput(t.emailLower)).contains(q)) return t;
-    }
-
-    return null;
-  }
-
-  // -------------------------------
-  // ✅ Si NO aparece en la lista, busca directo en Firestore
-  // (evita que “está activo pero no sale” te rompa el login)
-  // -------------------------------
-  Future<_TeacherOption?> _findTeacherServerSide(String input) async {
-    final qRaw = input.trim();
-    if (qRaw.isEmpty) return null;
-
-    final q = _canonUserInput(qRaw);
-    final qLower = q.toLowerCase();
-
-    QuerySnapshot<Map<String, dynamic>> snap;
-
-    // 1) Por emailLower
-    if (qLower.contains('@')) {
-      snap = await _teachersPublicColl.where('emailLower', isEqualTo: qLower).limit(1).get();
-      if (snap.docs.isNotEmpty) return _TeacherOption.fromDoc(snap.docs.first);
-    }
-
-    // 2) Por loginKey
-    snap = await _teachersPublicColl.where('loginKey', isEqualTo: qLower).limit(1).get();
-    if (snap.docs.isNotEmpty) return _TeacherOption.fromDoc(snap.docs.first);
-
-    // 3) Por name exacto
-    snap = await _teachersPublicColl.where('name', isEqualTo: qRaw).limit(1).get();
-    if (snap.docs.isNotEmpty) return _TeacherOption.fromDoc(snap.docs.first);
-
-    // 4) Teléfono (phoneHash)
-    if (_looksLikePhone(qRaw)) {
-      final ph = _sha1Hex(_phoneDigitsForHash(qRaw));
-      snap = await _teachersPublicColl.where('phoneHash', isEqualTo: ph).limit(1).get();
-      if (snap.docs.isNotEmpty) return _TeacherOption.fromDoc(snap.docs.first);
-    }
-
-    return null;
+  Future<DocumentSnapshot<Map<String, dynamic>>?> _findTeacherPublicByEmail(
+    String emailLower,
+  ) async {
+    final snap = await _teachersPublicColl
+        .where('emailLower', isEqualTo: emailLower)
+        .limit(1)
+        .get();
+    if (snap.docs.isEmpty) return null;
+    return snap.docs.first;
   }
 
   // -------------------------------
@@ -296,9 +211,12 @@ class _DocentesScreenState extends State<DocentesScreen> {
     }
   }
 
-  Future<void> _registerPushTeacher() async {
+  Future<void> _registerPushTeacher({
+  required String teacherDocId,
+}) async {
     try {
       final user = _auth.currentUser;
+      if (teacherDocId.trim().isEmpty) return;
       if (user == null) return;
       if (_schoolId.trim().isEmpty) return;
 
@@ -309,16 +227,16 @@ class _DocentesScreenState extends State<DocentesScreen> {
         await membersRef.set({
           'uid': user.uid,
           'role': 'teacher',
+          'teacherDocId': teacherDocId, // 👈 AQUÍ VA
+          'enabled': true,
           'audience': 'teachers',
           'tokens': <String>[],
           'updatedAt': FieldValue.serverTimestamp(),
           'lastTokenAt': FieldValue.serverTimestamp(), // ✅ obligatorio por tus reglas
         }, SetOptions(merge: true));
-      } catch (e) {
-        if (kDebugMode) debugPrint('Error creando members base: $e');
-        return;
-      }
-
+ } catch (e, stack) {
+  return;
+}
       // ✅ 2) Intentar conseguir token (si falla, igual members ya existe)
       try {
         await FirebaseMessaging.instance.requestPermission();
@@ -333,14 +251,12 @@ class _DocentesScreenState extends State<DocentesScreen> {
             vapidKey: (vapid == null || vapid.isEmpty) ? null : vapid,
           );
         } catch (e) {
-          if (kDebugMode) debugPrint('FCM Web token error: $e');
           token = null;
         }
       } else {
         try {
           token = await FirebaseMessaging.instance.getToken();
         } catch (e) {
-          if (kDebugMode) debugPrint('FCM Mobile token error: $e');
           token = null;
         }
       }
@@ -367,10 +283,8 @@ class _DocentesScreenState extends State<DocentesScreen> {
             'lastTokenAt': FieldValue.serverTimestamp(),
           }, SetOptions(merge: true));
         } catch (e) {
-          if (kDebugMode) debugPrint('Error guardando token en members: $e');
         }
       } else {
-        if (kDebugMode) debugPrint('FCM token vacío: members creado sin token.');
       }
 
       // ✅ 4) Topics (opcional)
@@ -378,10 +292,8 @@ class _DocentesScreenState extends State<DocentesScreen> {
         await FirebaseMessaging.instance.subscribeToTopic('school_$_schoolId');
         await FirebaseMessaging.instance.subscribeToTopic('school_${_schoolId}_teachers');
       } catch (e) {
-        if (kDebugMode) debugPrint('Error suscribiendo topics: $e');
       }
     } catch (e) {
-      if (kDebugMode) debugPrint('Error registrando push: $e');
     }
   }
 
@@ -422,89 +334,14 @@ class _DocentesScreenState extends State<DocentesScreen> {
     });
 
     try {
-      if (!_formKey.currentState!.validate()) return;
-
-      // ✅ REFRESH antes de intentar (tu caso: activaste y “no sale”)
-      await _loadActiveTeachers();
-
-      final inputUser = _usernameCtrl.text.trim();
-
-      // 1) intenta por lista
-      var teacherOpt = _pickTeacherFromInput(inputUser);
-
-      // 2) si no lo encuentra, busca directo en Firestore (server)
-      teacherOpt ??= await _findTeacherServerSide(inputUser);
-
-      if (teacherOpt == null) {
-        setState(() {
-          _invalidLogin = true;
-          _errorMessage = 'Docente no encontrado o no activo.';
-        });
-        return;
-      }
-
-      // ✅ Validación REAL: teachers_public (donde está active/blocked)
-      final tdSnap = await _teachersPublicColl.doc(teacherOpt.id).get();
-      if (!tdSnap.exists) {
-        setState(() {
-          _invalidLogin = true;
-          _errorMessage = 'No estás registrado en docentes públicos.';
-        });
-        return;
-      }
-
-      final td = tdSnap.data() ?? {};
-      final tdStatusRaw =
-          (td['statusLower'] ?? td['status'] ?? '').toString().trim().toLowerCase();
-      final tdStatus = (tdStatusRaw == 'activo' || tdStatusRaw == 'activa') ? 'active' : tdStatusRaw;
-
-      if (tdStatus != 'active') {
-        setState(() {
-          _invalidLogin = true;
-          _errorMessage = 'Tu cuenta aun no está activa. seguimos esperando a que la administracion lo apruebe.';
-        });
-        return;
-      }
-
-      final expectedEmail =
-          (td['emailLower'] ?? teacherOpt.emailLower).toString().trim().toLowerCase();
-
-      if (expectedEmail.isEmpty) {
-        setState(() {
-          _invalidLogin = true;
-          _errorMessage =
-              'Tu cuenta no tiene correo registrado. Pide a administración que agregue tu correo.';
-        });
-        return;
-      }
-
-      Future<void> _bootstrapTeacherUserDoc({
-        required User user,
-        required String schoolId,
-        required String teacherDocId,
-        required String emailLower,
-      }) async {
-        final ref = _db.collection('users').doc(user.uid);
-
-        await ref.set({
-          'uid': user.uid,
-          'role': 'teacher',
-          'schoolId': schoolId,
-          'schoolIds': [schoolId],
-          'teacherDocId': teacherDocId,
-          'email': emailLower,
-          'enabled': true,
-          'status': 'active',
-          'createdAt': FieldValue.serverTimestamp(),
-          'updatedAt': FieldValue.serverTimestamp(),
-          'lastLoginAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-      }
+      final ipAllowed = await _precheckSchoolAccessIp();
+      if (!ipAllowed) return;
 
       // 1) Google Sign-In
       final cred = await _signInWithGoogle();
       final user = cred.user;
       if (user == null) {
+        await _recordSchoolAccessIpFailure('google_no_user');
         setState(() {
           _invalidLogin = true;
           _errorMessage = 'No se pudo completar el inicio de sesión con Google.';
@@ -515,6 +352,7 @@ class _DocentesScreenState extends State<DocentesScreen> {
       final googleEmail = (user.email ?? '').trim().toLowerCase();
       if (googleEmail.isEmpty) {
         await _auth.signOut();
+        await _recordSchoolAccessIpFailure('google_missing_email');
         setState(() {
           _invalidLogin = true;
           _errorMessage = 'Google no devolvió un correo. Prueba con otra cuenta.';
@@ -522,9 +360,39 @@ class _DocentesScreenState extends State<DocentesScreen> {
         return;
       }
 
-      // 2) Validar correo contra teachers_public
+      final tdSnap = await _findTeacherPublicByEmail(googleEmail);
+      if (tdSnap == null || !tdSnap.exists) {
+        await _auth.signOut();
+        await _recordSchoolAccessIpFailure('teacher_not_found');
+        setState(() {
+          _invalidLogin = true;
+          _errorMessage =
+              'Este correo no pertenece a un docente registrado en este colegio.';
+        });
+        return;
+      }
+
+      final td = tdSnap.data() ?? {};
+      final tdStatusRaw =
+          (td['statusLower'] ?? td['status'] ?? '').toString().trim().toLowerCase();
+      final tdStatus =
+          (tdStatusRaw == 'activo' || tdStatusRaw == 'activa') ? 'active' : tdStatusRaw;
+
+      if (tdStatus != 'active') {
+        await _auth.signOut();
+        await _recordSchoolAccessIpFailure('teacher_inactive');
+        setState(() {
+          _invalidLogin = true;
+          _errorMessage =
+              'Tu cuenta aún no está activa. Seguimos esperando a que la administración la apruebe.';
+        });
+        return;
+      }
+
+      final expectedEmail = (td['emailLower'] ?? googleEmail).toString().trim().toLowerCase();
       if (_canonUserInput(googleEmail) != _canonUserInput(expectedEmail)) {
         await _auth.signOut();
+        await _recordSchoolAccessIpFailure('google_email_mismatch');
         setState(() {
           _invalidLogin = true;
           _errorMessage =
@@ -534,26 +402,133 @@ class _DocentesScreenState extends State<DocentesScreen> {
       }
 
       // 3) Vincular uid (best effort)
-      try {
-        await _teachersColl.doc(teacherOpt.id).set({
-          'authUid': user.uid,
-          'authProvider': 'google',
-          'authLinkedAt': FieldValue.serverTimestamp(),
-          'updatedAt': FieldValue.serverTimestamp(),
-          'emailLower': expectedEmail,
-        }, SetOptions(merge: true));
-      } catch (_) {}
+// teacherDocId real = docId del docente en /teachers
+// 3) Vincular uid (ESTO ES LO QUE CREA teachers_uid y arregla el chat)
+final teacherDocId =
+    (td['teacherDocId'] ?? td['teacherId'] ?? tdSnap.id).toString().trim().isNotEmpty
+        ? (td['teacherDocId'] ?? td['teacherId'] ?? tdSnap.id).toString().trim()
+        : tdSnap.id;
+
+// (A) Seguridad extra: confirma que existe teachers/{teacherDocId} en ESTA escuela
+final tSnap = await _teachersColl.doc(teacherDocId).get();
+if (!tSnap.exists) {
+  await _auth.signOut();
+  await _recordSchoolAccessIpFailure('teacher_missing_profile');
+  setState(() {
+    _invalidLogin = true;
+    _errorMessage =
+        'Tu perfil no existe en teachers (solo en public). Pide a administración que lo cree/active.';
+  });
+  return;
+}
+
+// (B) Crear vínculo teachers_uid + amarre mínimo en teachers (permitido por tus rules)
+await _ensureTeacherUidLink(
+  user: user,
+  teacherDocId: teacherDocId,
+  emailLower: expectedEmail,
+);
+
+// (C) Verificación post-write (si no existe, no navegues)
+final linkRef = _db
+    .collection('schools')
+    .doc(_schoolId)
+    .collection('teachers_uid')
+    .doc(user.uid);
+
+final linkSnap = await linkRef.get();
+if (!linkSnap.exists) {
+  // Esto te dice 100% si fue permiso o ejecución
+  await _auth.signOut();
+  setState(() {
+    _invalidLogin = true;
+    _errorMessage =
+        'No pude crear teachers_uid. Revisa permisos de rules en /teachers_uid o mira los logs de debug.';
+  });
+  return;
+}
+
+// 1) Amarrar teachers/{teacherDocId} SOLO con campos permitidos por tus rules
+try {
+  await _teachersColl.doc(teacherDocId).set({
+    'authUid': user.uid,
+    'emailLower': expectedEmail,
+    'updatedAt': FieldValue.serverTimestamp(),
+  }, SetOptions(merge: true));
+} catch (e) {
+}
+
+// 2) ✅ Crear/actualizar teachers_uid/{authUid} (esto desbloquea el chat del docente)
+try {
+  await _db
+      .collection('schools')
+      .doc(_schoolId)
+      .collection('teachers_uid')
+      .doc(user.uid)
+      .set({
+    'schoolId': _schoolId,
+    'teacherDocId': teacherDocId,
+    'updatedAt': FieldValue.serverTimestamp(),
+  }, SetOptions(merge: true));
+} catch (e) {
+}
+
+// 3) ❌ NO escribas en teachers_public aquí.
+// Eso debe hacerlo admin/superadmin o backend (según tus rules).
 
       try {
-        await _teachersPublicColl.doc(teacherOpt.id).set({
-          'authUid': user.uid,
-          'authProvider': 'google',
-          'updatedAt': FieldValue.serverTimestamp(),
-          'emailLower': expectedEmail,
-        }, SetOptions(merge: true));
-      } catch (_) {}
+        final deviceCheck = await EduProTrustedDeviceService.checkAccess(
+          audience: 'docentes',
+          schoolId: _schoolId,
+        );
+        if (!deviceCheck.allowed) {
+          await _signOutTeacherSession();
+          setState(() {
+            _invalidLogin = true;
+            _errorMessage = deviceCheck.message.isNotEmpty
+                ? deviceCheck.message
+                : 'Este dispositivo no está autorizado para entrar.';
+          });
+          return;
+        }
+      } catch (e) {
+        await _signOutTeacherSession();
+        setState(() {
+          _invalidLogin = true;
+          _errorMessage = 'No se pudo validar el dispositivo actual: $e';
+        });
+        return;
+      }
 
-      await _registerPushTeacher();
+      bool twoFactorOk = false;
+      try {
+        twoFactorOk = await EduProTwoFactorService.ensureVerified(
+          context,
+          audience: 'docentes',
+          schoolId: _schoolId,
+          schoolName: widget.escuela.nombre,
+        );
+      } catch (e) {
+        await _signOutTeacherSession();
+        setState(() {
+          _invalidLogin = true;
+          _errorMessage =
+              'No se pudo completar la verificación en dos pasos: $e';
+        });
+        return;
+      }
+      if (!twoFactorOk) {
+        await _signOutTeacherSession();
+        setState(() {
+          _invalidLogin = true;
+          _errorMessage =
+              'Debes completar la verificación en dos pasos para continuar.';
+        });
+        return;
+      }
+
+      unawaited(_registerPushTeacher(teacherDocId: teacherDocId));
+      await _recordSchoolAccessIpSuccess();
 
       if (!mounted) return;
       Navigator.pushReplacement(
@@ -563,23 +538,26 @@ class _DocentesScreenState extends State<DocentesScreen> {
         ),
       );
     } catch (e) {
+      await _recordSchoolAccessIpFailure('teacher_login_exception');
+      await _signOutTeacherSession();
+      if (!mounted) return;
       setState(() {
         _invalidLogin = true;
-        _errorMessage = 'Error: $e';
+        _errorMessage = 'No se pudo validar tu acceso. Intenta nuevamente.';
       });
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
-  void _onCreateAccount() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => CrearCuentaDocentesScreen(escuela: widget.escuela),
-      ),
-    );
-  }
+void _onCreateAccount() {
+  Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (_) => create.CrearCuentaDocentesScreen(escuela: widget.escuela),
+    ),
+  );
+}
 
   // -------------------------------
   // UI (solo diseño — lógica intacta)
@@ -587,6 +565,7 @@ class _DocentesScreenState extends State<DocentesScreen> {
   @override
   Widget build(BuildContext context) {
     const azul = Color.fromARGB(255, 21, 101, 192);
+    const azulDark = Color(0xFF0A2D67);
     const amber = Color(0xFFFFA000);
 
     final schoolName = (widget.escuela.nombre ?? '').trim();
@@ -646,8 +625,22 @@ class _DocentesScreenState extends State<DocentesScreen> {
                     child: Material(
                       elevation: 14,
                       shadowColor: Colors.black.withOpacity(0.18),
-                      color: Colors.white.withOpacity(0.96),
-                      child: Padding(
+                      color: Colors.transparent,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [
+                              Colors.white.withOpacity(0.90),
+                              Colors.white.withOpacity(0.84),
+                              azulDark.withOpacity(0.12),
+                            ],
+                          ),
+                          border: Border.all(color: Colors.white.withOpacity(0.45)),
+                          borderRadius: BorderRadius.circular(26),
+                        ),
+                        child: Padding(
                         padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
@@ -660,16 +653,17 @@ class _DocentesScreenState extends State<DocentesScreen> {
                                   height: 54,
                                   decoration: BoxDecoration(
                                     borderRadius: BorderRadius.circular(16),
-                                    color: azul.withOpacity(0.08),
-                                    border: Border.all(color: azul.withOpacity(0.18)),
+                                    color: azul,
+                                    border: Border.all(color: Colors.white.withOpacity(0.22)),
                                   ),
                                   child: Padding(
                                     padding: const EdgeInsets.all(8),
                                     child: Image.asset(
-                                      'assets/LogoDocentes.png',
+                                      'assets/logo.png',
                                       fit: BoxFit.contain,
+                                      semanticLabel: 'Logotipo de EduPro',
                                       errorBuilder: (_, __, ___) =>
-                                          const Icon(Icons.school, size: 30),
+                                          const Icon(Icons.school, size: 30, color: Colors.white),
                                     ),
                                   ),
                                 ),
@@ -701,7 +695,7 @@ class _DocentesScreenState extends State<DocentesScreen> {
                                               border: Border.all(color: amber.withOpacity(0.30)),
                                             ),
                                             child: const Text(
-                                              'Área de Docentes',
+                                              'Reservado Para Docentes',
                                               style: TextStyle(
                                                 fontSize: 12,
                                                 fontWeight: FontWeight.w900,
@@ -709,23 +703,6 @@ class _DocentesScreenState extends State<DocentesScreen> {
                                               ),
                                             ),
                                           ),
-                                          const SizedBox(width: 8),
-                                          if (_loadingTeachers)
-                                            _Pill(
-                                              text: 'Cargando lista…',
-                                              icon: Icons.sync_rounded,
-                                              bg: Colors.grey.shade100,
-                                              fg: Colors.black87,
-                                              bd: Colors.grey.shade300,
-                                            )
-                                          else
-                                            _Pill(
-                                              text: '${_activeTeachers.length} activos',
-                                              icon: Icons.verified_rounded,
-                                              bg: Colors.green.shade50,
-                                              fg: Colors.green.shade900,
-                                              bd: Colors.green.shade200,
-                                            ),
                                         ],
                                       ),
                                     ],
@@ -751,294 +728,175 @@ class _DocentesScreenState extends State<DocentesScreen> {
                                   ),
                                 ],
                               ),
-                              child: Form(
-                                key: _formKey,
-                                child: Column(
-                                  children: [
-                                    // Autocomplete
-                                    RawAutocomplete<_TeacherOption>(
-                                      textEditingController: _usernameCtrl,
-                                      focusNode: _usernameFocus,
-                                      displayStringForOption: (opt) => opt.name,
-                                      optionsBuilder: (TextEditingValue value) {
-                                        if (_loadingTeachers) {
-                                          return const Iterable<_TeacherOption>.empty();
-                                        }
-                                        final q = value.text.trim();
-                                        if (q.isEmpty) {
-                                          return const Iterable<_TeacherOption>.empty();
-                                        }
-                                        return _filterOptions(q);
-                                      },
-                                      onSelected: (opt) {
-                                        setState(() => _selectedTeacher = opt);
-                                        _usernameCtrl.text = opt.name;
-                                        _usernameCtrl.selection = TextSelection.collapsed(
-                                          offset: _usernameCtrl.text.length,
-                                        );
-                                      },
-                                      fieldViewBuilder: (context, ctrl, focusNode, onFieldSubmitted) {
-                                        return TextFormField(
-                                          controller: ctrl,
-                                          focusNode: focusNode,
-                                          decoration: InputDecoration(
-                                            labelText: 'Nombre de usuario',
-                                            filled: true,
-                                            fillColor: Colors.grey.shade50,
-                                            border: OutlineInputBorder(
-                                              borderRadius: BorderRadius.circular(16),
-                                            ),
-                                            enabledBorder: OutlineInputBorder(
-                                              borderRadius: BorderRadius.circular(16),
-                                              borderSide: BorderSide(color: Colors.grey.shade300),
-                                            ),
-                                            focusedBorder: const OutlineInputBorder(
-                                              borderRadius: BorderRadius.all(Radius.circular(16)),
-                                              borderSide: BorderSide(color: azul, width: 1.6),
-                                            ),
-                                            prefixIcon: const Icon(Icons.person_search),
-                                            helperText:
-                                                'Escriba para ver sugerencias y seleccione su nombre.',
-                                            suffixIcon: Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                if ((_selectedTeacher != null) || ctrl.text.trim().isNotEmpty)
-                                                  IconButton(
-                                                    tooltip: 'Limpiar',
-                                                    icon: const Icon(Icons.clear),
-                                                    onPressed: _loading ? null : _clearTeacherSelection,
-                                                  ),
-                                                IconButton(
-                                                  tooltip: 'Actualizar lista',
-                                                  icon: const Icon(Icons.refresh),
-                                                  onPressed: _loading ? null : _loadActiveTeachers,
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                          validator: (v) => (v == null || v.trim().isEmpty)
-                                              ? 'Escriba su nombre'
-                                              : null,
-                                          onFieldSubmitted: (_) => _loading ? null : _onLoginWithGoogle(),
-                                        );
-                                      },
-                                      optionsViewBuilder: (context, onSelected, options) {
-                                        final list = options.toList();
-                                        return Align(
-                                          alignment: Alignment.topLeft,
-                                          child: Material(
-                                            elevation: 10,
-                                            borderRadius: BorderRadius.circular(16),
-                                            child: ConstrainedBox(
-                                              constraints: const BoxConstraints(
-                                                maxHeight: 300,
-                                                maxWidth: 720,
-                                              ),
-                                              child: ListView.separated(
-                                                padding: const EdgeInsets.symmetric(vertical: 6),
-                                                itemCount: list.length,
-                                                separatorBuilder: (_, __) => const Divider(height: 1),
-                                                itemBuilder: (_, i) {
-                                                  final t = list[i];
-                                                  return ListTile(
-                                                    onTap: () => onSelected(t),
-                                                    leading: CircleAvatar(
-                                                      backgroundColor: azul.withOpacity(0.10),
-                                                      child: const Icon(Icons.person, color: azul),
-                                                    ),
-                                                    title: Text(
-                                                      t.name,
-                                                      style: const TextStyle(fontWeight: FontWeight.w900),
-                                                    ),
-                                                    subtitle: (t.loginKey.trim().isEmpty)
-                                                        ? null
-                                                        : Text('Usuario: ${t.loginKey}'),
-                                                  );
-                                                },
-                                              ),
-                                            ),
-                                          ),
-                                        );
-                                      },
+                              child: Column(
+                                children: [
+                                  Container(
+                                    width: double.infinity,
+                                    padding: const EdgeInsets.all(14),
+                                    decoration: BoxDecoration(
+                                      color: azul.withOpacity(0.06),
+                                      borderRadius: BorderRadius.circular(16),
+                                      border: Border.all(color: azul.withOpacity(0.14)),
                                     ),
-
-                                    // Estados / mensajes
-                                    if (_loadingTeachers) ...[
-                                      const SizedBox(height: 10),
-                                      const Row(
-                                        children: [
-                                          SizedBox(
-                                            height: 16,
-                                            width: 16,
-                                            child: CircularProgressIndicator(strokeWidth: 2),
-                                          ),
-                                          SizedBox(width: 10),
-                                          Text(
-                                            'Cargando docentes activos…',
-                                            style: TextStyle(
-                                              color: Colors.black54,
-                                              fontWeight: FontWeight.w700,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ] else if ((_teachersLoadError ?? '').trim().isNotEmpty) ...[
-                                      const SizedBox(height: 10),
-                                      Container(
-                                        width: double.infinity,
-                                        padding: const EdgeInsets.all(12),
-                                        decoration: BoxDecoration(
-                                          color: Colors.orange.withOpacity(0.10),
-                                          borderRadius: BorderRadius.circular(14),
-                                          border: Border.all(color: Colors.orange.withOpacity(0.25)),
-                                        ),
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            const Text(
-                                              'No se pudo cargar la lista de docentes.',
-                                              style: TextStyle(fontWeight: FontWeight.w900),
-                                            ),
-                                            if (kDebugMode) ...[
-                                              const SizedBox(height: 6),
-                                              Text('Detalle: $_teachersLoadError'),
-                                            ],
-                                          ],
-                                        ),
-                                      ),
-                                    ],
-
-                                    if (_selectedTeacher != null) ...[
-                                      const SizedBox(height: 12),
-                                      Container(
-                                        width: double.infinity,
-                                        padding: const EdgeInsets.all(12),
-                                        decoration: BoxDecoration(
-                                          color: Colors.green.withOpacity(0.08),
-                                          borderRadius: BorderRadius.circular(14),
-                                          border: Border.all(color: Colors.green.withOpacity(0.25)),
-                                        ),
-                                        child: Row(
-                                          children: [
-                                            const Icon(Icons.check_circle, color: Colors.green),
-                                            const SizedBox(width: 10),
-                                            Expanded(
-                                              child: Text(
-                                                'Seleccionado: ${_selectedTeacher!.name}',
-                                                style: const TextStyle(fontWeight: FontWeight.w900),
-                                              ),
-                                            ),
-                                            IconButton(
-                                              tooltip: 'Quitar selección',
-                                              onPressed: _loading ? null : () => setState(() => _selectedTeacher = null),
-                                              icon: const Icon(Icons.close),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ],
-
-                                    if (_invalidLogin && (_errorMessage ?? '').trim().isNotEmpty) ...[
-                                      const SizedBox(height: 12),
-                                      Container(
-                                        width: double.infinity,
-                                        padding: const EdgeInsets.all(12),
-                                        decoration: BoxDecoration(
-                                          color: Colors.red.withOpacity(0.08),
-                                          borderRadius: BorderRadius.circular(14),
-                                          border: Border.all(color: Colors.red.withOpacity(0.20)),
-                                        ),
-                                        child: Row(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            const Icon(Icons.error_outline, color: Colors.red),
-                                            const SizedBox(width: 10),
-                                            Expanded(
-                                              child: Text(
-                                                _errorMessage!,
-                                                style: const TextStyle(
-                                                  color: Colors.red,
-                                                  fontWeight: FontWeight.w900,
-                                                ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ],
-
-                                    const SizedBox(height: 16),
-
-                                    // Botón Google (más “premium”)
-                                    SizedBox(
-                                      width: double.infinity,
-                                      height: 50,
-                                      child: ElevatedButton(
-                                        onPressed: _loading ? null : _onLoginWithGoogle,
-                                        style: ElevatedButton.styleFrom(
-                                          backgroundColor: amber,
-                                          foregroundColor: Colors.black,
-                                          elevation: 0,
-                                          shape: RoundedRectangleBorder(
-                                            borderRadius: BorderRadius.circular(16),
-                                          ),
-                                          textStyle: const TextStyle(
-                                            fontWeight: FontWeight.w900,
-                                            fontSize: 15,
-                                          ),
-                                        ),
-                                        child: _loading
-                                            ? const SizedBox(
-                                                height: 20,
-                                                width: 20,
-                                                child: CircularProgressIndicator(
-                                                  valueColor: AlwaysStoppedAnimation(Colors.black),
-                                                  strokeWidth: 2,
-                                                ),
-                                              )
-                                            : Row(
-                                                mainAxisAlignment: MainAxisAlignment.center,
-                                                children: [
-                                                  Container(
-                                                    width: 28,
-                                                    height: 28,
-                                                    decoration: BoxDecoration(
-                                                      color: Colors.black.withOpacity(0.08),
-                                                      borderRadius: BorderRadius.circular(10),
-                                                    ),
-                                                    alignment: Alignment.center,
-                                                    child: const Icon(Icons.g_mobiledata, size: 26),
-                                                  ),
-                                                  const SizedBox(width: 10),
-                                                  const Text('Iniciar con Google'),
-                                                ],
-                                              ),
-                                      ),
-                                    ),
-
-                                    const SizedBox(height: 10),
-
-                                    Row(
-                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    child: Row(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
-                                        TextButton(
-                                          onPressed: _onCreateAccount,
-                                          child: const Text(
-                                            'Crear cuenta',
-                                            style: TextStyle(fontWeight: FontWeight.w900),
+                                        Container(
+                                          width: 42,
+                                          height: 42,
+                                          decoration: BoxDecoration(
+                                            color: azul.withOpacity(0.12),
+                                            borderRadius: BorderRadius.circular(14),
                                           ),
+                                          child: const Icon(Icons.verified_user, color: azul),
                                         ),
-                                        TextButton(
-                                          onPressed: _loading ? null : _loadActiveTeachers,
-                                          child: const Text(
-                                            'Refrescar',
-                                            style: TextStyle(fontWeight: FontWeight.w900),
+                                        const SizedBox(width: 12),
+                                        const Expanded(
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                'Acceso con Google primero',
+                                                style: TextStyle(
+                                                  fontWeight: FontWeight.w900,
+                                                  fontSize: 16,
+                                                ),
+                                              ),
+                                              SizedBox(height: 6),
+                                              Text(
+                                                'Solo podrán entrar docentes con correo previamente registrado y cuenta activa. Si aún no apareces, usa "Crear Mi Cuenta" o pide activación a la administración.',
+                                                style: TextStyle(
+                                                  color: Colors.black87,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                            ],
                                           ),
                                         ),
                                       ],
                                     ),
+                                  ),
+
+                                  const SizedBox(height: 14),
+
+                                  Container(
+                                    width: double.infinity,
+                                    padding: const EdgeInsets.all(14),
+                                    decoration: BoxDecoration(
+                                      color: amber.withOpacity(0.10),
+                                      borderRadius: BorderRadius.circular(16),
+                                      border: Border.all(color: amber.withOpacity(0.24)),
+                                    ),
+                                    child: const Row(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Icon(Icons.info_outline, color: Colors.black87),
+                                        SizedBox(width: 10),
+                                        Expanded(
+                                          child: Text(
+                                            '',
+                                            style: TextStyle(
+                                              color: Colors.black87,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+
+                                  if (_invalidLogin && (_errorMessage ?? '').trim().isNotEmpty) ...[
+                                    const SizedBox(height: 12),
+                                    Container(
+                                      width: double.infinity,
+                                      padding: const EdgeInsets.all(12),
+                                      decoration: BoxDecoration(
+                                        color: Colors.red.withOpacity(0.08),
+                                        borderRadius: BorderRadius.circular(14),
+                                        border: Border.all(color: Colors.red.withOpacity(0.20)),
+                                      ),
+                                      child: Row(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          const Icon(Icons.error_outline, color: Colors.red),
+                                          const SizedBox(width: 10),
+                                          Expanded(
+                                            child: Text(
+                                              _errorMessage!,
+                                              style: const TextStyle(
+                                                color: Colors.red,
+                                                fontWeight: FontWeight.w900,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
                                   ],
-                                ),
+
+                                  const SizedBox(height: 16),
+
+                                  SizedBox(
+                                    width: double.infinity,
+                                    height: 50,
+                                    child: ElevatedButton(
+                                      onPressed: _loading ? null : _onLoginWithGoogle,
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: amber,
+                                        foregroundColor: Colors.black,
+                                        elevation: 0,
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(16),
+                                        ),
+                                        textStyle: const TextStyle(
+                                          fontWeight: FontWeight.w900,
+                                          fontSize: 15,
+                                        ),
+                                      ),
+                                      child: _loading
+                                          ? const SizedBox(
+                                              height: 20,
+                                              width: 20,
+                                              child: CircularProgressIndicator(
+                                                valueColor: AlwaysStoppedAnimation(Colors.black),
+                                                strokeWidth: 2,
+                                              ),
+                                            )
+                                          : Row(
+                                              mainAxisAlignment: MainAxisAlignment.center,
+                                              children: [
+                                                Container(
+                                                  width: 28,
+                                                  height: 28,
+                                                  decoration: BoxDecoration(
+                                                    color: Colors.black.withOpacity(0.08),
+                                                    borderRadius: BorderRadius.circular(10),
+                                                  ),
+                                                  alignment: Alignment.center,
+                                                  child: const Icon(Icons.g_mobiledata, size: 26),
+                                                ),
+                                                const SizedBox(width: 10),
+                                                const Text('Iniciar con Google'),
+                                              ],
+                                            ),
+                                    ),
+                                  ),
+
+                                  const SizedBox(height: 10),
+
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      TextButton(
+                                        onPressed: _onCreateAccount,
+                                        child: const Text(
+                                          'Crear Mi Cuenta',
+                                          style: TextStyle(fontWeight: FontWeight.w900),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
                               ),
                             ),
 
@@ -1056,18 +914,29 @@ class _DocentesScreenState extends State<DocentesScreen> {
                                     borderRadius: BorderRadius.circular(99),
                                   ),
                                 ),
-                                const SizedBox(width: 8),
-                                Text(
-                                  'Powered by EduPro',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w800,
-                                    color: Colors.black.withOpacity(0.55),
-                                  ),
+                               Row(
+  children: [
+    const SizedBox(width: 8),
+    Text(
+      'Creado Por EduPro',
+      style: TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w800,
+        color: Colors.black.withOpacity(0.55),
+      ),
+    ),
+    const SizedBox(width: 4),
+    const Icon(
+      Icons.verified,
+      size: 16,
+      color: Colors.blue,
+    ),
+  ],
                                 ),
                               ],
                             ),
                           ],
+                        ),
                         ),
                       ),
                     ),
@@ -1121,64 +990,6 @@ class _Pill extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-class _TeacherOption {
-  final String id;
-  final String name;
-  final String loginKey;
-  final String phoneHash;
-
-  final String authEmail;
-  final String emailLower;
-  final String statusLower;
-
-  const _TeacherOption({
-    required this.id,
-    required this.name,
-    required this.loginKey,
-    required this.phoneHash,
-    required this.authEmail,
-    required this.emailLower,
-    required this.statusLower,
-  });
-
-  factory _TeacherOption.fromDoc(QueryDocumentSnapshot<Map<String, dynamic>> d) {
-    final data = d.data();
-
-    final ph = (data['phoneHash'] ?? '').toString().trim();
-
-    String computedHash = '';
-    final rawPhone = (data['phone'] ?? '').toString();
-    if (rawPhone.trim().isNotEmpty) {
-      final digits = rawPhone.replaceAll(RegExp(r'\D'), '');
-      final last10 = digits.length <= 10 ? digits : digits.substring(digits.length - 10);
-      computedHash = last10.isEmpty ? '' : sha1.convert(utf8.encode(last10)).toString();
-    }
-    final finalHash = ph.isNotEmpty ? ph : computedHash;
-
-    final authEmail = (data['authEmail'] ?? '').toString().trim();
-
-    final e1 = (data['emailLower'] ?? '').toString().trim().toLowerCase();
-    final e2 = (data['email'] ?? '').toString().trim().toLowerCase();
-    final emailLower = e1.isNotEmpty ? e1 : e2;
-
-    final rawStatus = (data['statusLower'] ?? data['status'] ?? '').toString().trim();
-    var st = rawStatus.toLowerCase();
-    if (st == 'activo' || st == 'activa') st = 'active';
-    if (st == 'bloqueado') st = 'blocked';
-    if (st.isEmpty) st = 'active';
-
-    return _TeacherOption(
-      id: d.id,
-      name: (data['name'] ?? '').toString(),
-      loginKey: (data['loginKey'] ?? '').toString(),
-      phoneHash: finalHash,
-      authEmail: authEmail,
-      emailLower: emailLower,
-      statusLower: st,
     );
   }
 }

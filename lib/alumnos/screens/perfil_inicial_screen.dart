@@ -1,14 +1,22 @@
 // lib/alumnos/screens/perfil_inicial_screen.dart
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+
 
 import 'package:edupro/models/escuela.dart';
 import 'package:edupro/utils/school_utils.dart' show normalizeSchoolIdFromEscuela;
 
-import '../nav/mensajes_alumnos_screen.dart';
+import 'package:edupro/alumnos/screens/chat_grado_screen.dart';
 import '../nav/avisos_alumnos_screen.dart';
 import 'package:edupro/alumnos/tabs/academico_tab.dart';
+import 'package:edupro/alumnos/tabs/asistencia_tab.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:edupro/alumnos/tabs/calificaciones_tab.dart';
+import 'package:edupro/alumnos/tabs/documentos_tab.dart';
+import 'package:edupro/alumnos/tabs/tareas_tab.dart';
+import 'package:edupro/alumnos/tabs/tutores_tab.dart';
+import 'package:edupro/alumnos/shared/student_session.dart';
+import 'package:edupro/widgets/app_info_menu.dart';
 
 class PerfilInicialScreen extends StatefulWidget {
   final Escuela escuela;
@@ -48,21 +56,113 @@ class _PerfilInicialScreenState extends State<PerfilInicialScreen> {
       .collection('config')
       .doc('alumnos');
 
-  @override
-  void initState() {
-    super.initState();
-    _schoolId = normalizeSchoolIdFromEscuela(widget.escuela);
+@override
+void initState() {
+  super.initState();
+  _schoolId = normalizeSchoolIdFromEscuela(widget.escuela).toString().trim();
+}
+
+
+
+Future<void> _openMensajes() async {
+  try {
+    final snap = await _estRef.get();
+    final data = snap.data() ?? <String, dynamic>{};
+
+    final gradeId = (data['gradeId'] ?? data['gradoId'] ?? data['gradoKey'] ?? '')
+        .toString()
+        .trim();
+
+    if (!mounted) return;
+
+    if (gradeId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Este alumno no tiene gradeId asignado.')),
+      );
+      return;
+    }
+
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ChatGradoScreen(
+          escuela: widget.escuela,
+          initialAlumnoId: widget.estudianteId,
+        ),
+      ),
+    );
+  } catch (e) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Error abriendo chat: $e')),
+    );
+  }
+}
+
+Future<bool> _cerrarSesion() async {
+  return await signOutStudentSession(
+    context,
+    escuela: widget.escuela,
+  );
+}
+
+void _pushPlaceholder(BuildContext context, String modulo, String nivel) {
+  final m = modulo.toLowerCase().trim();
+  final n = nivel.toLowerCase().trim();
+
+  if (n == 'inicial' && m == 'tareas') {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => _InicialTareasScreen(
+          estRef: _estRef,
+          escuelaNombre: (widget.escuela.nombre ?? 'EduPro').toString(),
+        ),
+      ),
+    );
+    return;
   }
 
-  void _openMensajes() => Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => MensajesAlumnoScreen(
-            escuela: widget.escuela,
-            estudianteId: widget.estudianteId,
-          ),
+  if (n == 'inicial' && m == 'asistencia') {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => _InicialAsistenciaScreen(
+          estRef: _estRef,
+          escuelaNombre: (widget.escuela.nombre ?? 'EduPro').toString(),
         ),
-      );
+      ),
+    );
+    return;
+  }
 
+  if (n == 'inicial' && m == 'documentos') {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => _InicialDocumentosScreen(
+          estRef: _estRef,
+          escuelaNombre: (widget.escuela.nombre ?? 'EduPro').toString(),
+        ),
+      ),
+    );
+    return;
+  }
+
+  if (n == 'inicial' && m == 'tutores') {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => _InicialTutoresScreen(
+          estRef: _estRef,
+          escuelaNombre: (widget.escuela.nombre ?? 'EduPro').toString(),
+        ),
+      ),
+    );
+    return;
+  }
+
+  Navigator.of(context).push(
+    MaterialPageRoute(
+      builder: (_) => _PlaceholderModuloScreen(modulo: modulo, nivel: nivel),
+    ),
+  );
+}
   void _openAvisos() => Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => AvisosAlumnoScreen(escuela: widget.escuela),
@@ -87,6 +187,18 @@ class _PerfilInicialScreenState extends State<PerfilInicialScreen> {
     );
   }
 
+  /// ✅ Abrir Calificaciones (Inicial)
+void _openCalificaciones() {
+  Navigator.of(context).push(
+    MaterialPageRoute(
+      builder: (_) => _InicialCalificacionesScreen(
+        estRef: _estRef,
+        escuelaNombre: (widget.escuela.nombre ?? 'EduPro').toString(),
+      ),
+    ),
+  );
+}
+
   @override
   Widget build(BuildContext context) {
     final nombreFallback = (widget.nombreAlumno ?? 'Alumno').trim();
@@ -95,25 +207,13 @@ class _PerfilInicialScreenState extends State<PerfilInicialScreen> {
     return Scaffold(
       backgroundColor: _bg,
       appBar: AppBar(
-        title: Text('Inicial • ${(widget.escuela.nombre ?? 'EduPro').toString()}'),
+    //    title: Text('Inicial • ${(widget.escuela.nombre ?? 'EduPro').toString()}'),
         backgroundColor: _blue,
         actions: [
-          if (kDebugMode)
-            IconButton(
-              tooltip: 'DEMO',
-              icon: const Icon(Icons.science_outlined),
-              onPressed: () async {
-                await _cfgRef.set({'allowStudentPhoto': true}, SetOptions(merge: true));
-                await _estRef.set({
-                  'nombre': 'Peque',
-                  'apellido': 'Demo',
-                  'grado': gradoFallback,
-                  'tanda': 'Mañana',
-                  'matricula': 'IN-1001',
-                  'idGlobal': 'GLOBAL-IN-0001',
-                }, SetOptions(merge: true));
-              },
-            ),
+          StudentLogoutSwitch(
+            onToggle: _cerrarSesion,
+          ),
+          const StudentInfoMenuButton(),
         ],
       ),
       body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
@@ -167,32 +267,19 @@ class _PerfilInicialScreenState extends State<PerfilInicialScreen> {
                       children: [
                         _ActionTile(
                           width: tileW,
-                          icon: Icons.menu_book_rounded,
-                          title: 'Actividades',
-                          subtitle: 'Lo que hizo hoy',
-                          onTap: () => _pushPlaceholder(context, 'Actividades', 'Inicial'),
-                        ),
-                        _ActionTile(
-                          width: tileW,
-                          icon: Icons.fact_check_rounded,
-                          title: 'Asistencia',
-                          subtitle: 'Entradas / salidas',
-                          onTap: () => _pushPlaceholder(context, 'Asistencia', 'Inicial'),
-                        ),
-                        _ActionTile(
-                          width: tileW,
                           icon: Icons.task_alt_rounded,
                           title: 'Tareas',
                           subtitle: 'Pendientes',
                           onTap: () => _pushPlaceholder(context, 'Tareas', 'Inicial'),
                         ),
                         _ActionTile(
-                          width: tileW,
-                          icon: Icons.emoji_people_rounded,
-                          title: 'Conducta',
-                          subtitle: 'Notas',
-                          onTap: () => _pushPlaceholder(context, 'Conducta', 'Inicial'),
-                        ),
+  width: tileW,
+  icon: Icons.grade_rounded,
+  title: 'Calificaciones',
+  subtitle: 'Notas',
+  onTap: _openCalificaciones,
+),
+                        
                         _ActionTile(
                           width: tileW,
                           icon: Icons.folder_rounded,
@@ -222,7 +309,13 @@ class _PerfilInicialScreenState extends State<PerfilInicialScreen> {
                           subtitle: 'Comunicados',
                           onTap: _openAvisos,
                         ),
-
+_ActionTile(
+  width: tileW,
+  icon: Icons.fact_check_rounded,
+  title: 'Asistencia',
+  subtitle: 'Presente/Ausente',
+  onTap: () => _pushPlaceholder(context, 'Asistencia', 'Inicial'),
+),
                         /// ✅ ESTE era el “Calendario”. Ahora abre Académico (horario académico).
                 //        _ActionTile(
                  //         width: tileW,
@@ -236,8 +329,8 @@ class _PerfilInicialScreenState extends State<PerfilInicialScreen> {
                         _ActionTile(
                           width: tileW,
                           icon: Icons.calendar_month_rounded,
-                          title: 'Calendario Escolar',
-                          subtitle: 'Materias / notas',
+                          title: 'Horario',
+                          subtitle: 'Clases del dia',
                           onTap: _openAcademico,
                         ),
                       ],
@@ -259,15 +352,7 @@ class _PerfilInicialScreenState extends State<PerfilInicialScreen> {
     final full = ('${n1.isEmpty ? '' : n1} ${a1.isEmpty ? '' : a1}').trim();
     return full.isNotEmpty ? full : fallback;
   }
-
-  static void _pushPlaceholder(BuildContext context, String modulo, String nivel) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => _PlaceholderModuloScreen(modulo: modulo, nivel: nivel),
-      ),
-    );
-  }
-}
+} 
 
 /// Pantalla envolvente para mostrar el Tab Académico como pantalla completa.
 class _InicialAcademicoScreen extends StatelessWidget {
@@ -295,6 +380,132 @@ class _InicialAcademicoScreen extends StatelessWidget {
   }
 }
 
+/// Pantalla envolvente para Calificaciones (Inicial)
+class _InicialCalificacionesScreen extends StatelessWidget {
+  final DocumentReference<Map<String, dynamic>> estRef;
+  final String escuelaNombre;
+
+  static const Color _blue = Color.fromARGB(255, 21, 101, 192);
+  static const Color _bg = Color(0xFFF6F7FB);
+
+  const _InicialCalificacionesScreen({
+    required this.estRef,
+    required this.escuelaNombre,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: _bg,
+      appBar: AppBar(
+        title: const Text('Inicial • Calificaciones'),
+        backgroundColor: _blue,
+      ),
+
+
+      body: CalificacionesTab(estRef: estRef),
+    );
+  }
+}
+
+class _InicialAsistenciaScreen extends StatelessWidget {
+  final DocumentReference<Map<String, dynamic>> estRef;
+  final String escuelaNombre;
+
+  static const Color _blue = Color.fromARGB(255, 21, 101, 192);
+  static const Color _bg = Color(0xFFF6F7FB);
+
+  const _InicialAsistenciaScreen({
+    required this.estRef,
+    required this.escuelaNombre,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: _bg,
+      appBar: AppBar(
+        title: const Text('Inicial • Asistencia'),
+        backgroundColor: _blue,
+      ),
+      body: AsistenciaTab(estRef: estRef),
+    );
+  }
+}
+
+class _InicialTareasScreen extends StatelessWidget {
+  final DocumentReference<Map<String, dynamic>> estRef;
+  final String escuelaNombre;
+
+  static const Color _blue = Color.fromARGB(255, 21, 101, 192);
+  static const Color _bg = Color(0xFFF6F7FB);
+
+  const _InicialTareasScreen({
+    required this.estRef,
+    required this.escuelaNombre,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: _bg,
+      appBar: AppBar(
+        title: const Text('Inicial • Tareas'),
+        backgroundColor: _blue,
+      ),
+      body: TareasTab(estRef: estRef),
+    );
+  }
+}
+
+class _InicialDocumentosScreen extends StatelessWidget {
+  final DocumentReference<Map<String, dynamic>> estRef;
+  final String escuelaNombre;
+
+  static const Color _blue = Color.fromARGB(255, 21, 101, 192);
+
+  const _InicialDocumentosScreen({
+    required this.estRef,
+    required this.escuelaNombre,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF6F7FB),
+      appBar: AppBar(
+        title: Text('$escuelaNombre • Documentos'),
+        backgroundColor: _blue,
+      ),
+      body: DocumentosTab(estRef: estRef),
+    );
+  }
+}
+
+class _InicialTutoresScreen extends StatelessWidget {
+  final DocumentReference<Map<String, dynamic>> estRef;
+  final String escuelaNombre;
+
+  static const Color _blue = Color.fromARGB(255, 21, 101, 192);
+  static const Color _bg = Color(0xFFF6F7FB);
+
+  const _InicialTutoresScreen({
+    required this.estRef,
+    required this.escuelaNombre,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: _bg,
+      appBar: AppBar(
+        backgroundColor: _blue,
+        title: const Text('Tutores'),
+      ),
+      body: TutoresTab(estRef: estRef),
+    );
+  }
+}
 // ---------------- UI ----------------
 
 class _InicialHeaderCard extends StatelessWidget {
@@ -370,17 +581,6 @@ class _InicialHeaderCard extends StatelessWidget {
                     style: TextStyle(color: Colors.white.withOpacity(0.85)),
                   ),
                 ]),
-              ),
-              const SizedBox(width: 8),
-              IconButton(
-                tooltip: 'Mensajes',
-                onPressed: onMensajes,
-                icon: const Icon(Icons.forum_rounded, color: Colors.white),
-              ),
-              IconButton(
-                tooltip: 'Avisos',
-                onPressed: onAvisos,
-                icon: const Icon(Icons.campaign_rounded, color: Colors.white),
               ),
             ],
           ),
@@ -573,14 +773,15 @@ class _PlaceholderModuloScreen extends StatelessWidget {
             borderRadius: BorderRadius.circular(16),
             border: Border.all(color: Colors.grey.shade300),
           ),
-          child: Text(
-            'Aquí diseñamos y conectamos el módulo "$modulo" para $nivel.\n\n'
-            'Listo para reemplazar este placeholder con tu lógica real.',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.grey.shade800),
-          ),
+ child: Text(
+  'Aquí diseñamos y conectamos el módulo "$modulo" para $nivel.\n\n'
+  'Listo para reemplazar este placeholder con tu lógica real.',
+  textAlign: TextAlign.center,
+  style: TextStyle(color: Colors.grey.shade800),
+),
         ),
       ),
     );
   }
 }
+

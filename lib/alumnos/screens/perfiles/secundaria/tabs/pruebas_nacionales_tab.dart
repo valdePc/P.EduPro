@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:edupro/alumnos/perfiles/widgets/alumno_ui.dart';
+import 'package:edupro/alumnos/screens/perfiles/widgets/alumno_ui.dart';
 
 class PruebasNacionalesTab extends StatelessWidget {
   final String nombreAlumno;

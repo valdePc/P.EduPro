@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Autorizar navegador local · EduPro</title>
+  <style>
+    body { font: 16px system-ui, sans-serif; max-width: 580px; margin: 8vh auto; padding: 24px; color: #17223b; }
+    button { background: #0d47a1; color: white; border: 0; border-radius: 10px; padding: 14px 20px; font: inherit; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: wait; }
+    #status { margin-top: 20px; line-height: 1.5; }
+    #login { display: inline-block; margin-top: 12px; }
+    #login[hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Autorizar este navegador de desarrollo</h1>
+  <p>Abre esta página en el mismo Chrome donde usas tu cuenta de Google. La autorización se guardará solo en este perfil del navegador.</p>
+  <button id="authorize">Autorizar este navegador</button>
+  <p id="status" role="status" aria-live="polite"></p>
+  <a id="login" href="http://localhost:55595/#/login" hidden>Ir al inicio de sesión</a>
+  <script>
+    'use strict';
+    const site = 'http://localhost:55595';
+    const button = document.getElementById('authorize');
+    const status = document.getElementById('status');
+    const login = document.getElementById('login');
+    if (location.origin !== site) {
+      button.disabled = true;
+      status.textContent = 'Esta página solo funciona en el servidor local de desarrollo.';
+    }
+    function storeToken(token) {
+      return new Promise((resolve, reject) => {
+        const open = indexedDB.open('firebase-app-check-database', 1);
+        open.onupgradeneeded = () => open.result.createObjectStore('firebase-app-check-store', { keyPath: 'compositeKey' });
+        open.onerror = () => reject(new Error('No se pudo abrir el almacenamiento local.'));
+        open.onsuccess = () => {
+          const db = open.result;
+          const tx = db.transaction('firebase-app-check-store', 'readwrite');
+          tx.objectStore('firebase-app-check-store').put({ compositeKey: 'debug-token', value: token });
+          tx.onerror = () => reject(new Error('No se pudo guardar la autorización local.'));
+          tx.oncomplete = () => { db.close(); resolve(); };
+        };
+      });
+    }
+    function hasStoredToken() {
+      return new Promise((resolve, reject) => {
+        const open = indexedDB.open('firebase-app-check-database', 1);
+        open.onupgradeneeded = () => open.result.createObjectStore('firebase-app-check-store', { keyPath: 'compositeKey' });
+        open.onerror = () => reject(new Error('No se pudo abrir el almacenamiento local.'));
+        open.onsuccess = () => {
+          const db = open.result;
+          const tx = db.transaction('firebase-app-check-store', 'readonly');
+          const request = tx.objectStore('firebase-app-check-store').get('debug-token');
+          request.onsuccess = () => resolve(typeof request.result?.value === 'string' && request.result.value.length > 0);
+          request.onerror = () => reject(new Error('No se pudo leer la autorización local.'));
+          tx.oncomplete = () => db.close();
+        };
+      });
+    }
+    if (location.origin === site) {
+      hasStoredToken().then((exists) => {
+        if (exists) {
+          button.hidden = true;
+          login.hidden = false;
+          status.textContent = 'Este perfil ya tiene una autorización local guardada. Puedes ir al inicio de sesión.';
+        }
+      }).catch(() => {
+        status.textContent = 'No se pudo revisar la autorización de este perfil. Puedes intentar autorizarlo de nuevo.';
+      });
+    }
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      status.textContent = 'Autorizando este navegador…';
+      try {
+        const token = crypto.randomUUID();
+        const response = await fetch('http://127.0.0.1:52611/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token }),
+        });
+        if (!response.ok) throw new Error('No se pudo registrar este navegador.');
+        await storeToken(token);
+        status.textContent = 'Navegador autorizado. Abriendo el login…';
+        login.hidden = false;
+        setTimeout(() => { location.href = site; }, 900);
+      } catch (_) {
+        status.textContent = 'La autorización no terminó. Comprueba que el asistente local esté iniciado e inténtalo otra vez.';
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

@@ -8,7 +8,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:edupro/models/escuela.dart';
-import 'package:edupro/utils/school_utils.dart' show normalizeSchoolIdFromEscuela;
+import 'package:edupro/utils/school_utils.dart'
+    show normalizeSchoolIdFromEscuela;
 
 class ColeAdminScreen extends StatefulWidget {
   const ColeAdminScreen({super.key});
@@ -34,6 +35,7 @@ class _ColeAdminScreenState extends State<ColeAdminScreen> {
   late String _schoolId; // el que realmente existe en Firestore
 
   Map<String, dynamic>? _schoolData;
+  Map<String, dynamic>? _registroConfigData;
 
   String _search = '';
 
@@ -67,14 +69,10 @@ class _ColeAdminScreenState extends State<ColeAdminScreen> {
   }
 
   Random _rng() {
-    try {
-      return Random.secure();
-    } catch (_) {
-      return Random();
-    }
+    return Random.secure();
   }
 
-  String _generateTempPassword({int length = 10}) {
+  String _generateTempPassword({int length = 16}) {
     const chars =
         'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789@#%';
     final r = _rng();
@@ -83,12 +81,44 @@ class _ColeAdminScreenState extends State<ColeAdminScreen> {
 
   Future<void> _refreshSchool() async {
     try {
-      final schoolDoc = await _db.collection('schools').doc(_schoolId).get();
+      final schoolRef = _db.collection('schools').doc(_schoolId);
+      final registroRef = schoolRef.collection('config').doc('registro');
+
+      final schoolDoc = await schoolRef.get();
+      final registroDoc = await registroRef.get();
+
       _schoolData = schoolDoc.data();
+      _registroConfigData = registroDoc.data();
+
     } catch (_) {
-      // no rompas la pantalla
+      _snack('No se pudieron actualizar los datos del colegio. Comprueba tu conexión e intenta nuevamente.');
     }
     if (mounted) setState(() {});
+  }
+
+  int _adminLimitFromSchoolData() {
+    final data = _schoolData;
+    if (data == null) return 0;
+    final limitsRaw = data['planLimits'];
+    if (limitsRaw is Map) {
+      final raw = limitsRaw['admins'];
+      if (raw is num) return raw.toInt();
+    }
+    final flat = data['adminsLimit'];
+    if (flat is num) return flat.toInt();
+    return 0;
+  }
+
+  Future<int> _currentAdminsCount() async {
+    final snap = await _db
+        .collection('schools')
+        .doc(_schoolId)
+        .collection('admins')
+        .get();
+    return snap.docs.where((d) {
+      final status = (d.data()['status'] ?? '').toString().trim().toLowerCase();
+      return status != 'deleted';
+    }).length;
   }
 
   void _snack(String msg) {
@@ -272,9 +302,21 @@ class _ColeAdminScreenState extends State<ColeAdminScreen> {
                         _snack('Escribe un correo válido.');
                         return;
                       }
-                      if (pass.trim().length < 6) {
-                        _snack('La contraseña debe tener mínimo 6 caracteres.');
+                      if (pass.length < 12 || pass.length > 128) {
+                        _snack('La contraseña debe tener entre 12 y 128 caracteres.');
                         return;
+                      }
+
+                      final adminsLimit = _adminLimitFromSchoolData();
+                      if (adminsLimit > 0) {
+                        final currentCount = await _currentAdminsCount();
+                        if (currentCount >= adminsLimit) {
+                          _snack(
+                            'Esta escuela ya alcanzó su límite de administradores escolares ($adminsLimit). '
+                            'Actualiza el plan o los límites desde Admin General.',
+                          );
+                          return;
+                        }
                       }
 
                       st(() => saving = true);
@@ -351,9 +393,12 @@ class _ColeAdminScreenState extends State<ColeAdminScreen> {
   }
 
   Future<void> _openSchoolPasswordDialog() async {
-    final currentPass = (_schoolData?['password'] ?? '').toString();
+    final hasExistingPassword =
+        (_registroConfigData?['passwordHash'] ?? '').toString().trim().isNotEmpty ||
+        (_registroConfigData?['password'] ?? '').toString().trim().isNotEmpty ||
+        (_schoolData?['password'] ?? '').toString().trim().isNotEmpty;
     final passCtrl = TextEditingController(
-      text: currentPass.isNotEmpty ? currentPass : _generateTempPassword(length: 10),
+      text: _generateTempPassword(length: 16),
     );
 
     bool show = false;
@@ -363,7 +408,7 @@ class _ColeAdminScreenState extends State<ColeAdminScreen> {
       context: context,
       builder: (dlgCtx) => StatefulBuilder(
         builder: (ctx, st) => AlertDialog(
-          title: const Text('Contraseña del colegio (campo password)'),
+          title: const Text('Clave del equipo de registro'),
           content: SizedBox(
             width: 520,
             child: Column(
@@ -373,7 +418,7 @@ class _ColeAdminScreenState extends State<ColeAdminScreen> {
                   controller: passCtrl,
                   obscureText: !show,
                   decoration: InputDecoration(
-                    labelText: 'Contraseña del colegio',
+                    labelText: 'Clave de registro',
                     border: const OutlineInputBorder(),
                     prefixIcon: const Icon(Icons.lock),
                     suffixIcon: Wrap(
@@ -390,7 +435,7 @@ class _ColeAdminScreenState extends State<ColeAdminScreen> {
                           onPressed: saving
                               ? null
                               : () => st(() {
-                                    passCtrl.text = _generateTempPassword(length: 10);
+                                    passCtrl.text = _generateTempPassword(length: 16);
                                   }),
                         ),
                         IconButton(
@@ -398,9 +443,9 @@ class _ColeAdminScreenState extends State<ColeAdminScreen> {
                           icon: const Icon(Icons.copy),
                           onPressed: () async {
                             await Clipboard.setData(
-                              ClipboardData(text: passCtrl.text.trim()),
+                              ClipboardData(text: passCtrl.text),
                             );
-                            _snack('Contraseña copiada');
+                            _snack('Clave copiada');
                           },
                         ),
                       ],
@@ -411,7 +456,8 @@ class _ColeAdminScreenState extends State<ColeAdminScreen> {
                 const Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    'Esta contraseña sí se guarda en Firestore dentro del colegio.',
+                    'La clave actual ya no se puede leer desde la app.\n'
+                    'Si guardas una nueva, la anterior se reemplaza de forma segura.',
                     style: TextStyle(fontSize: 12, color: Colors.grey),
                   ),
                 ),
@@ -435,23 +481,36 @@ class _ColeAdminScreenState extends State<ColeAdminScreen> {
               onPressed: saving
                   ? null
                   : () async {
-                      final pass = passCtrl.text.trim();
-                      if (pass.isEmpty) {
-                        _snack('La contraseña no puede estar vacía.');
+                      final pass = passCtrl.text;
+                      if (pass.length < 12 || pass.length > 128) {
+                        _snack('La clave debe tener entre 12 y 128 caracteres.');
                         return;
                       }
 
                       st(() => saving = true);
                       try {
-                        await _db.collection('schools').doc(_schoolId).set(
-                          {'password': pass},
-                          SetOptions(merge: true),
-                        );
+                        final callable = _fn.httpsCallable('setSchoolRegistroConfig');
+                        await callable.call(<String, dynamic>{
+                          'schoolId': _schoolId,
+                          'password': pass,
+                          'permitirFotoAlumno':
+                              (_registroConfigData?['permitirFotoAlumno'] is bool)
+                                  ? _registroConfigData!['permitirFotoAlumno']
+                                  : true,
+                          'permitirEditarEstudiantes':
+                              (_registroConfigData?['permitirEditarEstudiantes'] is bool)
+                                  ? _registroConfigData!['permitirEditarEstudiantes']
+                                  : true,
+                        });
 
                         await _refreshSchool();
 
                         if (dlgCtx.mounted) Navigator.pop(dlgCtx);
-                        _snack('Contraseña del colegio actualizada ✅');
+                        _snack(
+                          hasExistingPassword
+                              ? 'Clave de registro rotada y protegida ✅'
+                              : 'Clave de registro creada y protegida ✅',
+                        );
                       } catch (e) {
                         _snack('Error guardando: $e');
                       } finally {
@@ -471,7 +530,7 @@ class _ColeAdminScreenState extends State<ColeAdminScreen> {
   // UI: Add Admin dialog
   // ------------------------------------------------------------
   Future<void> _openAddAdminDialog() async {
-    String tempPass = _generateTempPassword(length: 10);
+    String tempPass = _generateTempPassword(length: 16);
 
     final nameCtrl = TextEditingController();
     final emailCtrl = TextEditingController();
@@ -532,7 +591,7 @@ class _ColeAdminScreenState extends State<ColeAdminScreen> {
                           onPressed: saving
                               ? null
                               : () => st(() {
-                                    tempPass = _generateTempPassword(length: 10);
+                                    tempPass = _generateTempPassword(length: 16);
                                     tempCtrl.text = tempPass;
                                   }),
                         ),
@@ -730,7 +789,10 @@ class _ColeAdminScreenState extends State<ColeAdminScreen> {
     final adminEmail = (_schoolData?['adminEmail'] ?? '').toString().trim();
     final hasAdmin = adminEmail.isNotEmpty && ((_schoolData?['adminPasswordSet'] ?? false) == true);
 
-    final schoolPassword = (_schoolData?['password'] ?? '').toString();
+    final hasSchoolPassword =
+        (_registroConfigData?['passwordHash'] ?? '').toString().trim().isNotEmpty ||
+        (_registroConfigData?['password'] ?? '').toString().trim().isNotEmpty ||
+        (_schoolData?['password'] ?? '').toString().trim().isNotEmpty;
 
     return Scaffold(
       appBar: AppBar(
@@ -754,7 +816,7 @@ class _ColeAdminScreenState extends State<ColeAdminScreen> {
                   ),
                   const SizedBox(height: 12),
 
-                  // ✅ Acceso principal + contraseña del colegio
+                  // ✅ Acceso principal + clave de registro
                   Card(
                     child: Padding(
                       padding: const EdgeInsets.all(14),
@@ -804,26 +866,17 @@ class _ColeAdminScreenState extends State<ColeAdminScreen> {
                             children: [
                               Expanded(
                                 child: Text(
-                                  schoolPassword.isEmpty
-                                      ? 'Contraseña del colegio: —'
-                                      : 'Contraseña del colegio: ••••••••',
+                                  hasSchoolPassword
+                                      ? 'Clave de registro: configurada y protegida'
+                                      : 'Clave de registro: —',
                                   style: const TextStyle(fontSize: 13),
                                 ),
                               ),
                               TextButton.icon(
                                 onPressed: _openSchoolPasswordDialog,
                                 icon: const Icon(Icons.vpn_key),
-                                label: Text(schoolPassword.isEmpty ? 'Asignar' : 'Cambiar'),
+                                label: Text(hasSchoolPassword ? 'Rotar' : 'Asignar'),
                               ),
-                              if (schoolPassword.isNotEmpty)
-                                IconButton(
-                                  tooltip: 'Copiar contraseña del colegio',
-                                  onPressed: () async {
-                                    await Clipboard.setData(ClipboardData(text: schoolPassword));
-                                    _snack('Contraseña del colegio copiada');
-                                  },
-                                  icon: const Icon(Icons.copy),
-                                ),
                             ],
                           ),
                         ],
@@ -976,6 +1029,7 @@ class _HeaderCard extends StatelessWidget {
                 child: Image.asset(
                   'assets/logo.png',
                   fit: BoxFit.contain,
+                  semanticLabel: 'Logotipo de EduPro',
                 ),
               ),
             ),

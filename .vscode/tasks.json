@@ -1,0 +1,28 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Autorizar Chrome habitual para App Check",
+      "type": "shell",
+      "command": "node",
+      "args": ["scripts/authorize-regular-chrome-app-check.cjs"],
+      "options": {
+        "env": { "NODE_USE_SYSTEM_CA": "1" }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Abrir Chrome EduPro persistente",
+      "type": "shell",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/scripts/open-edupro-dev-browser.ps1"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}

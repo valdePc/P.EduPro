@@ -1,10 +1,12 @@
 // lib/admin_escolar/screens/A_calendario_escolar.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'dart:async';
 
 import 'package:edupro/models/escuela.dart';
+import 'package:edupro/admin_escolar/widgets/admin_back_button.dart';
 import 'package:edupro/utils/school_utils.dart' show normalizeSchoolIdFromEscuela;
 
 class ACalendarioEscolar extends StatefulWidget {
@@ -23,7 +25,7 @@ class _ACalendarioEscolarState extends State<ACalendarioEscolar>
     with TickerProviderStateMixin {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
-  static const Color _blue = Color(0xFF0D47A1);
+  static const Color _blue = Color(0xFF1A237E);
   static const Color _orange = Color(0xFFFFA000);
 
   // ✅ Colores claros (UI)
@@ -85,8 +87,12 @@ class _ACalendarioEscolarState extends State<ACalendarioEscolar>
   }
 
   @override
-  void initState() {
-    super.initState();
+void initState() {
+  super.initState();
+
+  // 🔎 DEBUG: contexto real al entrar
+
+  // ... tu código actual sigue igual
 
     _todayDay = _clampToSchoolWeek(DateTime.now().weekday);
     _nextDay = _calcNextDay(_todayDay);
@@ -462,46 +468,59 @@ class _ACalendarioEscolarState extends State<ACalendarioEscolar>
                 return;
               }
 
-              final now = FieldValue.serverTimestamp();
+// ✅ IMPORTANTE: now debe vivir dentro de save()
+final now = FieldValue.serverTimestamp();
 
-              final payload = <String, dynamic>{
-                'gradeId': gradeId,
-                'gradeName': gradeName,
-                'day': day,
-                'start': _fmtMinutes(startMin),
-                'end': _fmtMinutes(endMin),
-                'startMin': startMin,
-                'endMin': endMin,
-                'teacherId': teacherId,
-                'teacherName': teacherName,
-                'subjectId': subjectId,
-                'subjectName': subjectName,
+// Normaliza docId (por si viene "" en vez de null)
+final isNew = (docId == null || docId.trim().isEmpty);
 
-                // ✅ Conservado (no se muestra en UI)
-                'room': preservedRoom,
+// Normaliza opcionales: "" => null
+final String? tId = (teacherId == null || teacherId!.trim().isEmpty) ? null : teacherId!.trim();
+final String? tName = (teacherName == null || teacherName!.trim().isEmpty) ? null : teacherName!.trim();
+final String? sId = (subjectId == null || subjectId!.trim().isEmpty) ? null : subjectId!.trim();
+final String? sName = (subjectName == null || subjectName!.trim().isEmpty) ? null : subjectName!.trim();
+final String? roomVal = preservedRoom.trim().isEmpty ? null : preservedRoom.trim();
 
-                'enabled': true,
-                'updatedAt': now,
-              };
+final payload = <String, dynamic>{
+  'gradeId': gradeId,
+  'gradeName': gradeName,
+  'day': day,
+  'start': _fmtMinutes(startMin),
+  'end': _fmtMinutes(endMin),
+  'startMin': startMin,
+  'endMin': endMin,
+  'teacherId': tId,
+  'teacherName': tName,
+  'subjectId': sId,
+  'subjectName': sName,
+  'room': roomVal,
+  'enabled': true,
+  'updatedAt': now,
+};
 
-              try {
-                if (docId == null) {
-                  payload['createdAt'] = now;
-                  await _itemsCol.add(payload);
-                } else {
-                  await _itemsCol.doc(docId).update(payload);
-                }
+if (isNew) {
+  payload['createdAt'] = now;
+}
 
-                if (mounted) Navigator.of(ctx).pop();
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Calendario guardado')),
-                );
-              } catch (e) {
-                setLocal(() => saving = false);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Error guardando: $e')),
-                );
-              }
+// 🔎 DEBUG: ahora sí refleja createdAt si es nuevo
+
+try {
+  if (isNew) {
+    await _itemsCol.add(payload);
+  } else {
+    await _itemsCol.doc(docId).update(payload);
+  }
+
+  if (mounted) Navigator.of(ctx).pop();
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(content: Text('Calendario guardado')),
+  );
+} catch (e) {
+  setLocal(() => saving = false);
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text('Error guardando: $e')),
+  );
+}
             }
 
             return AlertDialog(
@@ -822,7 +841,7 @@ class _ACalendarioEscolarState extends State<ACalendarioEscolar>
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(18),
-        gradient: LinearGradient(colors: [_blue, Colors.blue.shade700]),
+        gradient: const LinearGradient(colors: [_blue, _blue]),
         boxShadow: [
           BoxShadow(
               color: Colors.black.withOpacity(.08),
@@ -1120,9 +1139,10 @@ class _ACalendarioEscolarState extends State<ACalendarioEscolar>
     return Scaffold(
       backgroundColor: const Color(0xFFF7F9FC),
       appBar: AppBar(
+        leading: const AdminBackButton(),
         backgroundColor: _blue,
         foregroundColor: Colors.white,
-        title: const Text(''), // Back, Atras
+        title: const Text('Calendario Escolar'),
       ),
       floatingActionButton:
           (_selectedGradeId == null || _selectedGradeName == null)

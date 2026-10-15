@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="es">
 <head>
   <!--
     If you are serving your web app in a path other than the root, change the
@@ -18,21 +18,37 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="Acceso privado a EduPro para comunidades educativas autorizadas.">
+  <meta name="robots" content="noindex, nofollow, noarchive">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="edupro">
+  <meta name="apple-mobile-web-app-title" content="EduPro">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>edupro</title>
+  <title>Acceso a EduPro | Plataforma escolar</title>
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
+  <script>
+    (function () {
+      var host = window.location.hostname;
+      var isLocalhost =
+        host === 'localhost' ||
+        host === '127.0.0.1' ||
+        host === '::1';
+
+      if (isLocalhost) {
+        self.FIREBASE_APPCHECK_DEBUG_TOKEN = true;
+        console.info('[APP_CHECK] localhost debug token enabled');
+      }
+    })();
+  </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

@@ -6,12 +6,11 @@ import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../widgets/sidebar_menu.dart';
-import '../widgets/config_menu.dart' as config;
+import '../widgets/team_section_navigation.dart';
 
 // Repositorios / modelos — ajusta rutas si en tu proyecto están en otra carpeta
 import '../data/escuela_repository.dart';
 import '../models/escuela.dart';
-
 
 class PagosFacturacionScreen extends StatefulWidget {
   const PagosFacturacionScreen({Key? key}) : super(key: key);
@@ -26,7 +25,7 @@ class _PagosFacturacionScreenState extends State<PagosFacturacionScreen>
   final NumberFormat _currency = NumberFormat.simpleCurrency();
 
   // ✅ Paleta igual a Colegios / Configuración
-  static const Color _kEduProBlue = Color(0xFF0D47A1);
+  static const Color _kEduProBlue = Color(0xFF1A237E);
   static const Color _kPageBg = Color(0xFFF0F0F0);
   static const Color _kCardBg = Color(0xFFF7F2FA);
 
@@ -38,7 +37,8 @@ class _PagosFacturacionScreenState extends State<PagosFacturacionScreen>
   final TextEditingController _newMethodController = TextEditingController();
 
   final TextEditingController _templateController = TextEditingController(
-    text: 'Encabezado de la factura\n\n'
+    text:
+        'Encabezado de la factura\n\n'
         'Cliente: {cliente}\n'
         'Fecha: {fecha}\n\n'
         'Detalle de productos…\n\n'
@@ -83,28 +83,39 @@ class _PagosFacturacionScreenState extends State<PagosFacturacionScreen>
       elevation: 0,
       toolbarHeight: 64,
       automaticallyImplyLeading: isMobile,
+      leading:
+          isMobile
+              ? null
+              : TeamSectionNavigation.backButton(context, color: Colors.white),
       iconTheme: const IconThemeData(color: Colors.white),
-      title: isMobile
-          ? const Text(
-              'Pagos & Facturación',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
-            )
-          : const SizedBox.shrink(),
-      actions: const [
-        Center(
-          child: Padding(
-            padding: EdgeInsets.only(right: 24),
-            child: Text(
-              'Configuración General',
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
+      title:
+          isMobile
+              ? const Text(
+                'Pagos & Facturación',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w600,
+                ),
+              )
+              : const SizedBox.shrink(),
+      actions: [
+        if (isMobile)
+          TeamSectionNavigation.backButton(context, color: Colors.white),
+        if (!isMobile)
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.only(right: 24),
+              child: Text(
+                'Configuración General',
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
           ),
-        ),
       ],
     );
   }
@@ -116,15 +127,18 @@ class _PagosFacturacionScreenState extends State<PagosFacturacionScreen>
       final raw = prefs.getString(_prefsKey);
       if (raw != null && raw.isNotEmpty) {
         final Map<String, dynamic> data = jsonDecode(raw);
-        _paymentMethods =
-            List<String>.from(data['paymentMethods'] ?? _paymentMethods);
+        _paymentMethods = List<String>.from(
+          data['paymentMethods'] ?? _paymentMethods,
+        );
         _templateController.text = data['template'] ?? _templateController.text;
-        _taxConfigs = (data['taxConfigs'] as List<dynamic>?)
+        _taxConfigs =
+            (data['taxConfigs'] as List<dynamic>?)
                 ?.map((e) => Map<String, String>.from(e as Map))
                 .toList() ??
             _taxConfigs;
-        _selectedRoles =
-            List<String>.from(data['selectedRoles'] ?? _selectedRoles);
+        _selectedRoles = List<String>.from(
+          data['selectedRoles'] ?? _selectedRoles,
+        );
         _notifyOverdue = data['notifyOverdue'] ?? _notifyOverdue;
         _notifyReceived = data['notifyReceived'] ?? _notifyReceived;
       }
@@ -148,7 +162,9 @@ class _PagosFacturacionScreenState extends State<PagosFacturacionScreen>
     await prefs.setString(_prefsKey, jsonEncode(out));
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Ajustes de pagos y facturación guardados')),
+        const SnackBar(
+          content: Text('Ajustes de pagos y facturación guardados'),
+        ),
       );
     }
   }
@@ -163,8 +179,10 @@ class _PagosFacturacionScreenState extends State<PagosFacturacionScreen>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(title,
-                style: TextStyle(fontSize: 13, color: Colors.grey.shade700)),
+            Text(
+              title,
+              style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+            ),
             const SizedBox(height: 8),
             Text(
               value,
@@ -180,50 +198,50 @@ class _PagosFacturacionScreenState extends State<PagosFacturacionScreen>
     );
   }
 
-/// Construye métricas solo con colegios
-Widget _buildTopMetrics({required bool isMobile}) {
-  final List<Escuela> escuelas = EscuelaRepository.escuelas;
-  final totalColegios = escuelas.length;
+  /// Construye métricas solo con colegios
+  Widget _buildTopMetrics({required bool isMobile}) {
+    final List<Escuela> escuelas = EscuelaRepository.escuelas;
+    final totalColegios = escuelas.length;
 
-  const montoColegio = 50.0;
-  final expectedRevenue = totalColegios * montoColegio;
+    const montoColegio = 50.0;
+    final expectedRevenue = totalColegios * montoColegio;
 
-  if (isMobile) {
+    if (isMobile) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Column(
+          children: [
+            _buildMetricsCard('Colegios registrados', '$totalColegios'),
+            const SizedBox(height: 10),
+            _buildMetricsCard(
+              'Facturación estimada',
+              _currency.format(expectedRevenue),
+              color: Colors.green.shade700,
+            ),
+          ],
+        ),
+      );
+    }
+
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      child: Column(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+      child: Row(
         children: [
-          _buildMetricsCard('Colegios registrados', '$totalColegios'),
-          const SizedBox(height: 10),
-          _buildMetricsCard(
-            'Facturación estimada',
-            _currency.format(expectedRevenue),
-            color: Colors.green.shade700,
+          Expanded(
+            child: _buildMetricsCard('Colegios registrados', '$totalColegios'),
+          ),
+          const SizedBox(width: 20),
+          Expanded(
+            child: _buildMetricsCard(
+              'Facturación estimada',
+              _currency.format(expectedRevenue),
+              color: Colors.green.shade700,
+            ),
           ),
         ],
       ),
     );
   }
-
-  return Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-    child: Row(
-      children: [
-        Expanded(
-          child: _buildMetricsCard('Colegios registrados', '$totalColegios'),
-        ),
-        const SizedBox(width: 20),
-        Expanded(
-          child: _buildMetricsCard(
-            'Facturación estimada',
-            _currency.format(expectedRevenue),
-            color: Colors.green.shade700,
-          ),
-        ),
-      ],
-    ),
-  );
-}
 
   Widget _buildPaymentMethodsTab() {
     return Padding(
@@ -234,10 +252,9 @@ Widget _buildTopMetrics({required bool isMobile}) {
             alignment: Alignment.centerLeft,
             child: Text(
               'Métodos de Pago',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(fontWeight: FontWeight.bold),
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
             ),
           ),
           const SizedBox(height: 12),
@@ -262,8 +279,9 @@ Widget _buildTopMetrics({required bool isMobile}) {
                           ),
                           IconButton(
                             icon: const Icon(Icons.delete, color: Colors.red),
-                            onPressed: () =>
-                                setState(() => _paymentMethods.removeAt(i)),
+                            onPressed:
+                                () =>
+                                    setState(() => _paymentMethods.removeAt(i)),
                           ),
                         ],
                       ),
@@ -315,29 +333,31 @@ Widget _buildTopMetrics({required bool isMobile}) {
     final controller = TextEditingController(text: _paymentMethods[index]);
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Renombrar método'),
-        content: TextField(
-          controller: controller,
-          decoration: const InputDecoration(labelText: 'Nombre'),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancelar')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: _kEduProBlue),
-            onPressed: () {
-              final val = controller.text.trim();
-              if (val.isNotEmpty) {
-                setState(() => _paymentMethods[index] = val);
-                Navigator.pop(ctx);
-              }
-            },
-            child: const Text('Guardar'),
+      builder:
+          (ctx) => AlertDialog(
+            title: const Text('Renombrar método'),
+            content: TextField(
+              controller: controller,
+              decoration: const InputDecoration(labelText: 'Nombre'),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancelar'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: _kEduProBlue),
+                onPressed: () {
+                  final val = controller.text.trim();
+                  if (val.isNotEmpty) {
+                    setState(() => _paymentMethods[index] = val);
+                    Navigator.pop(ctx);
+                  }
+                },
+                child: const Text('Guardar'),
+              ),
+            ],
           ),
-        ],
-      ),
     );
   }
 
@@ -350,10 +370,9 @@ Widget _buildTopMetrics({required bool isMobile}) {
             alignment: Alignment.centerLeft,
             child: Text(
               'Plantilla de Factura',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(fontWeight: FontWeight.bold),
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
             ),
           ),
           const SizedBox(height: 12),
@@ -404,22 +423,26 @@ Widget _buildTopMetrics({required bool isMobile}) {
       ],
       rows: List<DataRow>.generate(_taxConfigs.length, (i) {
         final t = _taxConfigs[i];
-        return DataRow(cells: [
-          DataCell(Text(t['name'] ?? '')),
-          DataCell(Text(t['value'] ?? '')),
-          DataCell(Row(
-            children: [
-              IconButton(
-                icon: const Icon(Icons.edit, size: 18),
-                onPressed: () => _showEditTaxDialog(i),
+        return DataRow(
+          cells: [
+            DataCell(Text(t['name'] ?? '')),
+            DataCell(Text(t['value'] ?? '')),
+            DataCell(
+              Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.edit, size: 18),
+                    onPressed: () => _showEditTaxDialog(i),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.delete, color: Colors.red, size: 18),
+                    onPressed: () => setState(() => _taxConfigs.removeAt(i)),
+                  ),
+                ],
               ),
-              IconButton(
-                icon: const Icon(Icons.delete, color: Colors.red, size: 18),
-                onPressed: () => setState(() => _taxConfigs.removeAt(i)),
-              ),
-            ],
-          )),
-        ]);
+            ),
+          ],
+        );
       }),
     );
   }
@@ -433,10 +456,9 @@ Widget _buildTopMetrics({required bool isMobile}) {
             alignment: Alignment.centerLeft,
             child: Text(
               'Impuestos & Descuentos',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(fontWeight: FontWeight.bold),
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
             ),
           ),
           const SizedBox(height: 12),
@@ -479,7 +501,8 @@ Widget _buildTopMetrics({required bool isMobile}) {
                         const SizedBox(width: 8),
                         ElevatedButton(
                           style: ElevatedButton.styleFrom(
-                              backgroundColor: _kEduProBlue),
+                            backgroundColor: _kEduProBlue,
+                          ),
                           onPressed: () {
                             final name = _taxNameController.text.trim();
                             final value = _taxValueController.text.trim();
@@ -515,39 +538,43 @@ Widget _buildTopMetrics({required bool isMobile}) {
     final valCtrl = TextEditingController(text: t['value']);
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Editar impuesto/descuento'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameCtrl,
-              decoration: const InputDecoration(labelText: 'Nombre'),
+      builder:
+          (ctx) => AlertDialog(
+            title: const Text('Editar impuesto/descuento'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameCtrl,
+                  decoration: const InputDecoration(labelText: 'Nombre'),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: valCtrl,
+                  decoration: const InputDecoration(labelText: 'Valor'),
+                ),
+              ],
             ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: valCtrl,
-              decoration: const InputDecoration(labelText: 'Valor'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancelar')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: _kEduProBlue),
-            onPressed: () {
-              final name = nameCtrl.text.trim();
-              final val = valCtrl.text.trim();
-              if (name.isEmpty || val.isEmpty) return;
-              setState(() => _taxConfigs[index] = {'name': name, 'value': val});
-              Navigator.pop(ctx);
-            },
-            child: const Text('Guardar'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancelar'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: _kEduProBlue),
+                onPressed: () {
+                  final name = nameCtrl.text.trim();
+                  final val = valCtrl.text.trim();
+                  if (name.isEmpty || val.isEmpty) return;
+                  setState(
+                    () => _taxConfigs[index] = {'name': name, 'value': val},
+                  );
+                  Navigator.pop(ctx);
+                },
+                child: const Text('Guardar'),
+              ),
+            ],
           ),
-        ],
-      ),
     );
   }
 
@@ -560,10 +587,9 @@ Widget _buildTopMetrics({required bool isMobile}) {
             alignment: Alignment.centerLeft,
             child: Text(
               'Permisos de Facturación',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(fontWeight: FontWeight.bold),
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
             ),
           ),
           const SizedBox(height: 12),
@@ -572,25 +598,26 @@ Widget _buildTopMetrics({required bool isMobile}) {
               child: Padding(
                 padding: const EdgeInsets.all(12),
                 child: ListView(
-                  children: _roles.map((role) {
-                    final selected = _selectedRoles.contains(role);
-                    return CheckboxListTile(
-                      title: Text(role),
-                      value: selected,
-                      activeColor: _kEduProBlue,
-                      onChanged: (v) {
-                        setState(() {
-                          if (v == true) {
-                            if (!_selectedRoles.contains(role)) {
-                              _selectedRoles.add(role);
-                            }
-                          } else {
-                            _selectedRoles.remove(role);
-                          }
-                        });
-                      },
-                    );
-                  }).toList(),
+                  children:
+                      _roles.map((role) {
+                        final selected = _selectedRoles.contains(role);
+                        return CheckboxListTile(
+                          title: Text(role),
+                          value: selected,
+                          activeColor: _kEduProBlue,
+                          onChanged: (v) {
+                            setState(() {
+                              if (v == true) {
+                                if (!_selectedRoles.contains(role)) {
+                                  _selectedRoles.add(role);
+                                }
+                              } else {
+                                _selectedRoles.remove(role);
+                              }
+                            });
+                          },
+                        );
+                      }).toList(),
                 ),
               ),
             ),
@@ -598,7 +625,8 @@ Widget _buildTopMetrics({required bool isMobile}) {
           Row(
             children: [
               OutlinedButton(
-                onPressed: () => setState(() => _selectedRoles = ['Administrador']),
+                onPressed:
+                    () => setState(() => _selectedRoles = ['Administrador']),
                 child: const Text('Restaurar por defecto'),
               ),
               const SizedBox(width: 8),
@@ -623,10 +651,9 @@ Widget _buildTopMetrics({required bool isMobile}) {
             alignment: Alignment.centerLeft,
             child: Text(
               'Notificaciones',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(fontWeight: FontWeight.bold),
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
             ),
           ),
           const SizedBox(height: 12),
@@ -650,10 +677,15 @@ Widget _buildTopMetrics({required bool isMobile}) {
                   const SizedBox(height: 6),
                   Row(
                     children: [
-                      OutlinedButton(onPressed: _savePrefs, child: const Text('Guardar')),
+                      OutlinedButton(
+                        onPressed: _savePrefs,
+                        child: const Text('Guardar'),
+                      ),
                       const SizedBox(width: 8),
                       ElevatedButton(
-                        style: ElevatedButton.styleFrom(backgroundColor: _kEduProBlue),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _kEduProBlue,
+                        ),
                         onPressed: () {
                           setState(() {
                             _notifyOverdue = true;
@@ -678,10 +710,13 @@ Widget _buildTopMetrics({required bool isMobile}) {
   Widget build(BuildContext context) {
     final isMobile = MediaQuery.of(context).size.width < 800;
     final currentRoute =
-        ModalRoute.of(context)?.settings.name ?? '/pagos-facturacion';
+        ModalRoute.of(context)?.settings.name ?? '/facturacion';
 
     if (_loading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return Scaffold(
+        appBar: _buildTopBar(isMobile: isMobile),
+        body: const Center(child: CircularProgressIndicator()),
+      );
     }
 
     void go(String r) => Navigator.pushReplacementNamed(context, r);
@@ -746,7 +781,6 @@ Widget _buildTopMetrics({required bool isMobile}) {
         body: Column(
           children: [
             // ✅ ConfigMenu con iconos arriba (móvil)
-            config.ConfigMenu(selectedKey: 'pagos-facturacion', onItemSelected: go),
             _buildTopMetrics(isMobile: true),
             Expanded(child: wrappedMainCard(pageContent)),
           ],
@@ -768,20 +802,6 @@ Widget _buildTopMetrics({required bool isMobile}) {
           ),
 
           // Borde azul + submenú blanco (igual a otras pantallas)
-          Container(
-            width: 286, // 6px borde + 280 menu
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              border: Border(left: BorderSide(color: _kEduProBlue, width: 6)),
-            ),
-            child: config.ConfigMenu(
-              selectedKey: 'pagos-facturacion',
-              onItemSelected: go,
-            ),
-          ),
-
-          const SizedBox(width: 24),
-
           // Contenido
           Expanded(
             child: Column(

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:edupro/models/escuela.dart';
+import 'package:edupro/docentes/widgets/docente_app_bar.dart';
 
 class EstrategiasScreen extends StatelessWidget {
   final Escuela escuela;
@@ -10,11 +11,7 @@ class EstrategiasScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Estrategias'),
-        backgroundColor: primaryColor,
-        automaticallyImplyLeading: true,
-      ),
+      appBar: buildDocenteBackAppBar(context),
       body: Center(
         child: Text(
           'Estrategias de ${escuela.nombre}',

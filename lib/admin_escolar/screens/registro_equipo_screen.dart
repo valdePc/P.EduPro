@@ -1,26 +1,31 @@
 // lib/admin_escolar/screens/registro_equipo_screen.dart
-import 'dart:math'; // (si no lo usas puedes quitarlo; no rompe)
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart';
-import 'package:flutter/foundation.dart' show kIsWeb; // (si no lo usas puedes quitarlo)
+import 'package:edupro/admin_escolar/services/school_registration_session.dart';
+import 'package:edupro/admin_escolar/utils/registration_error_message.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import 'package:edupro/models/escuela.dart';
-import 'package:edupro/utils/school_utils.dart' show normalizeSchoolIdFromEscuela;
+import 'package:edupro/utils/school_utils.dart'
+    show normalizeSchoolIdFromEscuela;
+import 'package:edupro/admin_escolar/widgets/admin_back_button.dart';
+import 'package:edupro/admin_escolar/widgets/registro_equipo_widgets.dart';
 
-// 👇 IMPORTA TU PANTALLA DE GRADOS
-import 'A_grados.dart';
+import 'admin_login_escolar.dart';
 
 // ✅ Colores a nivel de archivo
-const Color _blue = Color(0xFF0D47A1);
-const Color _orange = Color(0xFFFFA000);
+const Color _blue = Color(0xFF1A237E);
+const Color _orange = RegistroEquipoColors.amberInk;
 
 /// ✅
 enum EstadoAlumno { activo, pendiente, bloqueado }
+
 enum NivelAcademico { inicial, primaria, secundaria }
+
+enum SexoAlumno { nina, nino }
 
 String nivelToDb(NivelAcademico n) {
   switch (n) {
@@ -30,6 +35,24 @@ String nivelToDb(NivelAcademico n) {
       return 'primaria';
     case NivelAcademico.secundaria:
       return 'secundaria';
+  }
+}
+
+String sexoToDb(SexoAlumno s) {
+  switch (s) {
+    case SexoAlumno.nina:
+      return 'femenino';
+    case SexoAlumno.nino:
+      return 'masculino';
+  }
+}
+
+String sexoLabel(SexoAlumno s) {
+  switch (s) {
+    case SexoAlumno.nina:
+      return 'Niña';
+    case SexoAlumno.nino:
+      return 'Niño';
   }
 }
 
@@ -77,11 +100,11 @@ IconData estadoIcon(EstadoAlumno e) {
 Color estadoColor(EstadoAlumno e) {
   switch (e) {
     case EstadoAlumno.activo:
-      return Colors.green;
+      return const Color(0xFF1B7A42);
     case EstadoAlumno.pendiente:
-      return Colors.amber;
+      return RegistroEquipoColors.amberInk;
     case EstadoAlumno.bloqueado:
-      return Colors.red;
+      return const Color(0xFFB42318);
   }
 }
 
@@ -126,12 +149,18 @@ class _AccessEmailEntry {
 
 class RegistroEquipoScreen extends StatefulWidget {
   final Escuela escuela;
+  final SchoolRegistrationSession registrationSession;
   final String? schoolIdOverride; // ✅ NUEVO
+  final bool permitirFotoAlumno;
+  final bool permitirEditarEstudiantes;
 
   const RegistroEquipoScreen({
     super.key,
     required this.escuela,
+    required this.registrationSession,
     this.schoolIdOverride, // ✅ NUEVO
+    this.permitirFotoAlumno = true,
+    this.permitirEditarEstudiantes = true,
   });
 
   @override
@@ -139,16 +168,25 @@ class RegistroEquipoScreen extends StatefulWidget {
 }
 
 class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
-  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  FirebaseFirestore get _db => widget.registrationSession.firestore;
+  final Map<String, String> _gradeIdsByName = {};
+  String? _pendingStudentId;
+  String? _uploadedPhotoPath;
+  bool _renewing = false;
 
   // ✅ NIVEL (STATE REAL)
   NivelAcademico _nivelSel = NivelAcademico.primaria;
 
   // ✅ ESTADO (por defecto: ACTIVO)
   EstadoAlumno _estadoSel = EstadoAlumno.activo;
+  SexoAlumno _sexoSel = SexoAlumno.nina;
 
   void _setEstado(EstadoAlumno e) {
-    setState(() => _estadoSel = e);
+    if (e == _estadoSel) return;
+    setState(() {
+      _estadoSel = e;
+      _selectionDirty = true;
+    });
   }
 
   // ✅ TANDA (STATE REAL)
@@ -159,9 +197,8 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
 
   // ----- UI State -----
   bool _saving = false;
-  bool _hydratedConfig = false;
+  bool _selectionDirty = false;
 
-  // Config (viene de config/registro)
   bool _permitirFotoAlumno = true;
 
   // Búsqueda en lista
@@ -205,24 +242,29 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
   // ✅ Foto alumno
   final ImagePicker _picker = ImagePicker();
   Uint8List? _photoBytes;
-  String? _photoExt;
   bool _photoPicked = false;
 
   @override
   void initState() {
     super.initState();
 
-    final o = (widget.schoolIdOverride ?? '').trim();
-    final raw = o.isNotEmpty ? o : normalizeSchoolIdFromEscuela(widget.escuela);
-    _schoolId = _ensureSchoolDocId(raw);
+    final override = (widget.schoolIdOverride ?? '').trim();
+
+    final raw =
+        override.isNotEmpty
+            ? override
+            : normalizeSchoolIdFromEscuela(widget.escuela);
+
+    _schoolId = raw; // ✅ SOLO AQUÍ
 
     _tandaSel ??= _tandas.first;
-
     _accessEntries.add(_AccessEmailEntry());
+    _permitirFotoAlumno = widget.permitirFotoAlumno;
   }
 
   @override
   void dispose() {
+    unawaited(widget.registrationSession.close());
     _searchListCtrl.dispose();
 
     _nombresCtrl.dispose();
@@ -252,12 +294,6 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
 
   // ------------------ Helpers ------------------
 
-  String _ensureSchoolDocId(String rawId) {
-    final id = rawId.trim();
-    if (id.isEmpty) return id;
-    return id.startsWith('eduproapp_admin_') ? id : 'eduproapp_admin_$id';
-  }
-
   String _normSpacesLower(String s) =>
       s.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
 
@@ -280,23 +316,19 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
       s.replaceAll(RegExp(r"[^a-zA-ZñÑáéíóúÁÉÍÓÚüÜ\s'-]"), '');
 
   String _normalizeName(String input) {
-    final cleaned =
-        _onlyLettersSpaces(input).trim().replaceAll(RegExp(r'\s+'), ' ');
+    final cleaned = _onlyLettersSpaces(
+      input,
+    ).trim().replaceAll(RegExp(r'\s+'), ' ');
     if (cleaned.isEmpty) return '';
     return cleaned
         .split(' ')
-        .map((w) =>
-            w.isEmpty ? '' : w[0].toUpperCase() + w.substring(1).toLowerCase())
+        .map(
+          (w) =>
+              w.isEmpty
+                  ? ''
+                  : w[0].toUpperCase() + w.substring(1).toLowerCase(),
+        )
         .join(' ');
-  }
-
-  String _nameKey(String input) {
-    final s = input
-        .toLowerCase()
-        .trim()
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .replaceAll(RegExp(r"[^a-z0-9ñáéíóúü ]"), '');
-    return s;
   }
 
   String _normalizePhone(String input) {
@@ -315,7 +347,8 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
   int _calcAge(DateTime dob) {
     final now = DateTime.now();
     int age = now.year - dob.year;
-    final hadBirthday = (now.month > dob.month) ||
+    final hadBirthday =
+        (now.month > dob.month) ||
         (now.month == dob.month && now.day >= dob.day);
     if (!hadBirthday) age--;
     return age < 0 ? 0 : age;
@@ -327,14 +360,6 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
     return '$dd/$mm/${d.year}';
   }
 
-  // ------------------ Config ------------------
-
-  DocumentReference<Map<String, dynamic>> get _registroConfigRef => _db
-      .collection('schools')
-      .doc(_schoolId)
-      .collection('config')
-      .doc('registro');
-
   // ------------------ Firestore paths ------------------
 
   CollectionReference<Map<String, dynamic>> get _gradosCol =>
@@ -343,26 +368,113 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
   CollectionReference<Map<String, dynamic>> get _alumnosCol =>
       _db.collection('schools').doc(_schoolId).collection('alumnos');
 
-  CollectionReference<Map<String, dynamic>> get _alumnosGlobalCol =>
-      _db.collection('alumnos_global');
-
-  // ✅ alumnos_login (docId = emailLower)
-  CollectionReference<Map<String, dynamic>> get _alumnosLoginCol =>
-      _db.collection('schools').doc(_schoolId).collection('alumnos_login');
-
   Future<void> _irAGrados() async {
-    await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => AGrados(escuela: widget.escuela),
+    if (_saving || _renewing) return;
+    final name = await showDialog<String>(
+      context: context,
+      builder: (_) => RegistroEquipoGradeDialog(level: nivelLabel(_nivelSel)),
+    );
+    if (name == null || name.trim().isEmpty) return;
+    setState(() => _saving = true);
+    try {
+      await widget.registrationSession.createGrade(
+        name: name.trim(),
+        nivel: nivelToDb(_nivelSel),
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Grado creado. Ya puedes seleccionarlo.')),
+      );
+    } catch (error) {
+      _showRegistrationError(error);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  void _showRegistrationError(Object error) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(registrationErrorMessage(error)),
+        duration: const Duration(seconds: 10),
+        action:
+            registrationNeedsRenewal(error)
+                ? SnackBarAction(
+                  label: 'Renovar acceso',
+                  onPressed: _renewAccess,
+                )
+                : null,
       ),
     );
   }
 
+  Future<void> _renewAccess() async {
+    if (_saving || _renewing) return;
+    final code = await showDialog<String>(
+      context: context,
+      builder: (_) => const RegistroEquipoCodeDialog(),
+    );
+    if (code == null || !mounted) return;
+    setState(() => _renewing = true);
+    try {
+      await widget.registrationSession.renew(code);
+      if (!mounted) return;
+      setState(
+        () =>
+            _permitirFotoAlumno = widget.registrationSession.permitirFotoAlumno,
+      );
+      if (!_permitirFotoAlumno && _photoPicked) {
+        _showPhotoNotAllowed();
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Acceso renovado. Puedes volver a registrar.'),
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'No se pudo renovar el acceso. Comprueba la clave con el administrador e inténtalo de nuevo.',
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _renewing = false);
+    }
+  }
+
   // ------------------ Foto alumno ------------------
 
+  void _showPhotoNotAllowed() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          _photoPicked
+              ? 'La escuela desactivó la carga de fotos. Retira la foto para completar el registro; los demás datos se conservarán.'
+              : 'La escuela desactivó la carga de fotos para el equipo de registro.',
+        ),
+        duration: const Duration(seconds: 10),
+        action:
+            _photoPicked
+                ? SnackBarAction(
+                  label: 'Retirar foto',
+                  onPressed: _removeFotoAlumno,
+                )
+                : null,
+      ),
+    );
+  }
+
   Future<void> _pickFotoAlumno() async {
-    if (_saving) return;
+    if (_saving || _renewing) return;
+    if (!_permitirFotoAlumno) {
+      _showPhotoNotAllowed();
+      return;
+    }
     try {
       final x = await _picker.pickImage(
         source: ImageSource.gallery,
@@ -372,17 +484,40 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
       if (x == null) return;
 
       final bytes = await x.readAsBytes();
-      final ext = (x.name.split('.').last).toLowerCase();
+      if (!mounted) return;
+      final png =
+          bytes.length >= 8 &&
+          bytes[0] == 0x89 &&
+          bytes[1] == 0x50 &&
+          bytes[2] == 0x4e &&
+          bytes[3] == 0x47;
+      final jpeg =
+          bytes.length >= 3 &&
+          bytes[0] == 0xff &&
+          bytes[1] == 0xd8 &&
+          bytes[2] == 0xff;
+      if (bytes.isEmpty || bytes.length > 5 * 1024 * 1024 || (!png && !jpeg)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'La foto debe ser JPG o PNG y pesar como máximo 5 MB.',
+            ),
+          ),
+        );
+        return;
+      }
 
       setState(() {
         _photoBytes = bytes;
-        _photoExt = ext.isEmpty ? 'jpg' : ext;
+        _uploadedPhotoPath = null;
         _photoPicked = true;
       });
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo seleccionar la foto: $e')),
+        const SnackBar(
+          content: Text('No se pudo seleccionar la foto. Inténtalo de nuevo.'),
+        ),
       );
     }
   }
@@ -391,27 +526,17 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
     if (_saving) return;
     setState(() {
       _photoBytes = null;
-      _photoExt = null;
+      _uploadedPhotoPath = null;
       _photoPicked = false;
     });
   }
 
-  Future<Map<String, String?>?> _uploadFotoIfAny(String alumnoId) async {
+  Future<String?> _uploadFotoIfAny(String alumnoId) async {
     if (_photoBytes == null || !_photoPicked) return null;
-
-    final safeExt = (_photoExt ?? 'jpg').replaceAll(RegExp(r'[^a-z0-9]'), '');
-    final path = 'schools/$_schoolId/alumnos/$alumnoId/profile.$safeExt';
-
-    final ref = FirebaseStorage.instance.ref().child(path);
-    final contentType = (safeExt == 'png') ? 'image/png' : 'image/jpeg';
-
-    await ref.putData(
+    return _uploadedPhotoPath ??= await widget.registrationSession.uploadPhoto(
+      alumnoId,
       _photoBytes!,
-      SettableMetadata(contentType: contentType),
     );
-
-    final url = await ref.getDownloadURL();
-    return {'photoUrl': url, 'photoPath': path};
   }
 
   // ------------------ Fecha nacimiento ------------------
@@ -438,56 +563,17 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
     });
   }
 
-  // ------------------ Duplicados ------------------
-
-  Future<bool> _yaExistePorNumeroEnGradoYTanda({
-    required String numero,
-    required String grado,
-    required String tanda,
-    required String nivelDb,
-  }) async {
-    final gradoKey = _nameKey(grado);
-
-    final a = await _alumnosCol
-        .where('matricula', isEqualTo: numero)
-        .where('gradoKey', isEqualTo: gradoKey)
-        .where('tanda', isEqualTo: tanda)
-        .where('nivel', isEqualTo: nivelDb)
-        .limit(1)
-        .get();
-
-    return a.docs.isNotEmpty;
-  }
-
-  Future<bool> _yaExistePorNombreDob({
-    required String nombresKey,
-    required String apellidosKey,
-    required DateTime dob,
-  }) async {
-    final a = await _alumnosCol
-        .where('nombresKey', isEqualTo: nombresKey)
-        .where('apellidosKey', isEqualTo: apellidosKey)
-        .limit(8)
-        .get();
-
-    for (final d in a.docs) {
-      final ts = d.data()['fechaNacimiento'];
-      if (ts is Timestamp) {
-        final other = ts.toDate();
-        if (other.year == dob.year &&
-            other.month == dob.month &&
-            other.day == dob.day) {
-          return true;
-        }
-      }
-    }
-
-    return false;
-  }
-
   // ------------------ Accesos ------------------
 
   void _addAccessRow() {
+    if (_accessEntries.length >= 10) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Puedes autorizar hasta 10 cuentas por estudiante.'),
+        ),
+      );
+      return;
+    }
     setState(() => _accessEntries.add(_AccessEmailEntry()));
   }
 
@@ -521,11 +607,7 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
       }
       seen.add(emailLower);
 
-      list.add({
-        'email': email,
-        'emailLower': emailLower,
-        'usuario': user,
-      });
+      list.add({'email': email, 'emailLower': emailLower, 'usuario': user});
     }
 
     return list;
@@ -534,333 +616,132 @@ class _RegistroEquipoScreenState extends State<RegistroEquipoScreen> {
   // ------------------ Guardar alumno ------------------
 
   Future<void> _guardar() async {
+    if (_saving || _renewing) return;
     FocusScope.of(context).unfocus();
-
     final nombres = _normalizeName(_nombresCtrl.text);
     final apellidos = _normalizeName(_apellidosCtrl.text);
     _nombresCtrl.text = nombres;
     _apellidosCtrl.text = apellidos;
-
     final tutorNombre = _normalizeName(_tutorNombreCtrl.text);
     _tutorNombreCtrl.text = tutorNombre;
-
     final tutorTel = _normalizePhone(_tutorTelefonoCtrl.text);
     final tutorWa = _normalizePhone(_tutorWhatsappCtrl.text);
     _tutorTelefonoCtrl.text = tutorTel;
     _tutorWhatsappCtrl.text = tutorWa;
-
     if (!(_formKey.currentState?.validate() ?? false)) return;
-
-    if (_fechaNacimiento == null) {
+    final grado = (_gradoSeleccionadoForm ?? '').trim();
+    final gradoId = _gradeIdsByName[grado];
+    final tanda = (_tandaSel ?? '').trim();
+    if (_fechaNacimiento == null || gradoId == null || tanda.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Selecciona la fecha de nacimiento')),
+        const SnackBar(
+          content: Text(
+            'Selecciona la fecha de nacimiento, el grado y la tanda.',
+          ),
+        ),
       );
       return;
     }
-
-   final grado = (_gradoSeleccionadoForm ?? '').trim();
-if (grado.isEmpty) {
-  ScaffoldMessenger.of(context).showSnackBar(
-    const SnackBar(content: Text('Selecciona un grado')),
-  );
-  return;
-}
-
-final tanda = (_tandaSel ?? '').trim();
-if (tanda.isEmpty) {
-  ScaffoldMessenger.of(context).showSnackBar(
-    const SnackBar(content: Text('Selecciona la tanda')),
-  );
-  return;
-}
-
-final numero = _matriculaCtrl.text.trim();
-
-// ✅ Nivel DB + label
-final nivelDb = nivelToDb(_nivelSel);
-final nivelTxt = nivelLabel(_nivelSel);
-
-// ✅ Resolver gradeId real (docId del grado) de forma segura: gradoKey + nivel
-String? gradoIdReal;
-try {
-  final gradoKey = _nameKey(grado);
-
-  final q1 = await _gradosCol
-      .where('gradoKey', isEqualTo: gradoKey)
-      .where('nivel', isEqualTo: nivelDb)
-      .limit(1)
-      .get();
-
-  if (q1.docs.isNotEmpty) {
-    gradoIdReal = q1.docs.first.id;
-  } else {
-    final q2 = await _gradosCol
-        .where('name', isEqualTo: grado)
-        .where('nivel', isEqualTo: nivelDb)
-        .limit(1)
-        .get();
-
-    if (q2.docs.isNotEmpty) {
-      gradoIdReal = q2.docs.first.id;
+    List<Map<String, dynamic>> accesos;
+    try {
+      accesos = _buildAccesosOrThrow();
+    } catch (error) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.toString())));
+      return;
     }
-  }
-} catch (_) {
-  gradoIdReal = null;
-}
-
-// ✅ (Recomendado) si no se pudo resolver el grado real, no guardes “a medias”
-if (gradoIdReal == null || gradoIdReal!.isEmpty) {
-  ScaffoldMessenger.of(context).showSnackBar(
-    const SnackBar(content: Text('No pude vincular el grado (gradoIdReal). Revisa tus grados.')),
-  );
-  return;
-}
-
-// ✅ Accesos por correo (Google)
-List<Map<String, dynamic>> accesos;
-try {
-  accesos = _buildAccesosOrThrow();
-} catch (msg) {
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text(msg.toString())),
-  );
-  return;
-}
-
-if (accesos.isEmpty) {
-  ScaffoldMessenger.of(context).showSnackBar(
-    const SnackBar(
-      content: Text('Agrega al menos un correo con acceso (email + usuario).'),
-    ),
-  );
-  return;
-}
-
-final accessEmails = accesos.map((a) => a['emailLower'] as String).toList();
-
-setState(() => _saving = true);
-try {
-  final dup = await _yaExistePorNumeroEnGradoYTanda(
-    numero: numero,
-    grado: grado,
-    tanda: tanda,
-    nivelDb: nivelDb,
-  );
-
-  if (dup) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Ese número ya existe en este grado, tanda y nivel')),
-    );
-    return;
-  }
-
-  // ...
-
-      final dup2 = await _yaExistePorNombreDob(
-        nombresKey: _nameKey(nombres),
-        apellidosKey: _nameKey(apellidos),
-        dob: _fechaNacimiento!,
+    if (accesos.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Agrega al menos un correo autorizado con su usuario.'),
+        ),
       );
-      if (dup2) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content:
-                Text('Posible duplicado: mismo nombre y fecha de nacimiento'),
-          ),
-        );
-        return;
-      }
-
-      final edad = _calcAge(_fechaNacimiento!);
-
-      // ✅ principal: alumnos
-      final alumnoRef = _alumnosCol.doc();
-      final idGlobal = alumnoRef.id;
-
-      // ✅ Foto (si existe): sube primero para guardar URL
-      Map<String, String?>? photoData;
-      try {
-        photoData = await _uploadFotoIfAny(idGlobal);
-      } catch (_) {
-        photoData = null;
-      }
-
-      final baseData = <String, dynamic>{
-        'idGlobal': idGlobal,
-        'fx': idGlobal,
-        'nivel': nivelDb,
-        'nivelLabel': nivelTxt,
-        'schoolId': _schoolId,
-        'schoolRef': 'schools/$_schoolId',
-
-        // ✅ ESTADO / BLOQUEO
-        'status': estadoToDb(_estadoSel),
-        'enabled': _estadoSel != EstadoAlumno.bloqueado, // bloqueado = false
-        'statusAt': FieldValue.serverTimestamp(),
-
+      return;
+    }
+    if (_photoPicked && !_permitirFotoAlumno) {
+      _showPhotoNotAllowed();
+      return;
+    }
+    setState(() => _saving = true);
+    try {
+      widget.registrationSession.ensureActive();
+      // Keep the ID on uncertain network results: the server prevents duplicates.
+      final studentId = _pendingStudentId ??= _alumnosCol.doc().id;
+      final photoPath = await _uploadFotoIfAny(studentId);
+      final dob = _fechaNacimiento!;
+      await widget.registrationSession.register(studentId, {
         'nombres': nombres,
         'apellidos': apellidos,
-        'nombresKey': _nameKey(nombres),
-        'apellidosKey': _nameKey(apellidos),
-
-        'matricula': numero,
-
-        'grado': grado,
-        'gradoKey': _nameKey(grado),
-
+        'matricula': _matriculaCtrl.text.trim(),
+        'nivel': nivelToDb(_nivelSel),
+        'gradoId': gradoId,
         'tanda': tanda,
-
-        'fechaNacimiento': Timestamp.fromDate(_fechaNacimiento!),
-        'edad': edad,
-
-        'direccion': _direccionCtrl.text.trim().isEmpty
-            ? null
-            : _direccionCtrl.text.trim(),
-        'observaciones': _observCtrl.text.trim().isEmpty
-            ? null
-            : _observCtrl.text.trim(),
-
+        'fechaNacimientoMillis': dob.millisecondsSinceEpoch,
+        'sexo': sexoToDb(_sexoSel),
+        'status': estadoToDb(_estadoSel),
+        'direccion': _direccionCtrl.text.trim(),
+        'observaciones': _observCtrl.text.trim(),
         'tutor': {
           'nombre': tutorNombre,
           'parentesco': _tutorParentescoCtrl.text.trim(),
           'telefono': tutorTel,
-          'whatsapp': tutorWa.isEmpty ? null : tutorWa,
-          'email': _tutorEmailCtrl.text.trim().isEmpty
-              ? null
-              : _tutorEmailCtrl.text.trim(),
+          'whatsapp': tutorWa,
+          'email': _tutorEmailCtrl.text.trim(),
         },
-
         'emergencia': {
           'nombre': _normalizeName(_emergNombreCtrl.text),
           'telefono': _normalizePhone(_emergTelefonoCtrl.text),
         },
-
-        'accesos': accesos,
-        'accesosEmails': accessEmails,
-
-        'photoUrl': photoData?['photoUrl'],
-        'photoPath': photoData?['photoPath'],
-
-        'ingresoAt': FieldValue.serverTimestamp(),
-        'createdAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-        
-         'gradeId': gradoIdReal, // 'gradoId': gradoIdReal,alias por si tu calendario usa gradeId
-
-      };
-
-      final batch = _db.batch();
-
-      // 1) alumno en su escuela
-      batch.set(alumnoRef, baseData);
-
-      // 2) índice global (solo “alumnos_global”)
-      final globalAlumnoRef = _alumnosGlobalCol.doc(idGlobal);
-      batch.set(globalAlumnoRef, {
-        'idGlobal': idGlobal,
-        'fx': idGlobal,
-        'schoolId': _schoolId,
-        'studentPath': alumnoRef.path,
-        'nivel': nivelDb,
-        'nivelLabel': nivelTxt,
-        'nombres': nombres,
-        'apellidos': apellidos,
-        'nombresKey': _nameKey(nombres),
-        'apellidosKey': _nameKey(apellidos),
-        'matricula': numero,
-        'grado': grado,
-        'gradoKey': _nameKey(grado),
-        'tanda': tanda,
-        'fechaNacimiento': Timestamp.fromDate(_fechaNacimiento!),
-        'accesosEmails': accessEmails,
-        'createdAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-        'status': estadoToDb(_estadoSel),
-        'enabled': _estadoSel != EstadoAlumno.bloqueado,
-        'gradoId': gradoIdReal,
-         'gradeId': gradoIdReal,
-
+        'accesos': [
+          for (final access in accesos)
+            {'email': access['email'], 'usuario': access['usuario']},
+        ],
+        if (photoPath != null) 'photoPath': photoPath,
       });
-
-      // 3) alumnos_login (por emailLower) -> agrega studentIds
-      for (final a in accesos) {
-        final email = (a['email'] ?? '').toString().trim();
-        final emailLower =
-            (a['emailLower'] ?? '').toString().trim().toLowerCase();
-        final usuario = (a['usuario'] ?? '').toString().trim();
-
-        if (emailLower.isEmpty) continue;
-
-        final loginRef = _alumnosLoginCol.doc(emailLower);
-
-        batch.set(
-          loginRef,
-          {
-            'email': email,
-            'emailLower': emailLower,
-            'schoolId': _schoolId,
-
-            // ✅ un mismo email puede tener varios hijos
-            'studentIds': FieldValue.arrayUnion([idGlobal]),
-
-            // opcional
-            'usuarios': FieldValue.arrayUnion([usuario]),
-
-            'updatedAt': FieldValue.serverTimestamp(),
-          },
-          SetOptions(merge: true),
-        );
+      if (!mounted) return;
+      for (final controller in [
+        _nombresCtrl,
+        _apellidosCtrl,
+        _matriculaCtrl,
+        _direccionCtrl,
+        _observCtrl,
+        _fechaCtrl,
+        _edadCtrl,
+        _tutorNombreCtrl,
+        _tutorTelefonoCtrl,
+        _tutorWhatsappCtrl,
+        _tutorEmailCtrl,
+        _emergNombreCtrl,
+        _emergTelefonoCtrl,
+      ]) {
+        controller.clear();
       }
-
-      await batch.commit();
-
-      // reset form
-      _nombresCtrl.clear();
-      _apellidosCtrl.clear();
-      _matriculaCtrl.clear();
-      _direccionCtrl.clear();
-      _observCtrl.clear();
-
-      _fechaNacimiento = null;
-      _fechaCtrl.clear();
-      _edadCtrl.clear();
-
-      _tutorNombreCtrl.clear();
-      _tutorTelefonoCtrl.clear();
-      _tutorWhatsappCtrl.clear();
-      _tutorEmailCtrl.clear();
-
-      _emergNombreCtrl.clear();
-      _emergTelefonoCtrl.clear();
-
-      for (final e in _accessEntries) {
-        e.emailCtrl.clear();
-        e.userCtrl.clear();
+      for (final entry in _accessEntries) {
+        entry.emailCtrl.clear();
+        entry.userCtrl.clear();
       }
-      if (_accessEntries.length > 1) {
-        for (int i = _accessEntries.length - 1; i >= 1; i--) {
-          _removeAccessRow(i);
-        }
+      while (_accessEntries.length > 1) {
+        _accessEntries.removeLast().dispose();
       }
-
-      _removeFotoAlumno();
-
       setState(() {
+        _pendingStudentId = null;
+        _uploadedPhotoPath = null;
+        _fechaNacimiento = null;
+        _photoBytes = null;
+        _photoPicked = false;
         _gradoSeleccionadoLista = grado;
         _estadoSel = EstadoAlumno.activo;
+        _sexoSel = SexoAlumno.nina;
+        _selectionDirty = false;
       });
-
-      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Alumno registrado en $nivelTxt')),
+        SnackBar(
+          content: Text('Alumno registrado en ${nivelLabel(_nivelSel)}'),
+        ),
       );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error guardando: $e')),
-      );
+    } catch (error) {
+      _showRegistrationError(error);
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -869,222 +750,373 @@ try {
   // ------------------ Nivel selector ------------------
 
   void _setNivel(NivelAcademico n) {
+    if (n == _nivelSel) return;
     setState(() {
       _nivelSel = n;
+      _selectionDirty = true;
       _gradoSeleccionadoForm = null;
       _gradoSeleccionadoLista = null;
 
       // ✅ IMPORTANTÍSIMO: la foto NO se “queda pegada” entre niveles
       _photoBytes = null;
-      _photoExt = null;
+      _uploadedPhotoPath = null;
       _photoPicked = false;
     });
+  }
+
+  bool get _hasUnsavedInput {
+    final fields = [
+      _nombresCtrl,
+      _apellidosCtrl,
+      _matriculaCtrl,
+      _direccionCtrl,
+      _observCtrl,
+      _fechaCtrl,
+      _tutorNombreCtrl,
+      _tutorTelefonoCtrl,
+      _tutorWhatsappCtrl,
+      _tutorEmailCtrl,
+      _emergNombreCtrl,
+      _emergTelefonoCtrl,
+    ];
+    return _selectionDirty ||
+        _photoPicked ||
+        fields.any((field) => field.text.trim().isNotEmpty) ||
+        _tutorParentescoCtrl.text.trim() != 'Padre/Madre' ||
+        _accessEntries.any(
+          (entry) =>
+              entry.emailCtrl.text.trim().isNotEmpty ||
+              entry.userCtrl.text.trim().isNotEmpty,
+        );
+  }
+
+  Future<void> _salirDelRegistro() async {
+    if (_saving || _renewing) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Espera a que termine el registro antes de salir.'),
+        ),
+      );
+      return;
+    }
+    if (_hasUnsavedInput) {
+      final leave = await showDialog<bool>(
+        context: context,
+        builder: (_) => const RegistroEquipoExitDialog(),
+      );
+      if (leave != true) return;
+    }
+    if (!mounted) return;
+    await widget.registrationSession.close();
+    if (!mounted) return;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => AdminLoginEscolarScreen(escuela: widget.escuela),
+      ),
+    );
   }
 
   // ------------------ Build ------------------
 
   @override
   Widget build(BuildContext context) {
-    final nombreEscuela = (widget.escuela.nombre ?? '—').trim().isEmpty
-        ? '—'
-        : widget.escuela.nombre!.trim();
+    final nombreEscuela =
+        widget.escuela.nombre.trim().isEmpty
+            ? '—'
+            : widget.escuela.nombre.trim();
 
     final nivelTxt = nivelLabel(_nivelSel);
 
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: _blue,
-        title: Text(
-          'Registro • $nivelTxt • $nombreEscuela',
-          overflow: TextOverflow.ellipsis,
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _salirDelRegistro();
+      },
+      child: Scaffold(
+        backgroundColor: RegistroEquipoColors.page,
+        appBar: AppBar(
+          leading: AdminBackButton(onBack: _salirDelRegistro),
+          backgroundColor: _blue,
+          foregroundColor: Colors.white,
+          title: Text(
+            MediaQuery.sizeOf(context).width < 480
+                ? 'Registro'
+                : 'Registro de estudiantes',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          actions: [
+            IconButton(
+              tooltip: 'Renovar acceso de registro',
+              onPressed: _saving || _renewing ? null : _renewAccess,
+              icon:
+                  _renewing
+                      ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                      : const Icon(Icons.refresh_rounded),
+            ),
+            RegistroEquipoExitAction(
+              compact: MediaQuery.sizeOf(context).width < 520,
+              onPressed: _salirDelRegistro,
+            ),
+            const SizedBox(width: 16),
+          ],
         ),
-      ),
-      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-        stream: _registroConfigRef.snapshots(),
-        builder: (context, snapConfig) {
-          final cfg = snapConfig.data?.data() ?? {};
-
-          if (!_hydratedConfig && snapConfig.hasData) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (!mounted) return;
-              final permitir = (cfg['permitirFotoAlumno'] is bool)
-                  ? cfg['permitirFotoAlumno'] as bool
-                  : true;
-              setState(() {
-                _permitirFotoAlumno = permitir;
-                _hydratedConfig = true;
-              });
-            });
-          }
-
-          return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: _gradosCol.orderBy('name').snapshots(),
-            builder: (context, snapGrades) {
-              final gradeDocs = snapGrades.data?.docs ?? [];
-              final nivelDb = nivelToDb(_nivelSel);
-
-              final hasNivelField = gradeDocs.any((d) {
-                final v = (d.data()['nivel'] ?? '').toString().trim();
-                return v.isNotEmpty;
-              });
-
-              final gradesFinal = gradeDocs
-                  .map((d) => d.data())
-                  .where((m) {
-                    final name = (m['name'] ?? '').toString().trim();
-                    if (name.isEmpty) return false;
-
-                    if (hasNivelField) {
-                      final v = (m['nivel'] ?? '')
-                          .toString()
-                          .trim()
-                          .toLowerCase();
-                      return v == nivelDb;
-                    }
-
-                    return _gradoTerminaConNivel(name, _nivelSel);
-                  })
-                  .map((m) => (m['name'] ?? '').toString().trim())
-                  .where((s) => s.isNotEmpty)
-                  .toSet()
-                  .toList()
-                ..sort((a, b) {
-                  final na = _leadingNumberOrBig(a);
-                  final nb = _leadingNumberOrBig(b);
-                  if (na != nb) return na.compareTo(nb);
-                  return a.toLowerCase().compareTo(b.toLowerCase());
-                });
-
-              final hasGrados = gradesFinal.isNotEmpty;
-
-              if (_gradoSeleccionadoForm != null &&
-                  !gradesFinal.contains(_gradoSeleccionadoForm)) {
-                _gradoSeleccionadoForm = null;
-              }
-              if (_gradoSeleccionadoLista != null &&
-                  !gradesFinal.contains(_gradoSeleccionadoLista)) {
-                _gradoSeleccionadoLista = null;
-              }
-
-              if (hasGrados && _gradoSeleccionadoForm == null) {
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (!mounted) return;
-                  setState(() {
-                    _gradoSeleccionadoForm = gradesFinal.first;
-                    _gradoSeleccionadoLista ??= gradesFinal.first;
-                  });
-                });
-              }
-
-              final isWide = MediaQuery.of(context).size.width >= 980;
-
-              final formPanel = _FormPanel(
-                schoolId: _schoolId,
-                nivel: _nivelSel,
-                onNivelChanged: _setNivel,
-                permitirFotoAlumno: _permitirFotoAlumno,
-                gradesNivel: gradesFinal,
-                saving: _saving,
-                formKey: _formKey,
-                nombresCtrl: _nombresCtrl,
-                apellidosCtrl: _apellidosCtrl,
-                matriculaCtrl: _matriculaCtrl,
-                direccionCtrl: _direccionCtrl,
-                observCtrl: _observCtrl,
-                fechaCtrl: _fechaCtrl,
-                edadCtrl: _edadCtrl,
-                estado: _estadoSel,
-                onEstadoChanged: _setEstado,
-                gradoSeleccionado: _gradoSeleccionadoForm,
-                onGradoChanged: (v) => setState(() {
-                  _gradoSeleccionadoForm = v;
-                  if (v != null && v.trim().isNotEmpty) {
-                    _gradoSeleccionadoLista = v;
-                  }
-                }),
-                tandaSeleccionada: _tandaSel,
-                tandas: _tandas,
-                onTandaChanged: (v) => setState(() => _tandaSel = v),
-                onPickFecha: _pickFechaNacimiento,
-                tutorNombreCtrl: _tutorNombreCtrl,
-                tutorParentescoCtrl: _tutorParentescoCtrl,
-                tutorTelefonoCtrl: _tutorTelefonoCtrl,
-                tutorWhatsappCtrl: _tutorWhatsappCtrl,
-                tutorEmailCtrl: _tutorEmailCtrl,
-                emergNombreCtrl: _emergNombreCtrl,
-                emergTelefonoCtrl: _emergTelefonoCtrl,
-                onCrearGrado: _irAGrados,
-                onGuardar: _guardar,
-                normalizeName: _normalizeName,
-                normalizePhone: _normalizePhone,
-                isValidEmail: _isValidEmail,
-                photoBytes: _photoBytes,
-                photoPicked: _photoPicked,
-                onPickPhoto: _pickFotoAlumno,
-                onRemovePhoto: _removeFotoAlumno,
-                accessEntries: _accessEntries,
-                onAddAccess: _addAccessRow,
-                onRemoveAccess: _removeAccessRow,
-              );
-
-              final listPanel = _ListPanel(
-                schoolId: _schoolId,
-                nivel: _nivelSel,
-                gradesNivel: gradesFinal,
-                gradoSeleccionadoLista: _gradoSeleccionadoLista,
-                onGradoChanged: (v) =>
-                    setState(() => _gradoSeleccionadoLista = v),
-                searchCtrl: _searchListCtrl,
-                onSearchChanged: (v) =>
-                    setState(() => _searchList = v.trim().toLowerCase()),
-                search: _searchList,
-              );
-
-              if (!isWide) {
-                return ListView(
-                  padding: const EdgeInsets.all(16),
-                  children: [
-                    if (!hasGrados)
-                      _NoGradosBanner(
-                        nivelTxt: nivelLabel(_nivelSel),
-                        onCrearGrado: _irAGrados,
+        body: SafeArea(
+          child: Theme(
+            data: Theme.of(context).copyWith(
+              inputDecorationTheme: InputDecorationTheme(
+                filled: true,
+                fillColor: const Color(0xFFF8F9FC),
+                labelStyle: const TextStyle(
+                  color: RegistroEquipoColors.ink,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                ),
+                hintStyle: const TextStyle(
+                  color: RegistroEquipoColors.muted,
+                  fontSize: 14,
+                ),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 16,
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(
+                    color: RegistroEquipoColors.border,
+                  ),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: _blue, width: 1.6),
+                ),
+              ),
+            ),
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: _gradosCol.orderBy('name').snapshots(),
+              builder: (context, snapGrades) {
+                if (snapGrades.hasError) {
+                  return const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Text(
+                        'No se pudieron cargar los grados. Comprueba tu acceso o conexión.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: RegistroEquipoColors.ink,
+                          fontSize: 15,
+                        ),
                       ),
-                    formPanel,
-                    const SizedBox(height: 14),
-                    listPanel,
-                  ],
-                );
-              }
+                    ),
+                  );
+                }
+                if (!snapGrades.hasData) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                final gradeDocs = snapGrades.data?.docs ?? [];
+                final nivelDb = nivelToDb(_nivelSel);
 
-              return Row(
-                children: [
-                  Expanded(
-                    flex: 6,
-                    child: ListView(
-                      padding: const EdgeInsets.all(16),
-                      children: [
-                        if (!hasGrados)
-                          _NoGradosBanner(
-                            nivelTxt: nivelLabel(_nivelSel),
-                            onCrearGrado: _irAGrados,
+                final hasNivelField = gradeDocs.any((d) {
+                  final v = (d.data()['nivel'] ?? '').toString().trim();
+                  return v.isNotEmpty;
+                });
+
+                final gradesFinal =
+                    gradeDocs
+                        .map((d) => d.data())
+                        .where((m) {
+                          final name = (m['name'] ?? '').toString().trim();
+                          if (name.isEmpty) return false;
+
+                          if (hasNivelField) {
+                            final v =
+                                (m['nivel'] ?? '')
+                                    .toString()
+                                    .trim()
+                                    .toLowerCase();
+                            if (v == nivelDb) return true;
+                          }
+
+                          return _gradoTerminaConNivel(name, _nivelSel);
+                        })
+                        .map((m) => (m['name'] ?? '').toString().trim())
+                        .where((s) => s.isNotEmpty)
+                        .toSet()
+                        .toList()
+                      ..sort((a, b) {
+                        final na = _leadingNumberOrBig(a);
+                        final nb = _leadingNumberOrBig(b);
+                        if (na != nb) return na.compareTo(nb);
+                        return a.toLowerCase().compareTo(b.toLowerCase());
+                      });
+
+                _gradeIdsByName
+                  ..clear()
+                  ..addEntries(
+                    gradeDocs
+                        .where(
+                          (d) => gradesFinal.contains(
+                            (d.data()['name'] ?? '').toString().trim(),
                           ),
-                        formPanel
-                      ],
-                    ),
+                        )
+                        .map(
+                          (d) => MapEntry(
+                            (d.data()['name'] as String).trim(),
+                            d.id,
+                          ),
+                        ),
+                  );
+                final hasGrados = gradesFinal.isNotEmpty;
+
+                if (_gradoSeleccionadoForm != null &&
+                    !gradesFinal.contains(_gradoSeleccionadoForm)) {
+                  _gradoSeleccionadoForm = null;
+                }
+                if (_gradoSeleccionadoLista != null &&
+                    !gradesFinal.contains(_gradoSeleccionadoLista)) {
+                  _gradoSeleccionadoLista = null;
+                }
+
+                if (hasGrados && _gradoSeleccionadoForm == null) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (!mounted) return;
+                    setState(() {
+                      _gradoSeleccionadoForm = gradesFinal.first;
+                      _gradoSeleccionadoLista ??= gradesFinal.first;
+                    });
+                  });
+                }
+
+                final isWide = MediaQuery.of(context).size.width >= 980;
+
+                final formPanel = AbsorbPointer(
+                  absorbing: _saving || _renewing,
+                  child: _FormPanel(
+                    schoolId: _schoolId,
+                    nivel: _nivelSel,
+                    onNivelChanged: _setNivel,
+                    permitirFotoAlumno: _permitirFotoAlumno,
+                    gradesNivel: gradesFinal,
+                    saving: _saving,
+                    formKey: _formKey,
+                    nombresCtrl: _nombresCtrl,
+                    apellidosCtrl: _apellidosCtrl,
+                    matriculaCtrl: _matriculaCtrl,
+                    direccionCtrl: _direccionCtrl,
+                    observCtrl: _observCtrl,
+                    fechaCtrl: _fechaCtrl,
+                    edadCtrl: _edadCtrl,
+                    estado: _estadoSel,
+                    onEstadoChanged: _setEstado,
+                    sexoSeleccionado: _sexoSel,
+                    onSexoChanged:
+                        (v) => setState(() {
+                          if (v != _sexoSel) _selectionDirty = true;
+                          _sexoSel = v;
+                        }),
+                    gradoSeleccionado: _gradoSeleccionadoForm,
+                    onGradoChanged:
+                        (v) => setState(() {
+                          if (v != _gradoSeleccionadoForm) {
+                            _selectionDirty = true;
+                          }
+                          _gradoSeleccionadoForm = v;
+                          if (v != null && v.trim().isNotEmpty) {
+                            _gradoSeleccionadoLista = v;
+                          }
+                        }),
+                    tandaSeleccionada: _tandaSel,
+                    tandas: _tandas,
+                    onTandaChanged:
+                        (v) => setState(() {
+                          if (v != _tandaSel) _selectionDirty = true;
+                          _tandaSel = v;
+                        }),
+                    onPickFecha: _pickFechaNacimiento,
+                    tutorNombreCtrl: _tutorNombreCtrl,
+                    tutorParentescoCtrl: _tutorParentescoCtrl,
+                    tutorTelefonoCtrl: _tutorTelefonoCtrl,
+                    tutorWhatsappCtrl: _tutorWhatsappCtrl,
+                    tutorEmailCtrl: _tutorEmailCtrl,
+                    emergNombreCtrl: _emergNombreCtrl,
+                    emergTelefonoCtrl: _emergTelefonoCtrl,
+                    onCrearGrado: _irAGrados,
+                    onGuardar: _guardar,
+                    normalizeName: _normalizeName,
+                    normalizePhone: _normalizePhone,
+                    isValidEmail: _isValidEmail,
+                    photoBytes: _photoBytes,
+                    photoPicked: _photoPicked,
+                    onPickPhoto: _pickFotoAlumno,
+                    onRemovePhoto: _removeFotoAlumno,
+                    accessEntries: _accessEntries,
+                    onAddAccess: _addAccessRow,
+                    onRemoveAccess: _removeAccessRow,
                   ),
-                  Container(width: 1, color: Colors.grey.shade300),
-                  Expanded(
-                    flex: 5,
-                    child: ListView(
-                      padding: const EdgeInsets.all(16),
-                      children: [listPanel],
-                    ),
+                );
+
+                final listPanel = _ListPanel(
+                  schoolId: _schoolId,
+                  firestore: _db,
+                  nivel: _nivelSel,
+                  gradesNivel: gradesFinal,
+                  gradoSeleccionadoLista: _gradoSeleccionadoLista,
+                  onGradoChanged:
+                      (v) => setState(() => _gradoSeleccionadoLista = v),
+                  searchCtrl: _searchListCtrl,
+                  onSearchChanged:
+                      (v) =>
+                          setState(() => _searchList = v.trim().toLowerCase()),
+                  search: _searchList,
+                );
+
+                if (!isWide) {
+                  return ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
+                      RegistroEquipoHero(
+                        schoolName: nombreEscuela,
+                        level: nivelTxt,
+                      ),
+                      const SizedBox(height: 16),
+                      if (!hasGrados)
+                        _NoGradosBanner(
+                          nivelTxt: nivelLabel(_nivelSel),
+                          onCrearGrado: _irAGrados,
+                        ),
+                      formPanel,
+                      const SizedBox(height: 14),
+                      listPanel,
+                    ],
+                  );
+                }
+
+                return RegistroEquipoDesktopLayout(
+                  header: RegistroEquipoHero(
+                    schoolName: nombreEscuela,
+                    level: nivelTxt,
                   ),
-                ],
-              );
-            },
-          );
-        },
+                  banner:
+                      !hasGrados
+                          ? _NoGradosBanner(
+                            nivelTxt: nivelTxt,
+                            onCrearGrado: _irAGrados,
+                          )
+                          : null,
+                  form: formPanel,
+                  list: listPanel,
+                );
+              },
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -1115,6 +1147,8 @@ class _FormPanel extends StatelessWidget {
 
   final TextEditingController fechaCtrl;
   final TextEditingController edadCtrl;
+  final SexoAlumno sexoSeleccionado;
+  final ValueChanged<SexoAlumno> onSexoChanged;
 
   final String? gradoSeleccionado;
   final ValueChanged<String?> onGradoChanged;
@@ -1165,6 +1199,8 @@ class _FormPanel extends StatelessWidget {
     required this.observCtrl,
     required this.fechaCtrl,
     required this.edadCtrl,
+    required this.sexoSeleccionado,
+    required this.onSexoChanged,
     required this.gradoSeleccionado,
     required this.onGradoChanged,
     required this.tandaSeleccionada,
@@ -1202,8 +1238,8 @@ class _FormPanel extends StatelessWidget {
     return _CardShell(
       title: 'Formulario de inscripción • $nTxt',
       subtitle:
-          'Grados filtrados por campo "nivel" (fallback por nombre si falta).',
-      icon: Icon(nivelIcon(nivel), color: _orange),
+          'Información del estudiante, su familia y contactos autorizados.',
+      icon: Icon(nivelIcon(nivel), color: _blue),
       background: Colors.white,
       child: Form(
         key: formKey,
@@ -1223,29 +1259,17 @@ class _FormPanel extends StatelessWidget {
             const SizedBox(height: 12),
             const _SectionTitle('Estado del alumno'),
             const SizedBox(height: 10),
-            _EstadoSwitcher(
-              value: estado,
-              onChanged: onEstadoChanged,
-            ),
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                'Activo = normal • Pendiente = por revisar • Bloqueado = sin acceso',
-                style: TextStyle(color: Colors.grey.shade700),
-              ),
-            ),
-
-            const SizedBox(height: 12),
+            _EstadoSwitcher(value: estado, onChanged: onEstadoChanged),
+            const SizedBox(height: 20),
 
             if (!hasGrados)
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: _orange.withOpacity(0.08),
+                  color: const Color(0xFFFFF4DF),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: _orange.withOpacity(0.25)),
+                  border: Border.all(color: const Color(0xFFECD49B)),
                 ),
                 child: const Text(
                   'No hay grados creados para este nivel. Pulsa "Crear grado".',
@@ -1257,148 +1281,117 @@ class _FormPanel extends StatelessWidget {
             const _SectionTitle('Foto del alumno'),
             const SizedBox(height: 10),
 
-            Row(
-              children: [
-                CircleAvatar(
-                  radius: 34,
-                  backgroundColor: _blue.withOpacity(0.08),
-                  backgroundImage:
-                      (photoBytes != null) ? MemoryImage(photoBytes!) : null,
-                  child: (photoBytes == null)
-                      ? const Icon(Icons.person, size: 34, color: _blue)
-                      : null,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'Sube una foto (opcional). Se guardará en Storage y quedará vinculada al alumno.',
-                    style: TextStyle(color: Colors.grey.shade700),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                IconButton(
-                  tooltip: 'Elegir foto',
-                  onPressed: saving ? null : onPickPhoto,
-                  icon: const Icon(Icons.photo_library, color: _orange),
-                ),
-                IconButton(
-                  tooltip: 'Quitar foto',
-                  onPressed: (saving || !photoPicked) ? null : onRemovePhoto,
-                  icon: Icon(Icons.delete_outline, color: Colors.grey.shade700),
-                ),
-              ],
+            RegistroEquipoPhotoField(
+              canUpload: permitirFotoAlumno,
+              saving: saving,
+              photoPicked: photoPicked,
+              bytes: photoBytes,
+              onPick: onPickPhoto,
+              onRemove: onRemovePhoto,
             ),
 
             const SizedBox(height: 14),
             const _SectionTitle('Datos del alumno'),
             const SizedBox(height: 10),
 
-            Row(
-              children: [
-                Expanded(
-                  child: TextFormField(
-                    controller: nombresCtrl,
-                    textInputAction: TextInputAction.next,
-                    decoration: const InputDecoration(
-                      labelText: 'Nombres',
-                      border: OutlineInputBorder(),
-                    ),
-                    onChanged: (v) {
-                      final n = normalizeName(v);
-                      nombresCtrl.value = nombresCtrl.value.copyWith(
-                        text: n,
-                        selection: TextSelection.collapsed(offset: n.length),
-                      );
-                    },
-                    validator: (v) {
-                      final s = normalizeName(v ?? '');
-                      if (s.isEmpty) return 'Escribe los nombres';
-                      if (s.length < 2) return 'Muy corto';
-                      return null;
-                    },
+            RegistroEquipoFieldRow(
+              fields: [
+                TextFormField(
+                  controller: nombresCtrl,
+                  textInputAction: TextInputAction.next,
+                  decoration: const InputDecoration(
+                    labelText: 'Nombre',
+                    border: OutlineInputBorder(),
                   ),
+                  onChanged: (v) {
+                    final n = normalizeName(v);
+                    nombresCtrl.value = nombresCtrl.value.copyWith(
+                      text: n,
+                      selection: TextSelection.collapsed(offset: n.length),
+                    );
+                  },
+                  validator: (v) {
+                    final s = normalizeName(v ?? '');
+                    if (s.isEmpty) return 'Escribe los nombres';
+                    if (s.length < 2) return 'Muy corto';
+                    return null;
+                  },
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: TextFormField(
-                    controller: apellidosCtrl,
-                    textInputAction: TextInputAction.next,
-                    decoration: const InputDecoration(
-                      labelText: 'Apellidos',
-                      border: OutlineInputBorder(),
-                    ),
-                    onChanged: (v) {
-                      final n = normalizeName(v);
-                      apellidosCtrl.value = apellidosCtrl.value.copyWith(
-                        text: n,
-                        selection: TextSelection.collapsed(offset: n.length),
-                      );
-                    },
-                    validator: (v) {
-                      final s = normalizeName(v ?? '');
-                      if (s.isEmpty) return 'Escribe los apellidos';
-                      if (s.length < 2) return 'Muy corto';
-                      return null;
-                    },
+                TextFormField(
+                  controller: apellidosCtrl,
+                  textInputAction: TextInputAction.next,
+                  decoration: const InputDecoration(
+                    labelText: 'Apellidos',
+                    border: OutlineInputBorder(),
                   ),
+                  onChanged: (v) {
+                    final n = normalizeName(v);
+                    apellidosCtrl.value = apellidosCtrl.value.copyWith(
+                      text: n,
+                      selection: TextSelection.collapsed(offset: n.length),
+                    );
+                  },
+                  validator: (v) {
+                    final s = normalizeName(v ?? '');
+                    if (s.isEmpty) return 'Escribe los apellidos';
+                    if (s.length < 2) return 'Muy corto';
+                    return null;
+                  },
                 ),
               ],
             ),
             const SizedBox(height: 12),
 
-            Row(
-              children: [
-                Expanded(
-                  child: TextFormField(
-                    controller: matriculaCtrl,
-                    textInputAction: TextInputAction.next,
-                    decoration: const InputDecoration(
-                      labelText: 'Matrícula o Número',
-                      hintText: 'Ej: 12',
-                      border: OutlineInputBorder(),
-                    ),
-                    validator: (v) {
-                      final s = (v ?? '').trim();
-                      if (s.isEmpty) return 'Escribe el número';
-                      return null;
-                    },
+            RegistroEquipoFieldRow(
+              minWidthPerField: 190,
+              fields: [
+                TextFormField(
+                  controller: matriculaCtrl,
+                  textInputAction: TextInputAction.next,
+                  decoration: const InputDecoration(
+                    labelText: 'Matrícula o Número (opcional)',
+                    hintText: 'Ej: 12',
+                    border: OutlineInputBorder(),
                   ),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    value: tandaSeleccionada,
-                    decoration: const InputDecoration(
-                      labelText: 'Tanda',
-                      border: OutlineInputBorder(),
-                    ),
-                    items: tandas
-                        .map((t) => DropdownMenuItem(value: t, child: Text(t)))
-                        .toList(),
-                    onChanged: onTandaChanged,
-                    validator: (v) =>
-                        (v == null || v.isEmpty) ? 'Selecciona la tanda' : null,
+                DropdownButtonFormField<String>(
+                  initialValue: tandaSeleccionada,
+                  decoration: const InputDecoration(
+                    labelText: 'Tanda',
+                    border: OutlineInputBorder(),
                   ),
+                  items:
+                      tandas
+                          .map(
+                            (t) => DropdownMenuItem(value: t, child: Text(t)),
+                          )
+                          .toList(),
+                  onChanged: onTandaChanged,
+                  validator:
+                      (v) =>
+                          (v == null || v.isEmpty)
+                              ? 'Selecciona la tanda'
+                              : null,
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    value: hasGrados ? gradoSeleccionado : null,
-                    decoration: InputDecoration(
-                      labelText: 'Grado ($nTxt)',
-                      border: const OutlineInputBorder(),
-                    ),
-                    items: gradesNivel
-                        .map((g) => DropdownMenuItem(value: g, child: Text(g)))
-                        .toList(),
-                    onChanged: hasGrados ? onGradoChanged : null,
-                    validator: (v) {
-                      if (!hasGrados) return 'Crea grados primero';
-                      return (v == null || v.trim().isEmpty)
-                          ? 'Selecciona grado'
-                          : null;
-                    },
+                DropdownButtonFormField<String>(
+                  initialValue: hasGrados ? gradoSeleccionado : null,
+                  decoration: InputDecoration(
+                    labelText: 'Grado ($nTxt)',
+                    border: const OutlineInputBorder(),
                   ),
+                  items:
+                      gradesNivel
+                          .map(
+                            (g) => DropdownMenuItem(value: g, child: Text(g)),
+                          )
+                          .toList(),
+                  onChanged: hasGrados ? onGradoChanged : null,
+                  validator: (v) {
+                    if (!hasGrados) return 'Crea grados primero';
+                    return (v == null || v.trim().isEmpty)
+                        ? 'Selecciona grado'
+                        : null;
+                  },
                 ),
               ],
             ),
@@ -1415,32 +1408,27 @@ class _FormPanel extends StatelessWidget {
 
             const SizedBox(height: 12),
 
-            Row(
-              children: [
-                Expanded(
-                  child: TextFormField(
-                    controller: fechaCtrl,
-                    readOnly: true,
-                    decoration: InputDecoration(
-                      labelText: 'Fecha de nacimiento',
-                      border: const OutlineInputBorder(),
-                      suffixIcon: IconButton(
-                        onPressed: onPickFecha,
-                        icon: const Icon(Icons.calendar_month),
-                      ),
+            RegistroEquipoFieldRow(
+              fields: [
+                TextFormField(
+                  controller: fechaCtrl,
+                  readOnly: true,
+                  decoration: InputDecoration(
+                    labelText: 'Fecha de nacimiento',
+                    border: const OutlineInputBorder(),
+                    suffixIcon: IconButton(
+                      onPressed: onPickFecha,
+                      icon: const Icon(Icons.calendar_month),
                     ),
-                    onTap: onPickFecha,
                   ),
+                  onTap: onPickFecha,
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: TextFormField(
-                    controller: edadCtrl,
-                    readOnly: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Edad (automática)',
-                      border: OutlineInputBorder(),
-                    ),
+                TextFormField(
+                  controller: edadCtrl,
+                  readOnly: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Edad (automática)',
+                    border: OutlineInputBorder(),
                   ),
                 ),
               ],
@@ -1448,54 +1436,75 @@ class _FormPanel extends StatelessWidget {
 
             const SizedBox(height: 12),
 
-            TextFormField(
-              controller: direccionCtrl,
-              textInputAction: TextInputAction.next,
-              decoration: const InputDecoration(
-                labelText: 'Dirección (opcional)',
-                border: OutlineInputBorder(),
-              ),
-              minLines: 1,
-              maxLines: 2,
+            RegistroEquipoFieldRow(
+              fields: [
+                DropdownButtonFormField<SexoAlumno>(
+                  initialValue: sexoSeleccionado,
+                  decoration: const InputDecoration(
+                    labelText: 'Sexo',
+                    border: OutlineInputBorder(),
+                  ),
+                  items:
+                      SexoAlumno.values
+                          .map(
+                            (s) => DropdownMenuItem<SexoAlumno>(
+                              value: s,
+                              child: Text(sexoLabel(s)),
+                            ),
+                          )
+                          .toList(),
+                  onChanged:
+                      saving
+                          ? null
+                          : (v) {
+                            if (v != null) onSexoChanged(v);
+                          },
+                ),
+                TextFormField(
+                  controller: direccionCtrl,
+                  textInputAction: TextInputAction.next,
+                  decoration: const InputDecoration(
+                    labelText: 'Dirección (opcional)',
+                    border: OutlineInputBorder(),
+                  ),
+                  minLines: 1,
+                  maxLines: 2,
+                ),
+              ],
             ),
 
             const SizedBox(height: 14),
             const _SectionTitle('Información de padres / tutores'),
             const SizedBox(height: 10),
 
-            Row(
-              children: [
-                Expanded(
-                  child: TextFormField(
-                    controller: tutorNombreCtrl,
-                    textInputAction: TextInputAction.next,
-                    decoration: const InputDecoration(
-                      labelText: 'Nombre del tutor',
-                      border: OutlineInputBorder(),
-                    ),
-                    onChanged: (v) {
-                      final n = normalizeName(v);
-                      tutorNombreCtrl.value = tutorNombreCtrl.value.copyWith(
-                        text: n,
-                        selection: TextSelection.collapsed(offset: n.length),
-                      );
-                    },
-                    validator: (v) {
-                      final s = normalizeName(v ?? '');
-                      if (s.isEmpty) return 'Escribe el tutor';
-                      return null;
-                    },
+            RegistroEquipoFieldRow(
+              fields: [
+                TextFormField(
+                  controller: tutorNombreCtrl,
+                  textInputAction: TextInputAction.next,
+                  decoration: const InputDecoration(
+                    labelText: 'Nombre del tutor',
+                    border: OutlineInputBorder(),
                   ),
+                  onChanged: (v) {
+                    final n = normalizeName(v);
+                    tutorNombreCtrl.value = tutorNombreCtrl.value.copyWith(
+                      text: n,
+                      selection: TextSelection.collapsed(offset: n.length),
+                    );
+                  },
+                  validator: (v) {
+                    final s = normalizeName(v ?? '');
+                    if (s.isEmpty) return 'Escribe el tutor';
+                    return null;
+                  },
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: TextFormField(
-                    controller: tutorParentescoCtrl,
-                    textInputAction: TextInputAction.next,
-                    decoration: const InputDecoration(
-                      labelText: 'Parentesco',
-                      border: OutlineInputBorder(),
-                    ),
+                TextFormField(
+                  controller: tutorParentescoCtrl,
+                  textInputAction: TextInputAction.next,
+                  decoration: const InputDecoration(
+                    labelText: 'Parentesco',
+                    border: OutlineInputBorder(),
                   ),
                 ),
               ],
@@ -1503,49 +1512,43 @@ class _FormPanel extends StatelessWidget {
 
             const SizedBox(height: 12),
 
-            Row(
-              children: [
-                Expanded(
-                  child: TextFormField(
-                    controller: tutorTelefonoCtrl,
-                    keyboardType: TextInputType.phone,
-                    decoration: const InputDecoration(
-                      labelText: 'Teléfono (contacto principal)',
-                      border: OutlineInputBorder(),
-                    ),
-                    onChanged: (v) {
-                      final n = normalizePhone(v);
-                      tutorTelefonoCtrl.value = tutorTelefonoCtrl.value.copyWith(
-                        text: n,
-                        selection: TextSelection.collapsed(offset: n.length),
-                      );
-                    },
-                    validator: (v) {
-                      final s = normalizePhone(v ?? '');
-                      if (s.isEmpty) return 'Teléfono requerido';
-                      if (s.length < 8) return 'Teléfono muy corto';
-                      return null;
-                    },
+            RegistroEquipoFieldRow(
+              fields: [
+                TextFormField(
+                  controller: tutorTelefonoCtrl,
+                  keyboardType: TextInputType.phone,
+                  decoration: const InputDecoration(
+                    labelText: 'Teléfono (contacto principal)',
+                    border: OutlineInputBorder(),
                   ),
+                  onChanged: (v) {
+                    final n = normalizePhone(v);
+                    tutorTelefonoCtrl.value = tutorTelefonoCtrl.value.copyWith(
+                      text: n,
+                      selection: TextSelection.collapsed(offset: n.length),
+                    );
+                  },
+                  validator: (v) {
+                    final s = normalizePhone(v ?? '');
+                    if (s.isEmpty) return 'Teléfono requerido';
+                    if (s.length < 8) return 'Teléfono muy corto';
+                    return null;
+                  },
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: TextFormField(
-                    controller: tutorWhatsappCtrl,
-                    keyboardType: TextInputType.phone,
-                    decoration: const InputDecoration(
-                      labelText: 'WhatsApp (opcional)',
-                      border: OutlineInputBorder(),
-                    ),
-                    onChanged: (v) {
-                      final n = normalizePhone(v);
-                      tutorWhatsappCtrl.value =
-                          tutorWhatsappCtrl.value.copyWith(
-                        text: n,
-                        selection: TextSelection.collapsed(offset: n.length),
-                      );
-                    },
+                TextFormField(
+                  controller: tutorWhatsappCtrl,
+                  keyboardType: TextInputType.phone,
+                  decoration: const InputDecoration(
+                    labelText: 'WhatsApp (opcional)',
+                    border: OutlineInputBorder(),
                   ),
+                  onChanged: (v) {
+                    final n = normalizePhone(v);
+                    tutorWhatsappCtrl.value = tutorWhatsappCtrl.value.copyWith(
+                      text: n,
+                      selection: TextSelection.collapsed(offset: n.length),
+                    );
+                  },
                 ),
               ],
             ),
@@ -1556,7 +1559,7 @@ class _FormPanel extends StatelessWidget {
               controller: tutorEmailCtrl,
               keyboardType: TextInputType.emailAddress,
               decoration: const InputDecoration(
-                labelText: 'Email del tutor (opcional)',
+                labelText: 'Correo del tutor (opcional)',
                 border: OutlineInputBorder(),
               ),
             ),
@@ -1565,8 +1568,12 @@ class _FormPanel extends StatelessWidget {
             const _SectionTitle('Correos con acceso (Google)'),
             const SizedBox(height: 8),
             Text(
-              'Aquí agregas los correos (docente, padres o quien tú decidas) que podrán acceder al alumno cuando activemos el login con Google.',
-              style: TextStyle(color: Colors.grey.shade700),
+              'Añade las cuentas autorizadas para acceder.',
+              style: const TextStyle(
+                color: RegistroEquipoColors.muted,
+                fontSize: 13.5,
+                height: 1.4,
+              ),
             ),
             const SizedBox(height: 10),
 
@@ -1576,62 +1583,72 @@ class _FormPanel extends StatelessWidget {
                   Row(
                     children: [
                       Expanded(
-                        flex: 6,
-                        child: TextFormField(
-                          controller: accessEntries[i].emailCtrl,
-                          keyboardType: TextInputType.emailAddress,
-                          decoration: InputDecoration(
-                            labelText: 'Correo #${i + 1}',
-                            border: const OutlineInputBorder(),
+                        child: Text(
+                          'Acceso ${i + 1}',
+                          style: const TextStyle(
+                            color: RegistroEquipoColors.ink,
+                            fontWeight: FontWeight.w700,
                           ),
-                          onChanged: (v) {
-                            final lower = v.trim().toLowerCase();
-                            if (lower != v) {
-                              accessEntries[i].emailCtrl.value =
-                                  accessEntries[i].emailCtrl.value.copyWith(
-                                text: lower,
-                                selection: TextSelection.collapsed(
-                                    offset: lower.length),
-                              );
-                            }
-                          },
-                          validator: (_) {
-                            final email =
-                                accessEntries[i].emailCtrl.text.trim();
-                            final user = accessEntries[i].userCtrl.text.trim();
-                            if (email.isEmpty && user.isEmpty) return null;
-                            if (email.isEmpty) return 'Email requerido';
-                            if (!isValidEmail(email)) return 'Email inválido';
-                            return null;
-                          },
                         ),
                       ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        flex: 5,
-                        child: TextFormField(
-                          controller: accessEntries[i].userCtrl,
-                          decoration: const InputDecoration(
-                            labelText: 'Usuario',
-                            border: OutlineInputBorder(),
-                          ),
-                          validator: (_) {
-                            final email =
-                                accessEntries[i].emailCtrl.text.trim();
-                            final user = accessEntries[i].userCtrl.text.trim();
-                            if (email.isEmpty && user.isEmpty) return null;
-                            if (user.isEmpty) return 'Usuario requerido';
-                            return null;
-                          },
-                        ),
-                      ),
-                      const SizedBox(width: 8),
                       IconButton(
-                        tooltip: 'Quitar',
-                        onPressed: (saving || accessEntries.length <= 1)
-                            ? null
-                            : () => onRemoveAccess(i),
-                        icon: const Icon(Icons.close, color: _orange),
+                        tooltip: 'Quitar acceso ${i + 1}',
+                        onPressed:
+                            (saving || accessEntries.length <= 1)
+                                ? null
+                                : () => onRemoveAccess(i),
+                        icon: const Icon(
+                          Icons.close,
+                          color: RegistroEquipoColors.muted,
+                        ),
+                      ),
+                    ],
+                  ),
+                  RegistroEquipoFieldRow(
+                    fields: [
+                      TextFormField(
+                        controller: accessEntries[i].emailCtrl,
+                        keyboardType: TextInputType.emailAddress,
+                        decoration: InputDecoration(
+                          labelText: 'Correo #${i + 1}',
+                          border: const OutlineInputBorder(),
+                        ),
+                        onChanged: (v) {
+                          final lower = v.trim().toLowerCase();
+                          if (lower != v) {
+                            accessEntries[i].emailCtrl.value = accessEntries[i]
+                                .emailCtrl
+                                .value
+                                .copyWith(
+                                  text: lower,
+                                  selection: TextSelection.collapsed(
+                                    offset: lower.length,
+                                  ),
+                                );
+                          }
+                        },
+                        validator: (_) {
+                          final email = accessEntries[i].emailCtrl.text.trim();
+                          final user = accessEntries[i].userCtrl.text.trim();
+                          if (email.isEmpty && user.isEmpty) return null;
+                          if (email.isEmpty) return 'Email requerido';
+                          if (!isValidEmail(email)) return 'Email inválido';
+                          return null;
+                        },
+                      ),
+                      TextFormField(
+                        controller: accessEntries[i].userCtrl,
+                        decoration: const InputDecoration(
+                          labelText: 'Usuario',
+                          border: OutlineInputBorder(),
+                        ),
+                        validator: (_) {
+                          final email = accessEntries[i].emailCtrl.text.trim();
+                          final user = accessEntries[i].userCtrl.text.trim();
+                          if (email.isEmpty && user.isEmpty) return null;
+                          if (user.isEmpty) return 'Usuario requerido';
+                          return null;
+                        },
                       ),
                     ],
                   ),
@@ -1652,43 +1669,37 @@ class _FormPanel extends StatelessWidget {
             const _SectionTitle('Contacto de emergencia'),
             const SizedBox(height: 10),
 
-            Row(
-              children: [
-                Expanded(
-                  child: TextFormField(
-                    controller: emergNombreCtrl,
-                    textInputAction: TextInputAction.next,
-                    decoration: const InputDecoration(
-                      labelText: 'Nombre',
-                      border: OutlineInputBorder(),
-                    ),
-                    onChanged: (v) {
-                      final n = normalizeName(v);
-                      emergNombreCtrl.value = emergNombreCtrl.value.copyWith(
-                        text: n,
-                        selection: TextSelection.collapsed(offset: n.length),
-                      );
-                    },
+            RegistroEquipoFieldRow(
+              fields: [
+                TextFormField(
+                  controller: emergNombreCtrl,
+                  textInputAction: TextInputAction.next,
+                  decoration: const InputDecoration(
+                    labelText: 'Nombre',
+                    border: OutlineInputBorder(),
                   ),
+                  onChanged: (v) {
+                    final n = normalizeName(v);
+                    emergNombreCtrl.value = emergNombreCtrl.value.copyWith(
+                      text: n,
+                      selection: TextSelection.collapsed(offset: n.length),
+                    );
+                  },
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: TextFormField(
-                    controller: emergTelefonoCtrl,
-                    keyboardType: TextInputType.phone,
-                    decoration: const InputDecoration(
-                      labelText: 'Teléfono',
-                      border: OutlineInputBorder(),
-                    ),
-                    onChanged: (v) {
-                      final n = normalizePhone(v);
-                      emergTelefonoCtrl.value =
-                          emergTelefonoCtrl.value.copyWith(
-                        text: n,
-                        selection: TextSelection.collapsed(offset: n.length),
-                      );
-                    },
+                TextFormField(
+                  controller: emergTelefonoCtrl,
+                  keyboardType: TextInputType.phone,
+                  decoration: const InputDecoration(
+                    labelText: 'Teléfono',
+                    border: OutlineInputBorder(),
                   ),
+                  onChanged: (v) {
+                    final n = normalizePhone(v);
+                    emergTelefonoCtrl.value = emergTelefonoCtrl.value.copyWith(
+                      text: n,
+                      selection: TextSelection.collapsed(offset: n.length),
+                    );
+                  },
                 ),
               ],
             ),
@@ -1708,12 +1719,14 @@ class _FormPanel extends StatelessWidget {
             ),
 
             const SizedBox(height: 10),
-            Text(
-              permitirFotoAlumno
-                  ? 'Foto del alumno: el alumno podrá cambiarla (según tu configuración actual).'
-                  : 'Foto del alumno: está bloqueada para alumnos (solo administración).',
-              style: TextStyle(color: Colors.grey.shade700),
-            ),
+            if (!permitirFotoAlumno)
+              const Text(
+                'La foto solo puede agregarla la administración.',
+                style: TextStyle(
+                  color: RegistroEquipoColors.muted,
+                  fontSize: 13,
+                ),
+              ),
 
             const SizedBox(height: 16),
 
@@ -1723,21 +1736,30 @@ class _FormPanel extends StatelessWidget {
                 onPressed: (saving || !hasGrados) ? null : onGuardar,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: _blue,
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size.fromHeight(50),
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                 ),
-                icon: saving
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.save),
+                icon:
+                    saving
+                        ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                        : const Icon(Icons.save),
                 label: Text(
                   saving
                       ? 'Guardando...'
-                      : (!hasGrados ? 'Crea grados primero' : 'Registrar alumno'),
+                      : (!hasGrados
+                          ? 'Crea grados primero'
+                          : 'Registrar alumno'),
                 ),
               ),
             ),
@@ -1761,8 +1783,11 @@ class _ListPanel extends StatelessWidget {
 
   final String search;
 
+  final FirebaseFirestore firestore;
+
   const _ListPanel({
     required this.schoolId,
+    required this.firestore,
     required this.nivel,
     required this.gradesNivel,
     required this.gradoSeleccionadoLista,
@@ -1773,10 +1798,7 @@ class _ListPanel extends StatelessWidget {
   });
 
   CollectionReference<Map<String, dynamic>> get _alumnosCol =>
-      FirebaseFirestore.instance
-          .collection('schools')
-          .doc(schoolId)
-          .collection('alumnos');
+      firestore.collection('schools').doc(schoolId).collection('alumnos');
 
   @override
   Widget build(BuildContext context) {
@@ -1786,26 +1808,28 @@ class _ListPanel extends StatelessWidget {
 
     return _CardShell(
       title: 'Alumnos por grado • $nTxt',
-      subtitle: 'Aquí solo trabajas con grados filtrados por este nivel.',
-      icon: const Icon(Icons.school, color: _orange),
+      subtitle: 'Consulta los estudiantes registrados en cada grado.',
+      icon: const Icon(Icons.school_outlined, color: _blue),
       child: Column(
         children: [
           DropdownButtonFormField<String>(
-            value: hasGrados ? gradoSeleccionadoLista : null,
+            initialValue: hasGrados ? gradoSeleccionadoLista : null,
             decoration: const InputDecoration(
               labelText: 'Grado',
               border: OutlineInputBorder(),
             ),
-            items: gradesNivel
-                .map((g) => DropdownMenuItem(value: g, child: Text(g)))
-                .toList(),
+            items:
+                gradesNivel
+                    .map((g) => DropdownMenuItem(value: g, child: Text(g)))
+                    .toList(),
             onChanged: hasGrados ? onGradoChanged : null,
           ),
           const SizedBox(height: 12),
           TextField(
             controller: searchCtrl,
             decoration: const InputDecoration(
-              labelText: 'Buscar (nombre, apellido, número)',
+              labelText: 'Buscar estudiante',
+              hintText: 'Nombre, apellido o matrícula',
               border: OutlineInputBorder(),
               prefixIcon: Icon(Icons.search),
             ),
@@ -1815,7 +1839,9 @@ class _ListPanel extends StatelessWidget {
           if (!hasGrados)
             const Padding(
               padding: EdgeInsets.all(12),
-              child: Text('No hay grados para este nivel. Crea grados primero.'),
+              child: Text(
+                'No hay grados para este nivel. Crea grados primero.',
+              ),
             )
           else if (gradoSeleccionadoLista == null)
             const Padding(
@@ -1824,11 +1850,23 @@ class _ListPanel extends StatelessWidget {
             )
           else
             StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: _alumnosCol
-                  .where('grado', isEqualTo: gradoSeleccionadoLista)
-                  .snapshots(),
+              stream:
+                  _alumnosCol
+                      .where('grado', isEqualTo: gradoSeleccionadoLista)
+                      .snapshots(),
               builder: (context, snap) {
-                if (snap.hasError) return Text('Error: ${snap.error}');
+                if (snap.hasError) {
+                  return const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Text(
+                      'No se pudieron cargar los estudiantes. Comprueba tu acceso o conexión.',
+                      style: TextStyle(
+                        color: RegistroEquipoColors.ink,
+                        fontSize: 14,
+                      ),
+                    ),
+                  );
+                }
                 if (!snap.hasData) {
                   return const Padding(
                     padding: EdgeInsets.all(12),
@@ -1838,41 +1876,52 @@ class _ListPanel extends StatelessWidget {
 
                 final docs = snap.data!.docs;
 
-                final rows = docs
-                    .map((d) {
-                      final data = d.data();
+                final rows =
+                    docs
+                        .map((d) {
+                          final data = d.data();
 
-                      // ✅ filtro extra en memoria: evita mezclar niveles sin crear índices nuevos
-                      final n = (data['nivel'] ?? '').toString().trim().toLowerCase();
-                      if (n.isNotEmpty && n != nivelDb) return null;
+                          // ✅ filtro extra en memoria: evita mezclar niveles sin crear índices nuevos
+                          final n =
+                              (data['nivel'] ?? '')
+                                  .toString()
+                                  .trim()
+                                  .toLowerCase();
+                          if (n.isNotEmpty && n != nivelDb) return null;
 
-                      final nombres = (data['nombres'] ?? '').toString();
-                      final apellidos = (data['apellidos'] ?? '').toString();
-                      final numero = (data['matricula'] ?? '').toString();
-                      final grado = (data['grado'] ?? '').toString();
-                      final edad = (data['edad'] ?? '').toString();
-                      final status = (data['status'] ?? 'activo').toString();
+                          final nombres = (data['nombres'] ?? '').toString();
+                          final apellidos =
+                              (data['apellidos'] ?? '').toString();
+                          final numero = (data['matricula'] ?? '').toString();
+                          final grado = (data['grado'] ?? '').toString();
+                          final edad = (data['edad'] ?? '').toString();
+                          final status =
+                              (data['status'] ?? 'activo').toString();
 
-                      final key = ('$nombres $apellidos $numero').toLowerCase();
-                      return {
-                        'id': d.id,
-                        'nombres': nombres,
-                        'apellidos': apellidos,
-                        'numero': numero,
-                        'grado': grado,
-                        'edad': edad,
-                        'status': status,
-                        'key': key,
-                      };
-                    })
-                    .where((x) => x != null)
-                    .cast<Map<String, dynamic>>()
-                    .toList();
+                          final key =
+                              ('$nombres $apellidos $numero').toLowerCase();
+                          return {
+                            'id': d.id,
+                            'nombres': nombres,
+                            'apellidos': apellidos,
+                            'numero': numero,
+                            'grado': grado,
+                            'edad': edad,
+                            'status': status,
+                            'key': key,
+                          };
+                        })
+                        .where((x) => x != null)
+                        .cast<Map<String, dynamic>>()
+                        .toList();
 
                 final q = search.trim().toLowerCase();
-                final filtered = q.isEmpty
-                    ? rows
-                    : rows.where((r) => (r['key'] as String).contains(q)).toList();
+                final filtered =
+                    q.isEmpty
+                        ? rows
+                        : rows
+                            .where((r) => (r['key'] as String).contains(q))
+                            .toList();
 
                 filtered.sort((a, b) {
                   final aa = '${a['apellidos']} ${a['nombres']}'.toLowerCase();
@@ -1889,16 +1938,18 @@ class _ListPanel extends StatelessWidget {
 
                 return Container(
                   decoration: BoxDecoration(
-                    border: Border.all(color: Colors.grey.shade300),
-                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: RegistroEquipoColors.border),
+                    borderRadius: BorderRadius.circular(14),
                   ),
                   child: Column(
                     children: [
                       Container(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 10),
+                          horizontal: 12,
+                          vertical: 10,
+                        ),
                         decoration: BoxDecoration(
-                          color: _blue.withOpacity(0.06),
+                          color: const Color(0xFFF0F2FF),
                           borderRadius: const BorderRadius.vertical(
                             top: Radius.circular(12),
                           ),
@@ -1907,12 +1958,15 @@ class _ListPanel extends StatelessWidget {
                           children: [
                             Expanded(
                               child: Text(
-                                'Total: ${filtered.length}',
-                                style:
-                                    const TextStyle(fontWeight: FontWeight.w800),
+                                'Total de alumnos para el grado seleccionado: ${filtered.length}',
+                                style: const TextStyle(
+                                  color: RegistroEquipoColors.ink,
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 14,
+                                ),
                               ),
                             ),
-                            const Icon(Icons.people, color: _orange),
+                            const Icon(Icons.people_outline, color: _blue),
                           ],
                         ),
                       ),
@@ -1926,7 +1980,9 @@ class _ListPanel extends StatelessWidget {
                           final r = filtered[i];
                           final title = '${r['apellidos']}, ${r['nombres']}';
 
-                          final st = estadoFromDb((r['status'] ?? 'activo').toString());
+                          final st = estadoFromDb(
+                            (r['status'] ?? 'activo').toString(),
+                          );
                           final stColor = estadoColor(st);
 
                           final sub = [
@@ -1941,19 +1997,39 @@ class _ListPanel extends StatelessWidget {
 
                           return ListTile(
                             leading: CircleAvatar(
-                              backgroundColor: stColor.withOpacity(0.15),
+                              backgroundColor: stColor.withValues(alpha: 0.15),
                               child: Icon(estadoIcon(st), color: stColor),
                             ),
-                            title: Text(title, overflow: TextOverflow.ellipsis),
-                            subtitle: Text(sub, overflow: TextOverflow.ellipsis),
+                            title: Text(
+                              title,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: RegistroEquipoColors.ink,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            subtitle: Text(
+                              sub,
+                              maxLines: 3,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: RegistroEquipoColors.muted,
+                                fontSize: 13,
+                              ),
+                            ),
                             trailing: IconButton(
                               tooltip: 'Editar (próximo paso)',
-                              icon: const Icon(Icons.edit, color: _orange),
+                              icon: const Icon(
+                                Icons.edit_outlined,
+                                color: _blue,
+                              ),
                               onPressed: () {
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   const SnackBar(
                                     content: Text(
-                                        'Edición rápida: la hacemos en el próximo paso.'),
+                                      'Edición rápida: la hacemos en el próximo paso.',
+                                    ),
                                   ),
                                 );
                               },
@@ -1976,35 +2052,33 @@ class _NoGradosBanner extends StatelessWidget {
   final String nivelTxt;
   final VoidCallback onCrearGrado;
 
-  const _NoGradosBanner({
-    required this.nivelTxt,
-    required this.onCrearGrado,
-  });
+  const _NoGradosBanner({required this.nivelTxt, required this.onCrearGrado});
 
   @override
   Widget build(BuildContext context) {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: _orange.withOpacity(0.08),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: _orange.withOpacity(0.25)),
+        color: const Color(0xFFFFF4DF),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFECD49B)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.warning_amber_rounded, color: _orange),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              'No hay grados para $nivelTxt. Crea los grados para que aparezcan en el selector.',
-              style: const TextStyle(fontWeight: FontWeight.w700),
+          const Icon(Icons.info_outline_rounded, color: _orange),
+          const SizedBox(height: 8),
+          Text(
+            'No hay grados para $nivelTxt. Crea los grados para que aparezcan en el selector.',
+            style: const TextStyle(
+              color: RegistroEquipoColors.ink,
+              fontWeight: FontWeight.w700,
+              height: 1.4,
             ),
           ),
-          TextButton(
-            onPressed: onCrearGrado,
-            child: const Text('Crear grado'),
-          ),
+          const SizedBox(height: 8),
+          TextButton(onPressed: onCrearGrado, child: const Text('Crear grado')),
         ],
       ),
     );
@@ -2031,39 +2105,52 @@ class _CardShell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: EdgeInsets.all(MediaQuery.sizeOf(context).width < 600 ? 16 : 22),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.grey.shade300),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: RegistroEquipoColors.border),
         color: background,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.03),
-            blurRadius: 10,
-            offset: const Offset(0, 3),
-          )
-        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              icon,
-              const SizedBox(width: 10),
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEDEFFF),
+                  borderRadius: BorderRadius.circular(13),
+                ),
+                child: icon,
+              ),
+              const SizedBox(width: 12),
               Expanded(
                 child: Text(
                   title,
-                  style:
-                      const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
-                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: RegistroEquipoColors.ink,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 17,
+                    height: 1.3,
+                  ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 6),
-          Text(subtitle, style: TextStyle(color: Colors.grey.shade700)),
-          const SizedBox(height: 12),
+          if (subtitle.trim().isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              subtitle,
+              style: const TextStyle(
+                color: RegistroEquipoColors.muted,
+                fontSize: 13.5,
+                height: 1.4,
+              ),
+            ),
+          ],
+          const SizedBox(height: 20),
           child,
         ],
       ),
@@ -2077,19 +2164,32 @@ class _SectionTitle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Container(
-          width: 10,
-          height: 10,
-          decoration: BoxDecoration(
-            color: _orange,
-            borderRadius: BorderRadius.circular(3),
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Row(
+        children: [
+          Container(
+            width: 4,
+            height: 20,
+            decoration: BoxDecoration(
+              color: _orange,
+              borderRadius: BorderRadius.circular(4),
+            ),
           ),
-        ),
-        const SizedBox(width: 8),
-        Text(text, style: const TextStyle(fontWeight: FontWeight.w900)),
-      ],
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                color: RegistroEquipoColors.ink,
+                fontSize: 16,
+                fontWeight: FontWeight.w800,
+                height: 1.3,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -2098,53 +2198,20 @@ class _NivelSwitcher extends StatelessWidget {
   final NivelAcademico value;
   final ValueChanged<NivelAcademico> onChanged;
 
-  const _NivelSwitcher({
-    required this.value,
-    required this.onChanged,
-  });
+  const _NivelSwitcher({required this.value, required this.onChanged});
 
   @override
   Widget build(BuildContext context) {
-    Widget chip(NivelAcademico n) {
-      final selected = n == value;
-      return Expanded(
-        child: InkWell(
-          borderRadius: BorderRadius.circular(999),
-          onTap: () => onChanged(n),
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 10),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(999),
-              border: Border.all(color: selected ? _blue : Colors.grey.shade300),
-              color: selected ? _blue.withOpacity(0.08) : Colors.white,
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(nivelIcon(n),
-                    size: 18, color: selected ? _blue : Colors.grey.shade700),
-                const SizedBox(width: 8),
-                Text(
-                  nivelLabel(n),
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                    color: selected ? _blue : Colors.grey.shade800,
-                  ),
-                ),
-              ],
-            ),
+    return RegistroEquipoChoiceWrap(
+      choices: [
+        for (final n in NivelAcademico.values)
+          RegistroEquipoChoiceTile(
+            label: nivelLabel(n),
+            icon: nivelIcon(n),
+            selected: n == value,
+            accent: _blue,
+            onTap: () => onChanged(n),
           ),
-        ),
-      );
-    }
-
-    return Row(
-      children: [
-        chip(NivelAcademico.inicial),
-        const SizedBox(width: 8),
-        chip(NivelAcademico.primaria),
-        const SizedBox(width: 8),
-        chip(NivelAcademico.secundaria),
       ],
     );
   }
@@ -2154,58 +2221,20 @@ class _EstadoSwitcher extends StatelessWidget {
   final EstadoAlumno value;
   final ValueChanged<EstadoAlumno> onChanged;
 
-  const _EstadoSwitcher({
-    required this.value,
-    required this.onChanged,
-  });
+  const _EstadoSwitcher({required this.value, required this.onChanged});
 
   @override
   Widget build(BuildContext context) {
-    Widget chip(EstadoAlumno e) {
-      final selected = e == value;
-      final c = estadoColor(e);
-
-      return Expanded(
-        child: InkWell(
-          borderRadius: BorderRadius.circular(999),
-          onTap: () => onChanged(e),
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 10),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(999),
-              border: Border.all(
-                color: selected ? c : Colors.grey.shade300,
-                width: selected ? 1.5 : 1,
-              ),
-              color: selected ? c.withOpacity(0.12) : Colors.white,
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(estadoIcon(e),
-                    size: 18, color: selected ? c : Colors.grey.shade700),
-                const SizedBox(width: 8),
-                Text(
-                  estadoLabel(e),
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                    color: selected ? c : Colors.grey.shade800,
-                  ),
-                ),
-              ],
-            ),
+    return RegistroEquipoChoiceWrap(
+      choices: [
+        for (final e in EstadoAlumno.values)
+          RegistroEquipoChoiceTile(
+            label: estadoLabel(e),
+            icon: estadoIcon(e),
+            selected: e == value,
+            accent: estadoColor(e),
+            onTap: () => onChanged(e),
           ),
-        ),
-      );
-    }
-
-    return Row(
-      children: [
-        chip(EstadoAlumno.activo),
-        const SizedBox(width: 8),
-        chip(EstadoAlumno.pendiente),
-        const SizedBox(width: 8),
-        chip(EstadoAlumno.bloqueado),
       ],
     );
   }

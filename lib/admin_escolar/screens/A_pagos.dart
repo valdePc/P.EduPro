@@ -167,7 +167,6 @@ class _APagosState extends State<APagos> {
       if (override != null && override.isNotEmpty) {
         _schoolIdRaw = override;
         _schoolId = _cleanSchoolId(override);
-        debugPrint('APagos schoolId override=$_schoolIdRaw -> clean=$_schoolId');
         setState(() => _resolvingSchool = false);
         return;
       }
@@ -179,7 +178,6 @@ class _APagosState extends State<APagos> {
       final byDoc = await _tryResolveByDocId(candidateClean);
       if (byDoc != null) {
         _schoolId = byDoc;
-        debugPrint('APagos resolved by docId candidate=$_schoolIdRaw -> $_schoolId');
         setState(() => _resolvingSchool = false);
         return;
       }
@@ -204,9 +202,6 @@ class _APagosState extends State<APagos> {
       }
 
       _schoolId = resolved.trim();
-      debugPrint(
-        'APagos resolved schoolId: candidate=$_schoolIdRaw ($candidateClean) | uid=$uid -> schoolId=$_schoolId',
-      );
 
       setState(() => _resolvingSchool = false);
     } catch (e) {

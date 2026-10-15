@@ -2,13 +2,14 @@
 import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:edupro/services/edupro_trusted_device_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../widgets/sidebar_menu.dart';
 import '../widgets/config_menu.dart';
+import '../widgets/team_section_navigation.dart';
 
 class SeguridadScreen extends StatefulWidget {
   const SeguridadScreen({super.key});
@@ -26,15 +27,17 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
   static const Color _kPageBg = Color(0xFFF0F0F0);
   static const Color _kCardBg = Color(0xFFF7F2FA);
 
-  // Estado local (persistido en SharedPreferences)
   bool _twoFA = false;
-  List<String> _devices = ['Firefox – Windows', 'Safari – iOS'];
-  List<String> _ips = ['192.168.1.100', '203.0.113.42'];
-  List<String> _history = [
-    '2025-05-07 10:15 — Inicio de sesión exitoso',
-    '2025-05-06 22:03 — Intento fallido (IP 203.0.113.5)',
-    '2025-05-05 14:27 — Cambio de contraseña',
-  ];
+  List<String> _devices = <String>[];
+  List<Map<String, String>> _deviceEntries = <Map<String, String>>[];
+  List<String> _ips = <String>[];
+  List<String> _history = <String>[];
+  List<String> _blockedIps = <String>[];
+  List<String> _blockedDevices = <String>[];
+  List<Map<String, String>> _pendingDeviceEntries = <Map<String, String>>[];
+  String? _currentDeviceId;
+  String? _currentDeviceLabel;
+  bool _currentDeviceLoading = true;
 
   final _ipController = TextEditingController();
   final _deviceController = TextEditingController();
@@ -43,13 +46,11 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
   // Firestore
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
-  // Key para SharedPreferences
-  static const _prefsKey = 'seguridad_config_v1';
-
   @override
   void initState() {
     super.initState();
-    _loadPrefs();
+    _loadSecurityState();
+    _loadCurrentDeviceIdentity();
   }
 
   @override
@@ -65,59 +66,233 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
       elevation: 0,
       toolbarHeight: 64,
       automaticallyImplyLeading: isMobile,
+      leading:
+          isMobile
+              ? null
+              : TeamSectionNavigation.backButton(
+                context,
+                targetRoute: '/configuracion',
+                color: Colors.white,
+              ),
       iconTheme: const IconThemeData(color: Colors.white),
       title: const SizedBox.shrink(),
-      actions: const [
-        Center(
-          child: Padding(
-            padding: EdgeInsets.only(right: 24),
-            child: Text(
-              'Configuración General',
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
+      actions: [
+        if (isMobile)
+          TeamSectionNavigation.backButton(
+            context,
+            targetRoute: '/configuracion',
+            color: Colors.white,
+          ),
+        if (!isMobile)
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.only(right: 24),
+              child: Text(
+                'Configuración General',
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
           ),
-        ),
       ],
     );
   }
 
-  Future<void> _loadPrefs() async {
-    setState(() => _loading = true);
+  DocumentReference<Map<String, dynamic>> _securityDocRef() {
+    return _db.collection('app_config').doc('security');
+  }
+
+  String _timestampLabel() {
+    final now = DateTime.now();
+    return DateFormat('yyyy-MM-dd HH:mm').format(now);
+  }
+
+  List<Map<String, String>> _normalizeDeviceEntries(dynamic rawEntries) {
+    if (rawEntries is List) {
+      final parsed =
+          rawEntries
+              .map((entry) {
+                if (entry is Map) {
+                  final deviceId = (entry['deviceId'] ?? '').toString().trim();
+                  final deviceLabel =
+                      (entry['deviceLabel'] ?? entry['label'] ?? '')
+                          .toString()
+                          .trim();
+                  if (deviceId.isEmpty || deviceLabel.isEmpty) return null;
+                  return <String, String>{
+                    'deviceId': deviceId,
+                    'deviceLabel': deviceLabel,
+                  };
+                }
+                return null;
+              })
+              .whereType<Map<String, String>>()
+              .toList();
+      if (parsed.isNotEmpty) return parsed;
+    }
+
+    if (rawEntries is List) {
+      return rawEntries
+          .map((value) => value.toString().trim())
+          .where((value) => value.isNotEmpty)
+          .map(
+            (value) => <String, String>{
+              'deviceId': value,
+              'deviceLabel': value,
+            },
+          )
+          .toList();
+    }
+
+    return <Map<String, String>>[];
+  }
+
+  void _syncDeviceLabelsFromEntries() {
+    _devices =
+        _deviceEntries
+            .map((entry) => (entry['deviceLabel'] ?? '').trim())
+            .where((label) => label.isNotEmpty)
+            .toList();
+  }
+
+  List<Map<String, String>> _normalizePendingDeviceEntries(dynamic rawEntries) {
+    if (rawEntries is! List) return <Map<String, String>>[];
+    return rawEntries
+        .map((entry) {
+          if (entry is! Map) return null;
+          final deviceId = (entry['deviceId'] ?? '').toString().trim();
+          final deviceLabel =
+              (entry['deviceLabel'] ?? entry['label'] ?? '').toString().trim();
+          if (deviceId.isEmpty || deviceLabel.isEmpty) return null;
+          return <String, String>{
+            'deviceId': deviceId,
+            'deviceLabel': deviceLabel,
+            'audience': (entry['audience'] ?? '').toString().trim(),
+            'schoolId': (entry['schoolId'] ?? '').toString().trim(),
+            'lastAttemptAt': (entry['lastAttemptAt'] ?? '').toString().trim(),
+          };
+        })
+        .whereType<Map<String, String>>()
+        .toList();
+  }
+
+  bool get _currentDeviceTrusted {
+    final currentId = (_currentDeviceId ?? '').trim();
+    if (currentId.isEmpty) return false;
+    return _deviceEntries.any((entry) => entry['deviceId'] == currentId);
+  }
+
+  Future<void> _loadCurrentDeviceIdentity() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_prefsKey);
-      if (raw != null && raw.isNotEmpty) {
-        final Map<String, dynamic> data = jsonDecode(raw);
-        _twoFA = data['twoFA'] == true;
-        _devices = List<String>.from(data['devices'] ?? _devices);
-        _ips = List<String>.from(data['ips'] ?? _ips);
-        _history = List<String>.from(data['history'] ?? _history);
-      }
+      final identity = await EduProTrustedDeviceService.currentIdentity();
+      if (!mounted) return;
+      setState(() {
+        _currentDeviceId = identity.deviceId;
+        _currentDeviceLabel = identity.deviceLabel;
+        _currentDeviceLoading = false;
+      });
     } catch (_) {
-      // defaults
-    } finally {
-      if (mounted) setState(() => _loading = false);
+      if (!mounted) return;
+      setState(() => _currentDeviceLoading = false);
+    }
+  }
+
+  List<String> _historyWithEntry(String message) {
+    final next = <String>['${_timestampLabel()} — $message', ..._history];
+    if (next.length > 80) {
+      return next.take(80).toList();
+    }
+    return next;
+  }
+
+  Future<void> _saveSecurityState({
+    bool showSavedMessage = true,
+    String? historyEntry,
+  }) async {
+    _syncDeviceLabelsFromEntries();
+    final nextHistory =
+        historyEntry == null
+            ? List<String>.from(_history)
+            : _historyWithEntry(historyEntry);
+
+    await _securityDocRef().set({
+      'twoFAEnabled': _twoFA,
+      'trustedDevices': _devices,
+      'trustedDeviceEntries': _deviceEntries,
+      'allowedIps': _ips,
+      'securityHistory': nextHistory,
+      'blockedIps': _blockedIps,
+      'blockedDevices': _blockedDevices,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    if (historyEntry != null && mounted) {
+      setState(() => _history = nextHistory);
+    }
+
+    if (showSavedMessage && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Ajustes de seguridad guardados')),
+      );
     }
   }
 
   Future<void> _savePrefs() async {
-    final prefs = await SharedPreferences.getInstance();
-    final out = {
-      'twoFA': _twoFA,
-      'devices': _devices,
-      'ips': _ips,
-      'history': _history,
-    };
-    await prefs.setString(_prefsKey, jsonEncode(out));
+    await _saveSecurityState(showSavedMessage: false);
+  }
+
+  Future<void> _loadSecurityState() async {
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Ajustes de seguridad guardados')),
-      );
+      setState(() {
+        _loading = true;
+      });
+    }
+    try {
+      final doc = await _securityDocRef().get();
+      final data = doc.data() ?? const <String, dynamic>{};
+      if (!mounted) return;
+      setState(() {
+        _twoFA = data['twoFAEnabled'] == true;
+        _deviceEntries = _normalizeDeviceEntries(
+          data['trustedDeviceEntries'] ??
+              data['trustedDevices'] ??
+              const <String>[],
+        );
+        _syncDeviceLabelsFromEntries();
+        _ips = List<String>.from(data['allowedIps'] ?? const <String>[]);
+        _history = List<String>.from(
+          data['securityHistory'] ?? const <String>[],
+        );
+        _blockedIps = List<String>.from(data['blockedIps'] ?? const <String>[]);
+        _blockedDevices = List<String>.from(
+          data['blockedDevices'] ?? const <String>[],
+        );
+        _pendingDeviceEntries = _normalizePendingDeviceEntries(
+          data['pendingTrustedDeviceEntries'] ?? const <dynamic>[],
+        );
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _twoFA = false;
+        _devices = <String>[];
+        _deviceEntries = <Map<String, String>>[];
+        _ips = <String>[];
+        _history = <String>[];
+        _blockedIps = <String>[];
+        _blockedDevices = <String>[];
+        _pendingDeviceEntries = <Map<String, String>>[];
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+        });
+      }
     }
   }
 
@@ -134,21 +309,22 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
   Future<bool?> _confirmDialog(String title, String body) {
     return showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(title),
-        content: Text(body),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancelar'),
+      builder:
+          (ctx) => AlertDialog(
+            title: Text(title),
+            content: Text(body),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancelar'),
+              ),
+              ElevatedButton(
+                style: _blueButtonStyle(),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Confirmar'),
+              ),
+            ],
           ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: _kEduProBlue),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Confirmar'),
-          ),
-        ],
-      ),
     );
   }
 
@@ -156,6 +332,7 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
     final map = {
       'twoFA': _twoFA,
       'devices': _devices,
+      'trustedDeviceEntries': _deviceEntries,
       'ips': _ips,
       'history': _history,
     };
@@ -163,7 +340,9 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
     await Clipboard.setData(ClipboardData(text: jsonStr));
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Configuración copiada al portapapeles (JSON)')),
+        const SnackBar(
+          content: Text('Configuración copiada al portapapeles (JSON)'),
+        ),
       );
     }
   }
@@ -173,31 +352,53 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
     final text = data?.text ?? '';
     if (text.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Portapapeles vacío')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Portapapeles vacío')));
       }
       return;
     }
     try {
       final Map<String, dynamic> map = jsonDecode(text);
       setState(() {
-        _twoFA = map['twoFA'] == true;
-        _devices = List<String>.from(map['devices'] ?? []);
-        _ips = List<String>.from(map['ips'] ?? []);
-        _history = List<String>.from(map['history'] ?? []);
+        _twoFA = map['twoFAEnabled'] == true || map['twoFA'] == true;
+        _deviceEntries = _normalizeDeviceEntries(
+          map['trustedDeviceEntries'] ??
+              map['trustedDevices'] ??
+              map['devices'] ??
+              const <String>[],
+        );
+        _syncDeviceLabelsFromEntries();
+        _ips = List<String>.from(
+          map['allowedIps'] ?? map['ips'] ?? const <String>[],
+        );
+        _history = List<String>.from(
+          map['securityHistory'] ?? map['history'] ?? const <String>[],
+        );
+        _blockedIps = List<String>.from(map['blockedIps'] ?? const <String>[]);
+        _blockedDevices = List<String>.from(
+          map['blockedDevices'] ?? const <String>[],
+        );
+        _pendingDeviceEntries = _normalizePendingDeviceEntries(
+          map['pendingTrustedDeviceEntries'] ?? const <dynamic>[],
+        );
       });
-      await _savePrefs();
+      await _saveSecurityState(
+        historyEntry: 'Configuracion importada desde portapapeles',
+      );
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('JSON inválido')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('JSON inválido')));
       }
     }
   }
 
-  Future<void> _blockIp(String ip, {String reason = 'admin_block'}) async {
+  Future<void> _blockIpLegacy(
+    String ip, {
+    String reason = 'admin_block',
+  }) async {
     try {
       await _db.collection('blocked_ips').doc(ip).set({
         'blockedAt': FieldValue.serverTimestamp(),
@@ -212,18 +413,23 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
       });
       await _savePrefs();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('IP bloqueada')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('IP bloqueada')));
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error bloqueando IP: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error bloqueando IP: $e')));
       }
     }
   }
 
-  Future<void> _blockDevice(String device, {String reason = 'admin_block'}) async {
+  Future<void> _blockDeviceLegacy(
+    String device, {
+    String reason = 'admin_block',
+  }) async {
     try {
       final id = device.hashCode.toString();
       await _db.collection('blocked_devices').doc(id).set({
@@ -240,7 +446,9 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
       });
       await _savePrefs();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Dispositivo bloqueado')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Dispositivo bloqueado')));
       }
     } catch (e) {
       if (mounted) {
@@ -251,18 +459,244 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
     }
   }
 
+  Future<void> _blockIp(String ip) async {
+    if (_blockedIps.contains(ip)) return;
+    setState(() => _blockedIps = <String>[ip, ..._blockedIps]);
+    try {
+      await _saveSecurityState(
+        showSavedMessage: false,
+        historyEntry: 'IP bloqueada manualmente: $ip',
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('IP bloqueada')));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _blockedIps.remove(ip));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error bloqueando IP: $e')));
+    }
+  }
+
+  Future<void> _blockDevice(String device) async {
+    if (_blockedDevices.contains(device)) return;
+    setState(() => _blockedDevices = <String>[device, ..._blockedDevices]);
+    try {
+      await _saveSecurityState(
+        showSavedMessage: false,
+        historyEntry: 'Dispositivo bloqueado manualmente: $device',
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Dispositivo bloqueado')));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _blockedDevices.remove(device));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error bloqueando dispositivo: $e')),
+      );
+    }
+  }
+
+  Future<void> _addCurrentTrustedDevice() async {
+    final deviceId = (_currentDeviceId ?? '').trim();
+    final deviceLabel = (_currentDeviceLabel ?? '').trim();
+    if (deviceId.isEmpty || deviceLabel.isEmpty) return;
+    if (_deviceEntries.any((entry) => entry['deviceId'] == deviceId)) return;
+
+    setState(() {
+      _deviceEntries = <Map<String, String>>[
+        <String, String>{'deviceId': deviceId, 'deviceLabel': deviceLabel},
+        ..._deviceEntries,
+      ];
+      _syncDeviceLabelsFromEntries();
+    });
+
+    try {
+      await _saveSecurityState(
+        showSavedMessage: false,
+        historyEntry: 'Dispositivo confiable agregado: $deviceLabel',
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Dispositivo actual agregado como confiable'),
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _deviceEntries.removeWhere((entry) => entry['deviceId'] == deviceId);
+        _syncDeviceLabelsFromEntries();
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo guardar el dispositivo: $e')),
+      );
+    }
+  }
+
+  Future<void> _removeTrustedDevice(Map<String, String> entry) async {
+    final deviceId = (entry['deviceId'] ?? '').trim();
+    final deviceLabel = (entry['deviceLabel'] ?? '').trim();
+    if (deviceId.isEmpty) return;
+
+    setState(() {
+      _deviceEntries.removeWhere((row) => row['deviceId'] == deviceId);
+      _syncDeviceLabelsFromEntries();
+    });
+
+    try {
+      await _saveSecurityState(
+        showSavedMessage: false,
+        historyEntry: 'Dispositivo confiable eliminado: $deviceLabel',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _deviceEntries = <Map<String, String>>[entry, ..._deviceEntries];
+        _syncDeviceLabelsFromEntries();
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo eliminar el dispositivo: $e')),
+      );
+    }
+  }
+
+  Future<void> _approvePendingDevice(Map<String, String> entry) async {
+    final deviceId = (entry['deviceId'] ?? '').trim();
+    final deviceLabel = (entry['deviceLabel'] ?? '').trim();
+    if (deviceId.isEmpty || deviceLabel.isEmpty) return;
+
+    if (!_deviceEntries.any((row) => row['deviceId'] == deviceId)) {
+      _deviceEntries = <Map<String, String>>[
+        <String, String>{'deviceId': deviceId, 'deviceLabel': deviceLabel},
+        ..._deviceEntries,
+      ];
+    }
+    _pendingDeviceEntries.removeWhere((row) => row['deviceId'] == deviceId);
+
+    setState(() {
+      _syncDeviceLabelsFromEntries();
+    });
+
+    try {
+      await _securityDocRef().set({
+        'trustedDevices': _devices,
+        'trustedDeviceEntries': _deviceEntries,
+        'pendingTrustedDeviceEntries': _pendingDeviceEntries,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      await _saveSecurityState(
+        showSavedMessage: false,
+        historyEntry: 'Dispositivo aprobado como confiable: $deviceLabel',
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Dispositivo aprobado')));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo aprobar el dispositivo: $e')),
+      );
+      await _loadSecurityState();
+    }
+  }
+
+  Future<void> _discardPendingDevice(Map<String, String> entry) async {
+    final deviceId = (entry['deviceId'] ?? '').trim();
+    final deviceLabel = (entry['deviceLabel'] ?? '').trim();
+    if (deviceId.isEmpty) return;
+
+    setState(() {
+      _pendingDeviceEntries.removeWhere((row) => row['deviceId'] == deviceId);
+    });
+
+    try {
+      await _securityDocRef().set({
+        'pendingTrustedDeviceEntries': _pendingDeviceEntries,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      await _saveSecurityState(
+        showSavedMessage: false,
+        historyEntry: 'Solicitud de dispositivo descartada: $deviceLabel',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo descartar el dispositivo: $e')),
+      );
+      await _loadSecurityState();
+    }
+  }
+
+  ButtonStyle _blueButtonStyle() {
+    return ElevatedButton.styleFrom(
+      backgroundColor: _kEduProBlue,
+      foregroundColor: Colors.white,
+      disabledBackgroundColor: _kEduProBlue.withOpacity(0.55),
+      disabledForegroundColor: Colors.white70,
+    );
+  }
+
   Widget _logsWidget({int limit = 50}) {
+    final entries = _history.take(limit).toList();
+    return Padding(
+      padding: const EdgeInsets.all(8),
+      child:
+          entries.isEmpty
+              ? const Text('No hay eventos reales registrados en seguridad.')
+              : Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children:
+                    entries
+                        .map(
+                          (entry) => ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: const Icon(Icons.history_rounded),
+                            title: Text(entry),
+                          ),
+                        )
+                        .toList(),
+              ),
+    );
+  }
+
+  Widget _logsWidgetLegacy({int limit = 50}) {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: _db
-          .collection('access_logs')
-          .orderBy('timestamp', descending: true)
-          .limit(limit)
-          .snapshots(),
+      stream:
+          _db
+              .collection('access_logs')
+              .orderBy('timestamp', descending: true)
+              .limit(limit)
+              .snapshots(),
       builder: (context, snap) {
         if (snap.connectionState == ConnectionState.waiting) {
           return const Padding(
             padding: EdgeInsets.all(16),
             child: Center(child: CircularProgressIndicator()),
+          );
+        }
+        if (snap.hasError) {
+          final msg = snap.error.toString();
+          final permissionDenied =
+              msg.contains('permission-denied') ||
+              msg.contains('insufficient permissions');
+          return Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text(
+              permissionDenied
+                  ? 'Los logs globales no estan habilitados para lectura con la configuracion actual de Firestore.'
+                  : 'No se pudieron leer los logs globales: $msg',
+            ),
           );
         }
         if (!snap.hasData || snap.data!.docs.isEmpty) {
@@ -274,74 +708,107 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
 
         final docs = snap.data!.docs;
 
-        final rows = docs.map((d) {
-          final data = d.data();
-          final ts = data['timestamp'] as Timestamp?;
-          final fecha = ts != null ? DateFormat.yMd().add_Hm().format(ts.toDate()) : '-';
-          final ip = (data['ip'] ?? '-') as String;
-          final device = (data['device'] ?? '-') as String;
-          final user = (data['username'] ?? data['userId'] ?? '-') as String;
-          final route = (data['route'] ?? '-') as String;
-          final action = (data['action'] ?? '-') as String;
-          final risk = (data['riskScore'] ?? 0).toString();
-          final flags = (data['suspiciousFlags'] ?? []).join(', ');
+        final rows =
+            docs.map((d) {
+              final data = d.data();
+              final ts = data['timestamp'] as Timestamp?;
+              final fecha =
+                  ts != null
+                      ? DateFormat.yMd().add_Hm().format(ts.toDate())
+                      : '-';
+              final ip = (data['ip'] ?? '-') as String;
+              final device = (data['device'] ?? '-') as String;
+              final user =
+                  (data['username'] ?? data['userId'] ?? '-') as String;
+              final route = (data['route'] ?? '-') as String;
+              final action = (data['action'] ?? '-') as String;
+              final risk = (data['riskScore'] ?? 0).toString();
+              final flags = (data['suspiciousFlags'] ?? []).join(', ');
 
-          return DataRow(cells: [
-            DataCell(Text(fecha)),
-            DataCell(Text(ip)),
-            DataCell(SizedBox(width: 160, child: Text(device, overflow: TextOverflow.ellipsis))),
-            DataCell(SizedBox(width: 120, child: Text(user, overflow: TextOverflow.ellipsis))),
-            DataCell(SizedBox(width: 120, child: Text(route, overflow: TextOverflow.ellipsis))),
-            DataCell(Text(action)),
-            DataCell(Text(risk)),
-            DataCell(
-              IconButton(
-                icon: const Icon(Icons.info_outline),
-                tooltip: 'Ver flags',
-                onPressed: () {
-                  showDialog(
-                    context: context,
-                    builder: (_) => AlertDialog(
-                      title: const Text('Detalles de evento'),
-                      content: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('IP: $ip'),
-                          Text('Device: $device'),
-                          Text('Usuario: $user'),
-                          Text('Ruta: $route'),
-                          Text('Acción: $action'),
-                          const SizedBox(height: 8),
-                          Text('Flags: $flags'),
-                        ],
-                      ),
-                      actions: [
-                        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cerrar')),
-                        TextButton(
-                          onPressed: () async {
-                            Navigator.pop(context);
-                            final ok = await _confirmDialog('Bloquear IP', 'Bloquear IP $ip?');
-                            if (ok == true) await _blockIp(ip);
-                          },
-                          child: const Text('Bloquear IP'),
-                        ),
-                        TextButton(
-                          onPressed: () async {
-                            Navigator.pop(context);
-                            final ok = await _confirmDialog('Bloquear dispositivo', 'Bloquear dispositivo "$device"?');
-                            if (ok == true) await _blockDevice(device);
-                          },
-                          child: const Text('Bloquear dispositivo'),
-                        ),
-                      ],
+              return DataRow(
+                cells: [
+                  DataCell(Text(fecha)),
+                  DataCell(Text(ip)),
+                  DataCell(
+                    SizedBox(
+                      width: 160,
+                      child: Text(device, overflow: TextOverflow.ellipsis),
                     ),
-                  );
-                },
-              ),
-            ),
-          ]);
-        }).toList();
+                  ),
+                  DataCell(
+                    SizedBox(
+                      width: 120,
+                      child: Text(user, overflow: TextOverflow.ellipsis),
+                    ),
+                  ),
+                  DataCell(
+                    SizedBox(
+                      width: 120,
+                      child: Text(route, overflow: TextOverflow.ellipsis),
+                    ),
+                  ),
+                  DataCell(Text(action)),
+                  DataCell(Text(risk)),
+                  DataCell(
+                    IconButton(
+                      icon: const Icon(Icons.info_outline),
+                      tooltip: 'Ver flags',
+                      onPressed: () {
+                        showDialog(
+                          context: context,
+                          builder:
+                              (_) => AlertDialog(
+                                title: const Text('Detalles de evento'),
+                                content: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text('IP: $ip'),
+                                    Text('Device: $device'),
+                                    Text('Usuario: $user'),
+                                    Text('Ruta: $route'),
+                                    Text('Acción: $action'),
+                                    const SizedBox(height: 8),
+                                    Text('Flags: $flags'),
+                                  ],
+                                ),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () => Navigator.pop(context),
+                                    child: const Text('Cerrar'),
+                                  ),
+                                  TextButton(
+                                    onPressed: () async {
+                                      Navigator.pop(context);
+                                      final ok = await _confirmDialog(
+                                        'Bloquear IP',
+                                        'Bloquear IP $ip?',
+                                      );
+                                      if (ok == true) await _blockIp(ip);
+                                    },
+                                    child: const Text('Bloquear IP'),
+                                  ),
+                                  TextButton(
+                                    onPressed: () async {
+                                      Navigator.pop(context);
+                                      final ok = await _confirmDialog(
+                                        'Bloquear dispositivo',
+                                        'Bloquear dispositivo "$device"?',
+                                      );
+                                      if (ok == true)
+                                        await _blockDevice(device);
+                                    },
+                                    child: const Text('Bloquear dispositivo'),
+                                  ),
+                                ],
+                              ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              );
+            }).toList();
 
         return SingleChildScrollView(
           padding: const EdgeInsets.all(8),
@@ -365,18 +832,24 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
   }
 
   Widget _buildContent() {
-    final titleStyle = Theme.of(context).textTheme.titleLarge ??
+    final titleStyle =
+        Theme.of(context).textTheme.titleLarge ??
         const TextStyle(fontSize: 18, fontWeight: FontWeight.w600);
 
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
-        const Text('Seguridad', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800)),
+        const Text(
+          'Seguridad',
+          style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800),
+        ),
         const SizedBox(height: 16),
 
         SwitchListTile(
           title: const Text('Autenticación 2FA'),
-          subtitle: const Text('Protege tu cuenta con un segundo factor (ej. app autenticadora)'),
+          subtitle: const Text(
+            'Protege tu cuenta con un segundo factor (ej. app autenticadora)',
+          ),
           value: _twoFA,
           onChanged: (v) => setState(() => _twoFA = v),
           activeColor: _kEduProBlue,
@@ -386,34 +859,13 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
         Row(
           children: [
             ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(backgroundColor: _kEduProBlue),
-              onPressed: _savePrefs,
+              style: _blueButtonStyle(),
+              onPressed:
+                  () => _saveSecurityState(
+                    historyEntry: 'Configuracion de seguridad actualizada',
+                  ),
               icon: const Icon(Icons.save),
               label: const Text('Guardar cambios'),
-            ),
-            const SizedBox(width: 12),
-            OutlinedButton.icon(
-              onPressed: () async {
-                final ok = await _confirmDialog(
-                  'Restaurar valores por defecto',
-                  '¿Deseas restaurar la configuración de seguridad por defecto?',
-                );
-                if (ok == true) {
-                  setState(() {
-                    _twoFA = false;
-                    _devices = ['Firefox – Windows', 'Safari – iOS'];
-                    _ips = ['192.168.1.100', '203.0.113.42'];
-                    _history = [
-                      '2025-05-07 10:15 — Inicio de sesión exitoso',
-                      '2025-05-06 22:03 — Intento fallido (IP 203.0.113.5)',
-                      '2025-05-05 14:27 — Cambio de contraseña',
-                    ];
-                  });
-                  await _savePrefs();
-                }
-              },
-              icon: const Icon(Icons.restore),
-              label: const Text('Restaurar por defecto'),
             ),
             const SizedBox(width: 12),
             PopupMenuButton<String>(
@@ -422,12 +874,22 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
                 if (t == 'export') await _exportConfig();
                 if (t == 'import') await _importConfigFromClipboard();
               },
-              itemBuilder: (_) => const [
-                PopupMenuItem(value: 'export', child: Text('Exportar configuración (copiar JSON)')),
-                PopupMenuItem(value: 'import', child: Text('Importar desde portapapeles (JSON)')),
-              ],
+              itemBuilder:
+                  (_) => const [
+                    PopupMenuItem(
+                      value: 'export',
+                      child: Text('Exportar configuración (copiar JSON)'),
+                    ),
+                    PopupMenuItem(
+                      value: 'import',
+                      child: Text('Importar desde portapapeles (JSON)'),
+                    ),
+                  ],
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(6),
                   border: Border.all(color: Colors.grey.shade400),
@@ -449,61 +911,130 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
 
         ExpansionTile(
           title: const Text('Dispositivos confiables'),
-          subtitle: Text('${_devices.length} guardados'),
+          subtitle: Text('${_deviceEntries.length} guardados'),
           children: [
-            for (var d in List<String>.from(_devices))
+            ListTile(
+              leading: const Icon(Icons.devices_rounded),
+              title: Text(
+                _currentDeviceLoading
+                    ? 'Detectando dispositivo actual...'
+                    : (_currentDeviceLabel ??
+                        'No se pudo detectar el dispositivo'),
+              ),
+              subtitle: Text(
+                _currentDeviceTrusted
+                    ? 'Este dispositivo ya está marcado como confiable'
+                    : 'Úsalo para autorizar el equipo actual con datos reales',
+              ),
+              trailing: ElevatedButton.icon(
+                style: _blueButtonStyle(),
+                onPressed:
+                    _currentDeviceLoading ||
+                            _currentDeviceId == null ||
+                            _currentDeviceTrusted
+                        ? null
+                        : _addCurrentTrustedDevice,
+                icon: const Icon(Icons.verified_user_rounded),
+                label: Text(
+                  _currentDeviceTrusted ? 'Confiado' : 'Confiar este equipo',
+                ),
+              ),
+            ),
+            const Divider(height: 1),
+            for (final entry in List<Map<String, String>>.from(_deviceEntries))
               ListTile(
                 dense: true,
-                title: Text(d),
+                leading: const Icon(Icons.laptop_chromebook_rounded),
+                title: Text((entry['deviceLabel'] ?? '').trim()),
+                subtitle: Text(
+                  'ID: ${(entry['deviceId'] ?? '').trim().substring(0, ((entry['deviceId'] ?? '').trim().length < 12) ? (entry['deviceId'] ?? '').trim().length : 12)}...',
+                ),
                 trailing: IconButton(
                   icon: const Icon(Icons.delete, color: Colors.redAccent),
                   onPressed: () async {
-                    final ok = await _confirmDialog('Eliminar dispositivo', '¿Eliminar "$d" de la lista?');
+                    final label = (entry['deviceLabel'] ?? '').trim();
+                    final ok = await _confirmDialog(
+                      'Eliminar dispositivo',
+                      '¿Eliminar "$label" de la lista de dispositivos confiables?',
+                    );
                     if (ok == true) {
-                      setState(() => _devices.remove(d));
-                      await _savePrefs();
+                      await _removeTrustedDevice(entry);
                     }
                   },
                 ),
               ),
+            if (_deviceEntries.isEmpty)
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Aún no hay dispositivos confiables registrados. Si la lista queda vacía, no se aplicará restricción por dispositivo.',
+                  ),
+                ),
+              )
+            else
+              const SizedBox(height: 8),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _deviceController,
-                      decoration: const InputDecoration(
-                        labelText: 'Nuevo dispositivo (ej. Chrome – Windows)',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      onSubmitted: (val) async {
-                        final v = val.trim();
-                        if (v.isEmpty) return;
-                        setState(() => _devices.add(v));
-                        _deviceController.clear();
-                        await _savePrefs();
-                      },
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  ElevatedButton(
-                    style: ElevatedButton.styleFrom(backgroundColor: _kEduProBlue),
-                    onPressed: () async {
-                      final v = _deviceController.text.trim();
-                      if (v.isEmpty) return;
-                      setState(() {
-                        _devices.add(v);
-                        _deviceController.clear();
-                      });
-                      await _savePrefs();
-                    },
-                    child: const Text('Agregar'),
-                  ),
-                ],
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Cuando esta lista tiene equipos, solo esos dispositivos podrán entrar a admin general, admin escolar y docentes.',
+                  style: TextStyle(color: Colors.grey.shade700),
+                ),
               ),
             ),
+          ],
+        ),
+
+        const Divider(height: 24),
+
+        ExpansionTile(
+          title: const Text('Dispositivos pendientes por aprobar'),
+          subtitle: Text('${_pendingDeviceEntries.length} detectados'),
+          initiallyExpanded: _pendingDeviceEntries.isNotEmpty,
+          children: [
+            if (_pendingDeviceEntries.isEmpty)
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'No hay equipos nuevos pendientes. Cuando un dispositivo no confiable intente entrar, aparecerá aquí.',
+                  ),
+                ),
+              )
+            else
+              for (final entry in List<Map<String, String>>.from(
+                _pendingDeviceEntries,
+              ))
+                ListTile(
+                  leading: const Icon(Icons.device_unknown_rounded),
+                  title: Text((entry['deviceLabel'] ?? '').trim()),
+                  subtitle: Text(
+                    [
+                      if ((entry['audience'] ?? '').trim().isNotEmpty)
+                        'Acceso: ${(entry['audience'] ?? '').trim()}',
+                      if ((entry['schoolId'] ?? '').trim().isNotEmpty)
+                        'Colegio: ${(entry['schoolId'] ?? '').trim()}',
+                    ].join(' • '),
+                  ),
+                  trailing: Wrap(
+                    spacing: 8,
+                    children: [
+                      OutlinedButton(
+                        onPressed: () => _discardPendingDevice(entry),
+                        child: const Text('Descartar'),
+                      ),
+                      ElevatedButton(
+                        style: _blueButtonStyle(),
+                        onPressed: () => _approvePendingDevice(entry),
+                        child: const Text('Aprobar'),
+                      ),
+                    ],
+                  ),
+                ),
           ],
         ),
 
@@ -520,7 +1051,10 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
                 trailing: IconButton(
                   icon: const Icon(Icons.delete, color: Colors.redAccent),
                   onPressed: () async {
-                    final ok = await _confirmDialog('Eliminar IP', '¿Eliminar la IP $ip?');
+                    final ok = await _confirmDialog(
+                      'Eliminar IP',
+                      '¿Eliminar la IP $ip?',
+                    );
                     if (ok == true) {
                       setState(() => _ips.remove(ip));
                       await _savePrefs();
@@ -544,14 +1078,16 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
                   ),
                   const SizedBox(width: 8),
                   ElevatedButton(
-                    style: ElevatedButton.styleFrom(backgroundColor: _kEduProBlue),
+                    style: _blueButtonStyle(),
                     onPressed: () async {
                       final ip = _ipController.text.trim();
                       if (ip.isEmpty) return;
                       if (!_isValidIp(ip)) {
                         if (mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('IP inválida (usa formato IPv4)')),
+                            const SnackBar(
+                              content: Text('IP inválida (usa formato IPv4)'),
+                            ),
                           );
                         }
                         return;
@@ -559,7 +1095,9 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
                       if (_ips.contains(ip)) {
                         if (mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('IP ya está en la lista')),
+                            const SnackBar(
+                              content: Text('IP ya está en la lista'),
+                            ),
                           );
                         }
                         return;
@@ -581,9 +1119,10 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
         const Divider(height: 24),
 
         ExpansionTile(
-          title: const Text('Historial de acceso (local)'),
+          title: const Text('Historial real de seguridad'),
           children: [
-            for (final h in List<String>.from(_history)) ListTile(dense: true, title: Text(h)),
+            for (final h in List<String>.from(_history))
+              ListTile(dense: true, title: Text(h)),
             const SizedBox(height: 8),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -591,18 +1130,24 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
                 children: [
                   OutlinedButton(
                     onPressed: () async {
-                      final ok = await _confirmDialog('Borrar historial', '¿Deseas borrar todo el historial local?');
+                      final ok = await _confirmDialog(
+                        'Borrar historial',
+                        'Deseas borrar todo el historial real guardado?',
+                      );
                       if (ok == true) {
                         setState(() => _history.clear());
-                        await _savePrefs();
+                        await _saveSecurityState(showSavedMessage: false);
                       }
                     },
                     child: const Text('Borrar historial'),
                   ),
                   const SizedBox(width: 12),
                   ElevatedButton(
-                    style: ElevatedButton.styleFrom(backgroundColor: _kEduProBlue),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _kEduProBlue,
+                    ),
                     onPressed: () {
+                      return;
                       setState(() {
                         final now = DateTime.now();
                         final pretty =
@@ -612,7 +1157,7 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
                       });
                       _savePrefs();
                     },
-                    child: const Text('Simular evento'),
+                    child: const Text('Solo lectura'),
                   ),
                 ],
               ),
@@ -624,7 +1169,7 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
 
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 8),
-          child: Text('Logs globales (Firestore)', style: titleStyle),
+          child: Text('Estado real en Firestore', style: titleStyle),
         ),
         const SizedBox(height: 8),
 
@@ -639,29 +1184,54 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
                     const Text('Últimos eventos:'),
                     const SizedBox(width: 12),
                     ElevatedButton(
-                      style: ElevatedButton.styleFrom(backgroundColor: _kEduProBlue),
-                      onPressed: () => showDialog(
-                        context: context,
-                        builder: (_) => AlertDialog(
-                          title: const Text('Información'),
-                          content: const Text('La tabla muestra eventos. Desde ahí puedes bloquear IPs o dispositivos.'),
-                          actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cerrar'))],
-                        ),
-                      ),
+                      style: _blueButtonStyle(),
+                      onPressed:
+                          () => showDialog(
+                            context: context,
+                            builder:
+                                (_) => AlertDialog(
+                                  title: const Text('Información'),
+                                  content: const Text(
+                                    'La tabla muestra eventos. Desde ahí puedes bloquear IPs o dispositivos.',
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.pop(context),
+                                      child: const Text('Cerrar'),
+                                    ),
+                                  ],
+                                ),
+                          ),
                       child: const Text('¿Cómo funciona?'),
                     ),
                     const Spacer(),
                     ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(backgroundColor: _kEduProBlue),
-                      onPressed: () => _db.collection('access_logs').limit(1).get().then((_) {
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Conectado a Firestore')));
-                        }
-                      }).catchError((e) {
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error conexión Firestore: $e')));
-                        }
-                      }),
+                      style: _blueButtonStyle(),
+                      onPressed:
+                          () => _securityDocRef()
+                              .get()
+                              .then((_) {
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text(
+                                        'Conectado a Firestore y configuracion de seguridad disponible',
+                                      ),
+                                    ),
+                                  );
+                                }
+                              })
+                              .catchError((e) {
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        'Error conexión Firestore: $e',
+                                      ),
+                                    ),
+                                  );
+                                }
+                              }),
                       icon: const Icon(Icons.refresh),
                       label: const Text('Probar conexión'),
                     ),
@@ -685,7 +1255,10 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
   Widget build(BuildContext context) {
     final isMobile = MediaQuery.of(context).size.width < 800;
     if (_loading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return Scaffold(
+        appBar: _buildTopBar(isMobile: isMobile),
+        body: const Center(child: CircularProgressIndicator()),
+      );
     }
 
     final routeNow = ModalRoute.of(context)?.settings.name ?? currentRoute;
@@ -709,46 +1282,59 @@ class _SeguridadScreenState extends State<SeguridadScreen> {
     return Scaffold(
       backgroundColor: _kPageBg,
       appBar: _buildTopBar(isMobile: isMobile),
-      drawer: isMobile
-          ? Drawer(
-              backgroundColor: _kEduProBlue,
-              child: SidebarMenu(currentRoute: currentRoute, onItemSelected: go),
-            )
-          : null,
-      body: isMobile
-          ? Column(
-              children: [
-                ConfigMenu(selectedKey: selectedKey, onItemSelected: go),
-                Expanded(child: wrappedContent()),
-              ],
-            )
-          : Row(
-              children: [
-                Container(
-                  width: 260,
-                  color: _kEduProBlue,
-                  child: SidebarMenu(currentRoute: currentRoute, onItemSelected: go),
+      drawer:
+          isMobile
+              ? Drawer(
+                backgroundColor: _kEduProBlue,
+                child: SidebarMenu(
+                  currentRoute: currentRoute,
+                  onItemSelected: go,
                 ),
-
-                // ✅ borde azul + submenú blanco (igual a Branding)
-                Container(
-                  width: 286, // 6px borde + 280 menú
-                  decoration: const BoxDecoration(
-                    color: Colors.white,
-                    border: Border(left: BorderSide(color: _kEduProBlue, width: 6)),
+              )
+              : null,
+      body:
+          isMobile
+              ? Column(
+                children: [
+                  ConfigMenu(selectedKey: selectedKey, onItemSelected: go),
+                  Expanded(child: wrappedContent()),
+                ],
+              )
+              : Row(
+                children: [
+                  Container(
+                    width: 260,
+                    color: _kEduProBlue,
+                    child: SidebarMenu(
+                      currentRoute: currentRoute,
+                      onItemSelected: go,
+                    ),
                   ),
-                  child: ConfigMenu(selectedKey: selectedKey, onItemSelected: go),
-                ),
 
-                const SizedBox(width: 24),
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.only(right: 24),
-                    child: wrappedContent(),
+                  // ✅ borde azul + submenú blanco (igual a Branding)
+                  Container(
+                    width: 286, // 6px borde + 280 menú
+                    decoration: const BoxDecoration(
+                      color: Colors.white,
+                      border: Border(
+                        left: BorderSide(color: _kEduProBlue, width: 6),
+                      ),
+                    ),
+                    child: ConfigMenu(
+                      selectedKey: selectedKey,
+                      onItemSelected: go,
+                    ),
                   ),
-                ),
-              ],
-            ),
+
+                  const SizedBox(width: 24),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.only(right: 24),
+                      child: wrappedContent(),
+                    ),
+                  ),
+                ],
+              ),
     );
   }
 }

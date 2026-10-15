@@ -5,7 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import 'package:edupro/models/escuela.dart';
-import 'package:edupro/utils/school_utils.dart' show normalizeSchoolIdFromEscuela;
+import 'package:edupro/utils/school_utils.dart'
+    show normalizeSchoolIdFromEscuela;
 
 class AGrados extends StatefulWidget {
   final Escuela escuela;
@@ -17,8 +18,10 @@ class AGrados extends StatefulWidget {
 }
 
 class _AGradosState extends State<AGrados> {
-  static const _blue = Color(0xFF0D47A1);
-  static const _orange = Color(0xFFFFA000);
+  static const _blue = Color(0xFF1A237E);
+  static const _ink = Color(0xFF17243A);
+  static const _muted = Color(0xFF5C687A);
+  static const _page = Color(0xFFF4F6FB);
 
   final TextEditingController _gradoCtrl = TextEditingController();
   bool _saving = false;
@@ -35,8 +38,9 @@ class _AGradosState extends State<AGrados> {
     super.initState();
 
     final rawId = normalizeSchoolIdFromEscuela(widget.escuela);
-    final schoolDocId =
-        rawId.startsWith('eduproapp_admin_') ? rawId : 'eduproapp_admin_$rawId';
+
+    // ✅ ID real de la escuela (sin prefijo)
+    final schoolDocId = rawId;
 
     _gradosCol = FirebaseFirestore.instance
         .collection('schools')
@@ -100,24 +104,23 @@ class _AGradosState extends State<AGrados> {
         return;
       }
 
-final docRef = _gradosCol.doc(); // genera el ID antes de guardar
+      final docRef = _gradosCol.doc(); // genera el ID antes de guardar
 
-await docRef.set({
-  'gradeId': docRef.id, // ✅ NUEVO: visible y coincide con el docId
-  'name': finalName,
-  'gradoKey': key,
-  'nivel': nivel,
-  'createdAt': FieldValue.serverTimestamp(),
-  'updatedAt': FieldValue.serverTimestamp(),
-});
+      await docRef.set({
+        'gradeId': docRef.id, // ✅ NUEVO: visible y coincide con el docId
+        'name': finalName,
+        'gradoKey': key,
+        'nivel': nivel,
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
 
       _gradoCtrl.clear();
     } catch (e) {
-      debugPrint('Error al agregar grado: $e');
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error: $e')));
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -128,8 +131,7 @@ await docRef.set({
     if (data == null) return;
 
     // Si ya existe nivel, úsalo; si no, intenta inferir por el nombre.
-    final existingNivel =
-        (data['nivel'] ?? '').toString().trim().toLowerCase();
+    final existingNivel = (data['nivel'] ?? '').toString().trim().toLowerCase();
     String nivelUi = _nivelSel;
     if (existingNivel == 'inicial') nivelUi = 'Inicial';
     if (existingNivel == 'primaria') nivelUi = 'Primaria';
@@ -140,9 +142,12 @@ await docRef.set({
     // Para editar, quitamos " de X" al final si coincide
     String base = rawName;
     final low = rawName.toLowerCase();
-    if (low.endsWith(' de primaria')) base = rawName.substring(0, rawName.length - ' de Primaria'.length);
-    if (low.endsWith(' de secundaria')) base = rawName.substring(0, rawName.length - ' de Secundaria'.length);
-    if (low.endsWith(' de inicial')) base = rawName.substring(0, rawName.length - ' de Inicial'.length);
+    if (low.endsWith(' de primaria'))
+      base = rawName.substring(0, rawName.length - ' de Primaria'.length);
+    if (low.endsWith(' de secundaria'))
+      base = rawName.substring(0, rawName.length - ' de Secundaria'.length);
+    if (low.endsWith(' de inicial'))
+      base = rawName.substring(0, rawName.length - ' de Inicial'.length);
     base = base.trim();
 
     final editCtrl = TextEditingController(text: base);
@@ -151,45 +156,55 @@ await docRef.set({
 
     final result = await showDialog<bool>(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (_, setModal) => AlertDialog(
-          title: const Text('Editar grado'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: editCtrl,
-                decoration: const InputDecoration(
-                  labelText: 'Nombre del grado',
-                  hintText: 'Ej: 5to A, 6to B, 3ro',
+      builder:
+          (ctx) => StatefulBuilder(
+            builder:
+                (_, setModal) => AlertDialog(
+                  title: const Text('Editar grado'),
+                  content: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextField(
+                        controller: editCtrl,
+                        decoration: const InputDecoration(
+                          labelText: 'Nombre del grado',
+                          hintText: 'Ej: 5to A, 6to B, 3ro',
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        value: tempNivelUi,
+                        items:
+                            _niveles
+                                .map(
+                                  (n) => DropdownMenuItem(
+                                    value: n,
+                                    child: Text(n),
+                                  ),
+                                )
+                                .toList(),
+                        onChanged:
+                            (v) =>
+                                setModal(() => tempNivelUi = v ?? tempNivelUi),
+                        decoration: const InputDecoration(
+                          labelText: 'Nivel',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ],
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: const Text('Cancelar'),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: const Text('Guardar'),
+                    ),
+                  ],
                 ),
-              ),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                value: tempNivelUi,
-                items: _niveles
-                    .map((n) => DropdownMenuItem(value: n, child: Text(n)))
-                    .toList(),
-                onChanged: (v) => setModal(() => tempNivelUi = v ?? tempNivelUi),
-                decoration: const InputDecoration(
-                  labelText: 'Nivel',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancelar'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Guardar'),
-            ),
-          ],
-        ),
-      ),
     );
 
     if (result != true) return;
@@ -220,11 +235,10 @@ await docRef.set({
         'updatedAt': FieldValue.serverTimestamp(),
       });
     } catch (e) {
-      debugPrint('Error al editar grado: $e');
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error: $e')));
     }
   }
 
@@ -233,20 +247,21 @@ await docRef.set({
 
     final confirm = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Eliminar grado'),
-        content: Text('¿Seguro que quieres eliminar "$name"?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancelar'),
+      builder:
+          (ctx) => AlertDialog(
+            title: const Text('Eliminar grado'),
+            content: Text('¿Seguro que quieres eliminar "$name"?'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancelar'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Eliminar'),
+              ),
+            ],
           ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Eliminar'),
-          ),
-        ],
-      ),
     );
 
     if (confirm != true) return;
@@ -254,124 +269,261 @@ await docRef.set({
     try {
       await _gradosCol.doc(doc.id).delete();
     } catch (e) {
-      debugPrint('Error al eliminar grado: $e');
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error: $e')));
     }
   }
 
   Widget _buildHeader() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'Grados de la escuela',
-          style: TextStyle(
-            fontSize: 22,
-            fontWeight: FontWeight.bold,
-            color: _blue,
-          ),
+    final compact = MediaQuery.sizeOf(context).width < 700;
+    final schoolName = (widget.escuela.nombre ?? '').trim();
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.all(compact ? 19 : 25),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [_blue, Color(0xFF3949AB)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
         ),
-        const SizedBox(height: 4),
-        Text(
-          widget.escuela.nombre ?? '',
-          style: TextStyle(
-            color: Colors.grey.shade700,
-            fontSize: 14,
+        borderRadius: BorderRadius.circular(22),
+        boxShadow: [
+          BoxShadow(
+            color: _blue.withOpacity(0.16),
+            blurRadius: 22,
+            offset: const Offset(0, 9),
           ),
-        ),
-        const SizedBox(height: 12),
-        Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: _blue.withOpacity(0.04),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: const Text(
-            'Aquí la administración define los grados de la institución.\n'
-            'Ahora cada grado indica si es Inicial, Primaria o Secundaria.',
-            style: TextStyle(fontSize: 13),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildForm() {
-    return Card(
-      elevation: 1,
-      margin: const EdgeInsets.only(top: 16, bottom: 12),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Agregar nuevo grado',
-              style: TextStyle(
-                fontWeight: FontWeight.w600,
-                color: _blue,
-              ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: compact ? 48 : 56,
+            height: compact ? 48 : 56,
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(17),
             ),
-            const SizedBox(height: 12),
-            Row(
+            child: const Icon(
+              Icons.school_rounded,
+              color: Colors.white,
+              size: 29,
+            ),
+          ),
+          const SizedBox(width: 15),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: TextField(
-                    controller: _gradoCtrl,
-                    decoration: const InputDecoration(
-                      labelText: 'Nombre del grado',
-                      hintText: 'Ej: 4to A, 2do, Pre-K',
-                    ),
-                    onSubmitted: (_) {
-                      if (!_saving) _addGrado();
-                    },
+                Text(
+                  'Grados de la escuela',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: compact ? 19 : 22,
+                    fontWeight: FontWeight.w800,
                   ),
                 ),
-                const SizedBox(width: 12),
-                SizedBox(
-                  width: 170,
-                  child: DropdownButtonFormField<String>(
-                    value: _nivelSel,
-                    items: _niveles
-                        .map((n) =>
-                            DropdownMenuItem(value: n, child: Text(n)))
-                        .toList(),
-                    onChanged:
-                        _saving ? null : (v) => setState(() => _nivelSel = v ?? _nivelSel),
-                    decoration: const InputDecoration(
-                      labelText: 'Nivel',
-                      border: OutlineInputBorder(),
+                if (schoolName.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    schoolName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xFFE5E9FF),
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
                     ),
+                  ),
+                ],
+                const SizedBox(height: 8),
+                const Text(
+                  'Define los niveles y organiza los grados que utilizará la comunidad escolar.',
+                  style: TextStyle(
+                    color: Color(0xFFE5E9FF),
+                    fontSize: 14,
+                    height: 1.4,
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 12),
-            Align(
-              alignment: Alignment.centerRight,
-              child: ElevatedButton.icon(
-                onPressed: _saving ? null : _addGrado,
-                icon: _saving
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.add),
-                label: const Text('Agregar'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: _orange,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-                ),
-              ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildForm() {
+    return Container(
+      margin: const EdgeInsets.only(top: 16, bottom: 16),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFE5EAF2)),
+        boxShadow: [
+          BoxShadow(
+            color: _blue.withOpacity(0.035),
+            blurRadius: 16,
+            offset: const Offset(0, 5),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Agregar un grado',
+            style: TextStyle(
+              color: _ink,
+              fontSize: 17,
+              fontWeight: FontWeight.w800,
             ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Escribe el nombre y selecciona el nivel académico.',
+            style: TextStyle(color: _muted, fontSize: 13, height: 1.4),
+          ),
+          const SizedBox(height: 16),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final compact = constraints.maxWidth < 620;
+              final fieldDecoration =
+                  (String label, String hint, IconData icon) => InputDecoration(
+                    labelText: label,
+                    hintText: hint,
+                    prefixIcon: Icon(icon, color: _blue, size: 20),
+                    filled: true,
+                    fillColor: const Color(0xFFF8F9FC),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 15,
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide.none,
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: const BorderSide(color: Color(0xFFE1E6EF)),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: const BorderSide(color: _blue, width: 1.4),
+                    ),
+                  );
+              final nameField = TextField(
+                controller: _gradoCtrl,
+                textCapitalization: TextCapitalization.words,
+                decoration: fieldDecoration(
+                  'Nombre del grado',
+                  'Ej: 4to A, 2do, Pre-K',
+                  Icons.edit_note_rounded,
+                ),
+                onSubmitted: (_) {
+                  if (!_saving) _addGrado();
+                },
+              );
+              final levelField = DropdownButtonFormField<String>(
+                value: _nivelSel,
+                isExpanded: true,
+                items:
+                    _niveles
+                        .map(
+                          (level) => DropdownMenuItem(
+                            value: level,
+                            child: Text(level),
+                          ),
+                        )
+                        .toList(),
+                onChanged:
+                    _saving
+                        ? null
+                        : (value) =>
+                            setState(() => _nivelSel = value ?? _nivelSel),
+                decoration: fieldDecoration(
+                  'Nivel académico',
+                  'Selecciona el nivel',
+                  Icons.school_outlined,
+                ),
+              );
+              if (compact) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    nameField,
+                    const SizedBox(height: 11),
+                    levelField,
+                    const SizedBox(height: 13),
+                    SizedBox(
+                      height: 50,
+                      child: FilledButton.icon(
+                        onPressed: _saving ? null : _addGrado,
+                        icon:
+                            _saving
+                                ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
+                                : const Icon(Icons.add_rounded),
+                        label: const Text('Agregar grado'),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: _blue,
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              }
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(flex: 3, child: nameField),
+                  const SizedBox(width: 12),
+                  Expanded(flex: 2, child: levelField),
+                  const SizedBox(width: 12),
+                  SizedBox(
+                    height: 56,
+                    child: FilledButton.icon(
+                      onPressed: _saving ? null : _addGrado,
+                      icon:
+                          _saving
+                              ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                              : const Icon(Icons.add_rounded),
+                      label: const Text('Agregar'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: _blue,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 18),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        ],
       ),
     );
   }
@@ -426,7 +578,8 @@ await docRef.set({
               final dt = createdAt.toDate();
               final createdTxt =
                   'Creado: ${DateFormat.yMMMd().add_Hm().format(dt)}';
-              subtitle = subtitle.isEmpty ? createdTxt : '$subtitle • $createdTxt';
+              subtitle =
+                  subtitle.isEmpty ? createdTxt : '$subtitle • $createdTxt';
             }
 
             return Card(
@@ -441,8 +594,10 @@ await docRef.set({
                   backgroundColor: _blue.withOpacity(0.1),
                   child: const Icon(Icons.view_agenda, color: _blue),
                 ),
-                title:
-                    Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
+                title: Text(
+                  name,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
                 subtitle: subtitle.isNotEmpty ? Text(subtitle) : null,
                 trailing: Wrap(
                   spacing: 4,
@@ -469,28 +624,53 @@ await docRef.set({
 
   @override
   Widget build(BuildContext context) {
-    final isMobile = MediaQuery.of(context).size.width < 720;
-
+    final compact = MediaQuery.sizeOf(context).width < 720;
     return Scaffold(
+      backgroundColor: _page,
       appBar: AppBar(
         title: const Text('Grados'),
         backgroundColor: _blue,
+        foregroundColor: Colors.white,
       ),
-      body: Padding(
-        padding: EdgeInsets.all(isMobile ? 16 : 24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildHeader(),
-            _buildForm(),
-            const SizedBox(height: 4),
-            const Text(
-              'Lista de grados',
-              style: TextStyle(fontWeight: FontWeight.w600, color: _blue),
-            ),
-            const SizedBox(height: 8),
-            Expanded(child: _buildGradosList()),
-          ],
+      body: SafeArea(
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(
+            compact ? 14 : 26,
+            17,
+            compact ? 14 : 26,
+            10,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _buildHeader(),
+              _buildForm(),
+              const Padding(
+                padding: EdgeInsets.only(bottom: 10),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.format_list_bulleted_rounded,
+                      color: _blue,
+                      size: 20,
+                    ),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Grados configurados',
+                        style: TextStyle(
+                          color: _ink,
+                          fontSize: 17,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(child: _buildGradosList()),
+            ],
+          ),
         ),
       ),
     );

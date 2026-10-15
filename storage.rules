@@ -1,0 +1,230 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function signedIn() {
+      // Temporary registrar accounts use authenticated server uploads. They
+      // cannot reuse school member/student permissions or public signed-in data.
+      return request.auth != null
+        && request.auth.token.get('eduproRegistro', false) != true
+        && !request.auth.uid.matches('^reg_.*');
+    }
+
+    function emailLower() {
+      return (signedIn()
+        && request.auth.token.get('email_verified', false) == true
+        && request.auth.token.get('email', '') is string)
+        ? request.auth.token.email.lower()
+        : "";
+    }
+
+    function memberRef(schoolId) {
+      return /databases/(default)/documents/schools/$(schoolId)/members/$(request.auth.uid);
+    }
+
+    function memberExists(schoolId) {
+      return signedIn() && firestore.exists(memberRef(schoolId));
+    }
+
+    function memberEnabled(schoolId) {
+      return memberExists(schoolId)
+        && firestore.get(memberRef(schoolId)).data.get('enabled', true) == true;
+    }
+
+    function memberRoleLower(schoolId) {
+      let d = firestore.get(memberRef(schoolId)).data;
+      let role = d.get('role', d.get('rol', d.get('enrol', '')));
+      return role is string ? role.lower() : '';
+    }
+
+    function isAdminForSchool(schoolId) {
+      return memberEnabled(schoolId)
+        && memberRoleLower(schoolId) in ["admin", "admin_escolar"];
+    }
+
+    function isTeacherForSchool(schoolId) {
+      return memberEnabled(schoolId)
+        && memberRoleLower(schoolId) in ["teacher", "docente"];
+    }
+
+    function isStudentForSchool(schoolId) {
+      return hasAlumnosLogin(schoolId);
+    }
+
+    function alumnosLoginUidRef(schoolId) {
+      return /databases/(default)/documents/schools/$(schoolId)/alumnos_login/$(request.auth.uid);
+    }
+
+    function alumnosLoginEmailRef(schoolId) {
+      return /databases/(default)/documents/schools/$(schoolId)/alumnos_login/$(emailLower());
+    }
+
+    function hasAlumnosLogin(schoolId) {
+      return signedIn()
+        && (
+          firestore.exists(alumnosLoginUidRef(schoolId))
+          || (emailLower() != "" && firestore.exists(alumnosLoginEmailRef(schoolId)))
+        )
+        && alumnoLoginData(schoolId).get('enabled', true) == true
+        && alumnoLoginData(schoolId).get('schoolId', schoolId) == schoolId;
+    }
+
+    function alumnoLoginData(schoolId) {
+      return firestore.exists(alumnosLoginUidRef(schoolId))
+        ? firestore.get(alumnosLoginUidRef(schoolId)).data
+        : firestore.get(alumnosLoginEmailRef(schoolId)).data;
+    }
+
+    function canAccessSchoolStorage(schoolId) {
+      return signedIn()
+        && (
+          isAdminForSchool(schoolId)
+          || isTeacherForSchool(schoolId)
+          || isStudentForSchool(schoolId)
+          || hasAlumnosLogin(schoolId)
+        );
+    }
+
+    function teacherUidRef(schoolId) {
+      return /databases/(default)/documents/schools/$(schoolId)/teachers_uid/$(request.auth.uid);
+    }
+
+    function myTeacherDocId(schoolId) {
+      return firestore.exists(teacherUidRef(schoolId))
+        ? (
+            (firestore.get(teacherUidRef(schoolId)).data.teacherDocId is string)
+              ? firestore.get(teacherUidRef(schoolId)).data.teacherDocId
+              : ""
+          )
+        : (
+            memberExists(schoolId)
+              && (firestore.get(memberRef(schoolId)).data.teacherDocId is string)
+                ? firestore.get(memberRef(schoolId)).data.teacherDocId
+                : ""
+          );
+    }
+
+    function studentPhotoRecordRef(schoolId, alumnoId) {
+      return /databases/(default)/documents/schools/$(schoolId)/alumnos/$(alumnoId);
+    }
+
+    function canReadOwnStudentPhoto(schoolId, alumnoId) {
+      let alumno = firestore.get(studentPhotoRecordRef(schoolId, alumnoId)).data;
+      return signedIn()
+        && alumno.get('enabled', true) == true
+        && (
+          alumno.get('authUid', '') == request.auth.uid
+          || (emailLower() != ''
+            && alumno.get('accesosEmails', []) is list
+            && emailLower() in alumno.get('accesosEmails', []))
+        );
+    }
+
+    function validStudentProfilePhoto(fileName) {
+      return request.resource.size > 0
+        && request.resource.size < 5 * 1024 * 1024
+        && (
+          (fileName == 'profile.jpg' && request.resource.contentType == 'image/jpeg')
+          || (fileName == 'profile.png' && request.resource.contentType == 'image/png')
+        );
+    }
+
+    match /schools/{schoolId}/alumnos/{alumnoId}/{fileName} {
+      // At most two Firestore documents: member and student record. A Google
+      // account must have a verified email explicitly linked to this student.
+      allow get: if signedIn()
+        && fileName in ['profile.jpg', 'profile.png']
+        && (isAdminForSchool(schoolId) || canReadOwnStudentPhoto(schoolId, alumnoId));
+      allow list: if false;
+
+      // Registration photos go through the validating callable and Admin SDK.
+      // Existing school administrators retain their management workflow.
+      allow create, update: if isAdminForSchool(schoolId)
+        && validStudentProfilePhoto(fileName);
+      allow delete: if isAdminForSchool(schoolId)
+        && fileName in ['profile.jpg', 'profile.png'];
+    }
+
+    match /schools/{schoolId}/teachers/{teacherDocId}/{allPaths=**} {
+      allow read: if canAccessSchoolStorage(schoolId);
+      allow write: if signedIn()
+        && (
+          isAdminForSchool(schoolId)
+          || (
+            isTeacherForSchool(schoolId)
+            && myTeacherDocId(schoolId) != ""
+            && myTeacherDocId(schoolId) == teacherDocId
+          )
+        )
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+
+    match /schools/{schoolId}/chat_uploads/{allPaths=**} {
+      allow read: if canAccessSchoolStorage(schoolId);
+
+      // Existing messages may point at this object: school members cannot
+      // replace another participant's attachment by guessing its path.
+      allow create: if resource == null && canAccessSchoolStorage(schoolId)
+        && request.resource.size < 25 * 1024 * 1024
+        && (
+          request.resource.contentType.matches('image/.*')
+          || request.resource.contentType == 'application/pdf'
+          || request.resource.contentType == 'application/msword'
+          || request.resource.contentType == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+          || request.resource.contentType == 'application/octet-stream'
+        );
+      allow update, delete: if false;
+    }
+
+    match /schools/{schoolId}/material_apoyo/{teacherDocId}/{allPaths=**} {
+      allow read: if canAccessSchoolStorage(schoolId);
+
+      allow write: if signedIn()
+        && (
+          isAdminForSchool(schoolId)
+          || (
+            isTeacherForSchool(schoolId)
+            && myTeacherDocId(schoolId) != ""
+            && myTeacherDocId(schoolId) == teacherDocId
+          )
+        )
+        && request.resource.size < 25 * 1024 * 1024
+        && (
+          request.resource.contentType.matches('image/.*')
+          || request.resource.contentType == 'application/pdf'
+          || request.resource.contentType == 'application/msword'
+          || request.resource.contentType == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+          || request.resource.contentType == 'application/vnd.ms-powerpoint'
+          || request.resource.contentType == 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+          || request.resource.contentType == 'application/vnd.ms-excel'
+          || request.resource.contentType == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          || request.resource.contentType == 'application/octet-stream'
+        );
+    }
+
+    match /schools/{schoolId}/calendario/{allPaths=**} {
+      allow read: if canAccessSchoolStorage(schoolId);
+
+      allow write: if signedIn()
+        && isAdminForSchool(schoolId)
+        && request.resource.size < 25 * 1024 * 1024
+        && (
+          request.resource.contentType == 'application/pdf'
+          || request.resource.contentType == 'application/octet-stream'
+        );
+    }
+
+    match /calendario/{allPaths=**} {
+      allow read: if signedIn();
+
+      allow write: if false;
+    }
+
+    match /curriculo/base/{allPaths=**} {
+      allow read: if signedIn();
+
+      allow write: if false;
+    }
+  }
+}

@@ -1,5 +1,6 @@
 // lib/admin_escolar/widgets/admin_shell.dart
 import 'package:flutter/material.dart';
+import 'package:edupro/widgets/app_info_menu.dart';
 
 /// AdminShell: layout con sidebar persistente (izquierda) y área de contenido (derecha).
 /// Ahora soporta un ValueNotifier<int> controller para sincronizar el índice desde fuera.
@@ -89,7 +90,15 @@ class _AdminShellState extends State<AdminShell> {
     final sidebar = _buildSidebar();
 
     return Scaffold(
-      appBar: isWide ? null : AppBar(title: Text(widget.navItems[_currentIndex].label), backgroundColor: Colors.blue.shade900),
+      appBar: isWide
+          ? null
+          : AppBar(
+              title: Text(widget.navItems[_currentIndex].label),
+              backgroundColor: Colors.blue.shade900,
+              actions: const [
+                AppInfoMenuButton(),
+              ],
+            ),
       drawer: isWide ? null : Drawer(child: sidebar),
       body: Row(
         children: [
@@ -147,6 +156,15 @@ class _AdminShellState extends State<AdminShell> {
               icon: const Icon(Icons.copy),
               label: const Text('Copiar enlaces'),
               style: ElevatedButton.styleFrom(backgroundColor: Colors.blue.shade900),
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(12, 0, 12, 8),
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: AppInfoMenuButton(
+                iconColor: Color(0xFF0D47A1),
+              ),
             ),
           ),
           const SizedBox(height: 12),

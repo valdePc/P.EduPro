@@ -6,11 +6,16 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 
 import 'package:edupro/models/escuela.dart';
-import 'package:edupro/utils/school_utils.dart' show normalizeSchoolIdFromEscuela;
+import 'package:edupro/services/edupro_two_factor_service.dart';
+import 'package:edupro/services/edupro_trusted_device_service.dart';
+import 'package:edupro/utils/school_utils.dart'
+    show lookupSchoolPublicMeta, normalizeSchoolIdFromEscuela;
 import 'package:edupro/admin_escolar/screens/A_pizarra.dart';
 import 'package:edupro/admin_escolar/screens/registro_equipo_screen.dart';
+import 'package:edupro/admin_escolar/services/school_registration_session.dart';
 
 enum _AuthMode { login, register }
 
@@ -19,12 +24,14 @@ class AdminLoginEscolarScreen extends StatefulWidget {
   const AdminLoginEscolarScreen({super.key, required this.escuela});
 
   @override
-  State<AdminLoginEscolarScreen> createState() => _AdminLoginEscolarScreenState();
+  State<AdminLoginEscolarScreen> createState() =>
+      _AdminLoginEscolarScreenState();
 }
 
 class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
   final _codeCtrl = TextEditingController(); // código para registro
   final _db = FirebaseFirestore.instance;
+  final _fn = FirebaseFunctions.instanceFor(region: 'us-central1');
 
   bool _loading = false;
   _AuthMode _mode = _AuthMode.login;
@@ -37,8 +44,10 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
   // ------------------------------------------------------------
   // BYPASS TEMPORAL (SOLO DEV): activar con --dart-define
   // ------------------------------------------------------------
-  static const bool _devBypassDefine =
-      bool.fromEnvironment('EDUPRO_ADMIN_BYPASS', defaultValue: false);
+  static const bool _devBypassDefine = bool.fromEnvironment(
+    'EDUPRO_ADMIN_BYPASS',
+    defaultValue: false,
+  );
 
   bool get _devBypassEnabled => !kReleaseMode && _devBypassDefine;
 
@@ -51,23 +60,24 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
 
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Acceso rápido (DEV)'),
-        content: const Text(
-          'Esto salta el login y entra directo al panel.\n'
-          'Úsalo solo mientras terminas la configuración.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancelar'),
+      builder:
+          (_) => AlertDialog(
+            title: const Text('Acceso rápido (DEV)'),
+            content: const Text(
+              'Esto salta el login y entra directo al panel.\n'
+              'Úsalo solo mientras terminas la configuración.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancelar'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Entrar'),
+              ),
+            ],
           ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Entrar'),
-          ),
-        ],
-      ),
     );
 
     if (ok == true) {
@@ -108,7 +118,11 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
   void _goToPizarra() {
     Navigator.pushReplacement(
       context,
-      MaterialPageRoute(builder: (_) => APizarra(escuela: widget.escuela)),
+      MaterialPageRoute(
+        builder:
+            (_) =>
+                APizarra(escuela: widget.escuela, schoolIdOverride: _schoolId),
+      ),
     );
   }
 
@@ -131,9 +145,33 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
     if (s.isEmpty) return null;
 
     final uri = Uri.tryParse(s);
-    if (uri != null && uri.pathSegments.isNotEmpty) {
-      final last = uri.pathSegments.last.trim();
-      if (last.isNotEmpty) return last;
+    if (uri != null) {
+      // eduproapp://<schoolId>/<module>
+      if (uri.scheme.toLowerCase() == 'eduproapp' &&
+          uri.host.trim().isNotEmpty) {
+        return uri.host.trim();
+      }
+
+      // https://.../#/eduproapp/<schoolId>/<module>
+      List<String> segs = uri.pathSegments;
+      if (segs.isEmpty && uri.fragment.isNotEmpty) {
+        final frag =
+            uri.fragment.startsWith('/')
+                ? uri.fragment.substring(1)
+                : uri.fragment;
+        segs = Uri.parse('/$frag').pathSegments;
+      }
+      final idx = segs.indexWhere((e) => e.toLowerCase() == 'eduproapp');
+      if (idx >= 0 && segs.length > idx + 1) {
+        final sid = segs[idx + 1].trim();
+        if (sid.isNotEmpty) return sid;
+      }
+
+      // legacy: toma último segmento
+      if (uri.pathSegments.isNotEmpty) {
+        final last = uri.pathSegments.last.trim();
+        if (last.isNotEmpty) return last;
+      }
     }
 
     final m = RegExp(r'/([^/?#]+)$').firstMatch(s);
@@ -179,7 +217,8 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
       alt,
     ]);
 
-    _schoolId = _schoolIdCandidates.isNotEmpty ? _schoolIdCandidates.first : primary;
+    _schoolId =
+        _schoolIdCandidates.isNotEmpty ? _schoolIdCandidates.first : primary;
 
     await _resolveSchoolIdAndLoad();
   }
@@ -189,20 +228,45 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
 
     try {
       String chosen = _schoolId;
+      Map<String, dynamic>? publicData;
+      var schoolFound = false;
 
       for (final candidate in _schoolIdCandidates) {
-        final d = await _db.collection('schools').doc(candidate).get();
-        if (d.exists) {
-          chosen = candidate;
+        final lookup = await lookupSchoolPublicMeta(_db, candidate);
+        if (lookup != null) {
+          chosen = lookup.schoolId;
+          publicData = lookup.data;
+          schoolFound = true;
           break;
         }
       }
 
-      _schoolId = chosen;
+      if (!schoolFound) {
+        for (final candidate in _schoolIdCandidates) {
+          try {
+            final snap = await _db.collection('schools').doc(candidate).get();
+            if (!snap.exists) continue;
+            chosen = snap.id;
+            publicData = snap.data();
+            schoolFound = true;
+            break;
+          } on FirebaseException catch (e) {
+            if (e.code == 'permission-denied') {
+              continue;
+            }
+          } catch (_) {
+            continue;
+          }
+        }
+      }
 
-      final schoolDoc = await _db.collection('schools').doc(_schoolId).get();
-      _schoolDocFound = schoolDoc.exists;
-      _schoolData = schoolDoc.data();
+      if (!schoolFound) {
+        // Si la ficha pública aún no existe, dejamos el fallback visual por schoolId.
+      }
+
+      _schoolId = chosen;
+      _schoolDocFound = schoolFound || chosen.trim().isNotEmpty;
+      _schoolData = publicData ?? <String, dynamic>{'active': true};
     } catch (_) {
       // no rompas el login
     } finally {
@@ -220,50 +284,144 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
     setState(() => _mode = m);
   }
 
-  // ------------------------------------------------------------
-  // ✅ Para leer el código en modo Registro, intenta auth anónimo
-  // (Sirve si tus Rules requieren request.auth != null)
-  // ------------------------------------------------------------
-  Future<void> _ensureAnonAuthForRegistro() async {
-    final auth = FirebaseAuth.instance;
-    if (auth.currentUser != null) return;
+  Future<Map<String, dynamic>> _validateRegistroAccess(String code) async {
+    final callable = _fn.httpsCallable('validateSchoolRegistroAccess');
+    final resp = await callable.call(<String, dynamic>{
+      'schoolId': _schoolId,
+      'code': code,
+    });
 
-    try {
-      await auth.signInAnonymously();
-    } on FirebaseAuthException catch (e) {
-      if (e.code == 'operation-not-allowed') {
-        // Si no está habilitado Anonymous, no rompas el flujo.
-      }
-    } catch (_) {}
+    final raw = resp.data;
+    if (raw is Map) {
+      return raw.map((key, value) => MapEntry('$key', value));
+    }
+    return const <String, dynamic>{};
   }
 
-  // ------------------------------------------------------------
-  // ✅ Lee la contraseña EXACTA como se guardó en A_registro:
-  // schools/{schoolId}/config/registro.password
-  // - prueba en todos los candidates
-  // - si la encuentra, fija _schoolId a ese candidato
-  // ------------------------------------------------------------
-  Future<String> _loadRegistroPasswordAny() async {
-    await _ensureAnonAuthForRegistro();
+  String _rateLimitSchoolId() {
+    final resolved = _schoolId.trim();
+    if (resolved.isNotEmpty) return resolved;
+    return normalizeSchoolIdFromEscuela(widget.escuela).trim();
+  }
 
-    final ordered = _uniqueInOrder([_schoolId, ..._schoolIdCandidates]);
+  Future<Map<String, dynamic>> _callAdminLoginRateLimit({
+    required String operation,
+    required String attemptFlow,
+    String? reason,
+  }) async {
+    final callable = _fn.httpsCallable('adminSchoolLoginRateLimit');
+    final resp = await callable.call(<String, dynamic>{
+      'operation': operation,
+      'attemptFlow': attemptFlow,
+      'schoolId': _rateLimitSchoolId(),
+      if (reason != null && reason.trim().isNotEmpty) 'reason': reason.trim(),
+    });
 
-    for (final sid in ordered) {
-      final d = await _db
-          .collection('schools')
-          .doc(sid)
-          .collection('config')
-          .doc('registro')
-          .get();
+    final raw = resp.data;
+    if (raw is Map) {
+      return raw.map((key, value) => MapEntry('$key', value));
+    }
+    return const <String, dynamic>{};
+  }
 
-      final pass = (d.data()?['password'] ?? '').toString().trim();
-      if (pass.isNotEmpty) {
-        _schoolId = sid;
-        return pass; // EXACTO, case-sensitive
-      }
+  String _formatWaitTime(int seconds) {
+    if (seconds <= 0) return 'unos segundos';
+    final totalMinutes = (seconds / 60).ceil();
+    if (totalMinutes < 60) {
+      return '$totalMinutes minuto${totalMinutes == 1 ? '' : 's'}';
+    }
+    final hours = totalMinutes ~/ 60;
+    final minutes = totalMinutes % 60;
+    if (minutes == 0) {
+      return '$hours hora${hours == 1 ? '' : 's'}';
+    }
+    return '$hours h ${minutes} min';
+  }
+
+  String _rateLimitMessage(Map<String, dynamic> result, {String? fallback}) {
+    final serverMessage = (result['message'] ?? '').toString().trim();
+    if (serverMessage.isNotEmpty) return serverMessage;
+
+    final waitSeconds = (result['waitSeconds'] as num?)?.toInt() ?? 0;
+    if (waitSeconds > 0) {
+      return 'Demasiados intentos fallidos. Vuelve a intentar en ${_formatWaitTime(waitSeconds)}.';
     }
 
-    return '';
+    return fallback ?? 'No se pudo validar el acceso en este momento.';
+  }
+
+  Future<bool> _ensureAdminLoginIpAllowed({required String attemptFlow}) async {
+    try {
+      final result = await _callAdminLoginRateLimit(
+        operation: 'precheck',
+        attemptFlow: attemptFlow,
+      );
+      final allowed = result['allowed'] == true;
+      if (!allowed) {
+        _toast(
+          _rateLimitMessage(
+            result,
+            fallback: 'Esta IP debe esperar antes de volver a intentar.',
+          ),
+        );
+      }
+      return allowed;
+    } on FirebaseFunctionsException catch (e) {
+      _toast(
+        'No se pudo validar la seguridad del acceso: ${e.message ?? e.code}',
+      );
+      return false;
+    } catch (e) {
+      _toast('No se pudo validar la seguridad del acceso: $e');
+      return false;
+    }
+  }
+
+  Future<void> _recordAdminLoginFailure({
+    required String attemptFlow,
+    required String reason,
+  }) async {
+    try {
+      final result = await _callAdminLoginRateLimit(
+        operation: 'failure',
+        attemptFlow: attemptFlow,
+        reason: reason,
+      );
+      if (result['blocked'] == true) {
+        _toast(
+          _rateLimitMessage(
+            result,
+            fallback:
+                'Esta IP fue bloqueada temporalmente por demasiados intentos fallidos.',
+          ),
+        );
+      }
+    } catch (_) {
+      // No interrumpir el mensaje principal si el registro del fallo no responde.
+    }
+  }
+
+  Future<void> _recordAdminLoginSuccess({required String attemptFlow}) async {
+    try {
+      await _callAdminLoginRateLimit(
+        operation: 'success',
+        attemptFlow: attemptFlow,
+      );
+    } catch (_) {
+      // El acceso ya fue válido; no lo rompemos por una limpieza fallida.
+    }
+  }
+
+  bool _shouldCountGoogleFailure(FirebaseAuthException e) {
+    switch (e.code) {
+      case 'popup-closed-by-user':
+      case 'cancelled-popup-request':
+      case 'canceled':
+      case 'popup-blocked':
+        return false;
+      default:
+        return true;
+    }
   }
 
   // ------------------------------------------------------------
@@ -285,51 +443,78 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
         return;
       }
 
-      final entered = _codeCtrl.text.trim();
+      final entered = _codeCtrl.text;
       if (entered.isEmpty) {
         _toast('Escribe el código del colegio.');
         return;
       }
 
-      String expected = '';
       try {
-        expected = await _loadRegistroPasswordAny();
-      } on FirebaseException catch (e) {
-        if (e.code == 'permission-denied') {
+        final result = await _validateRegistroAccess(entered);
+        final ok = result['ok'] == true;
+        final configured = result['configured'] != false;
+        final blocked = result['blocked'] == true;
+        final message = (result['message'] ?? '').toString().trim();
+
+        if (blocked) {
           _toast(
-            'No tengo permiso para leer el código de registro.\n'
-            'Solución rápida: habilita Anonymous Auth o ajusta Rules para permitir leer '
-            'schools/{id}/config/registro.',
+            message.isNotEmpty
+                ? message
+                : 'Esta IP debe esperar antes de volver a intentar.',
           );
           return;
         }
-        _toast('Error leyendo el código: ${e.code}');
-        return;
-      } catch (e) {
-        _toast('No se pudo verificar el código: $e');
-        return;
-      }
 
-      if (expected.isEmpty) {
-        _toast('Aún no se ha generado el código de registro para este colegio.');
-        return;
-      }
+        if (!configured) {
+          _toast(
+            message.isNotEmpty
+                ? message
+                : 'Aún no se ha generado el código de registro para este colegio.',
+          );
+          return;
+        }
 
-      if (entered != expected) {
-        _toast('Código incorrecto.');
-        return;
-      }
+        if (!ok) {
+          _toast(message.isNotEmpty ? message : 'Código incorrecto.');
+          return;
+        }
 
-      if (!mounted) return;
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (_) => RegistroEquipoScreen(
-            escuela: widget.escuela,
-            schoolIdOverride: _schoolId,
+        final session = await SchoolRegistrationSession.open(
+          schoolId: _schoolId,
+          access: result,
+        );
+        _codeCtrl.clear();
+        if (!mounted) {
+          await session.close();
+          return;
+        }
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder:
+                (_) => RegistroEquipoScreen(
+                  escuela: widget.escuela,
+                  schoolIdOverride: _schoolId,
+                  registrationSession: session,
+                  permitirFotoAlumno: session.permitirFotoAlumno,
+                  permitirEditarEstudiantes: session.permitirEditarEstudiantes,
+                ),
           ),
-        ),
-      );
+        );
+        return;
+      } on FirebaseFunctionsException catch (e) {
+        _toast(
+          e.code == 'resource-exhausted'
+              ? 'Demasiados intentos. Espera antes de volver a intentar.'
+              : 'No se pudo verificar el código de registro. Revisa tus datos e intenta nuevamente.',
+        );
+        return;
+      } catch (_) {
+        _toast(
+          'No se pudo verificar el código de registro. Intenta nuevamente.',
+        );
+        return;
+      }
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -339,25 +524,40 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
   // Autorización: solo admins del colegio
   // ------------------------------------------------------------
   Future<bool> _isAuthorizedForThisSchool(User user) async {
-    final email = (user.email ?? '').trim().toLowerCase();
     final uid = user.uid;
-
-    final adminEmail =
-        (_schoolData?['adminEmail'] ?? '').toString().trim().toLowerCase();
-    final adminUid = (_schoolData?['adminUid'] ?? '').toString().trim();
 
     if (!_schoolDocFound) return false;
 
-    if (adminUid.isNotEmpty && uid == adminUid) return true;
-    if (adminEmail.isNotEmpty && email.isNotEmpty && email == adminEmail) return true;
+    try {
+      final memberDoc =
+          await _db
+              .collection('schools')
+              .doc(_schoolId)
+              .collection('members')
+              .doc(uid)
+              .get();
+      if (memberDoc.exists) {
+        final m = memberDoc.data() ?? <String, dynamic>{};
+        final role =
+            (m['role'] ?? m['rol'] ?? m['enrol'] ?? '')
+                .toString()
+                .trim()
+                .toLowerCase();
+        final enabled = (m['enabled'] ?? m['active'] ?? true) == true;
+        if (enabled && (role == 'admin' || role == 'admin_escolar')) {
+          return true;
+        }
+      }
+    } catch (_) {}
 
     try {
-      final d = await _db
-          .collection('schools')
-          .doc(_schoolId)
-          .collection('admins')
-          .doc(uid)
-          .get();
+      final d =
+          await _db
+              .collection('schools')
+              .doc(_schoolId)
+              .collection('admins')
+              .doc(uid)
+              .get();
 
       if (d.exists) {
         final m = d.data() ?? {};
@@ -366,23 +566,30 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
       }
     } catch (_) {}
 
-    if (email.isNotEmpty) {
-      try {
-        final q = await _db
-            .collection('schools')
-            .doc(_schoolId)
-            .collection('admins')
-            .where('email', isEqualTo: email)
-            .limit(1)
-            .get();
-
-        if (q.docs.isNotEmpty) {
-          final m = q.docs.first.data();
-          final status = (m['status'] ?? 'active').toString();
-          return status == 'active';
+    try {
+      final userDoc = await _db.collection('users').doc(uid).get();
+      if (userDoc.exists) {
+        final m = userDoc.data() ?? <String, dynamic>{};
+        final role =
+            (m['role'] ?? m['rol'] ?? '').toString().trim().toLowerCase();
+        final enabled = (m['enabled'] ?? m['active'] ?? false) == true;
+        final primarySchool = (m['schoolId'] ?? '').toString().trim();
+        final schoolIds =
+            (m['schoolIds'] is List)
+                ? (m['schoolIds'] as List)
+                    .map((e) => e.toString().trim())
+                    .where((e) => e.isNotEmpty)
+                    .toList()
+                : const <String>[];
+        final belongsToSchool =
+            primarySchool == _schoolId || schoolIds.contains(_schoolId);
+        if (enabled &&
+            belongsToSchool &&
+            (role == 'admin' || role == 'admin_escolar')) {
+          return true;
         }
-      } catch (_) {}
-    }
+      }
+    } catch (_) {}
 
     return false;
   }
@@ -430,11 +637,11 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
       case 'operation-not-allowed':
         return 'Google no está habilitado en Firebase Auth.';
       case 'account-exists-with-different-credential':
-        return 'Ese correo ya existe con otro método de acceso.';
+        return 'No se pudo iniciar sesión con Google. Usa tu método de acceso habitual.';
       case 'canceled':
         return 'Inicio de sesión cancelado.';
       default:
-        return '${e.code}${e.message != null ? ' — ${e.message}' : ''}';
+        return 'No se pudo iniciar sesión con Google. Intenta nuevamente.';
     }
   }
 
@@ -442,8 +649,9 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
     final auth = FirebaseAuth.instance;
 
     if (kIsWeb) {
-      final provider = GoogleAuthProvider()
-        ..setCustomParameters({'prompt': 'select_account'});
+      final provider =
+          GoogleAuthProvider()
+            ..setCustomParameters({'prompt': 'select_account'});
       return await auth.signInWithPopup(provider);
     }
 
@@ -462,7 +670,10 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
     }
 
     if (idToken == null) {
-      throw FirebaseAuthException(code: 'missing-id-token', message: 'Google no devolvió idToken.');
+      throw FirebaseAuthException(
+        code: 'missing-id-token',
+        message: 'Google no devolvió idToken.',
+      );
     }
 
     final credential = GoogleAuthProvider.credential(
@@ -477,24 +688,75 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
     setState(() => _loading = true);
 
     try {
+      final ipAllowed = await _ensureAdminLoginIpAllowed(attemptFlow: 'google');
+      if (!ipAllowed) return;
+
       final cred = await _signInWithGoogle();
       await _resolveSchoolIdAndLoad();
 
       final user = cred.user ?? FirebaseAuth.instance.currentUser;
       if (user == null) {
-        throw FirebaseAuthException(code: 'no-user', message: 'No se obtuvo usuario de Google.');
+        throw FirebaseAuthException(
+          code: 'no-user',
+          message: 'No se obtuvo usuario de Google.',
+        );
       }
 
       await _ensureAuthorizedOrThrow(user);
+      try {
+        final deviceCheck = await EduProTrustedDeviceService.checkAccess(
+          audience: 'admin_escolar',
+          schoolId: _schoolId,
+        );
+        if (!deviceCheck.allowed) {
+          await _denyAndSignOut();
+          _toast(
+            deviceCheck.message.isNotEmpty
+                ? deviceCheck.message
+                : 'Este dispositivo no está autorizado para este acceso.',
+          );
+          return;
+        }
+      } catch (e) {
+        await _denyAndSignOut();
+        _toast('No se pudo validar el dispositivo actual: $e');
+        return;
+      }
+      bool twoFactorOk = false;
+      try {
+        twoFactorOk = await EduProTwoFactorService.ensureVerified(
+          context,
+          audience: 'admin_escolar',
+          schoolId: _schoolId,
+          schoolName: widget.escuela.nombre,
+        );
+      } catch (e) {
+        await _denyAndSignOut();
+        _toast('No se pudo completar la verificación en dos pasos: $e');
+        return;
+      }
+      if (!twoFactorOk) {
+        await _denyAndSignOut();
+        _toast('Debes completar la verificación en dos pasos para continuar.');
+        return;
+      }
+      await _recordAdminLoginSuccess(attemptFlow: 'google');
       _goToPizarra();
     } on FirebaseAuthException catch (e) {
+      await _denyAndSignOut();
+      if (_shouldCountGoogleFailure(e)) {
+        await _recordAdminLoginFailure(attemptFlow: 'google', reason: e.code);
+      }
       if (e.code == 'not-authorized') {
-        _toast('Acceso denegado: ese Google no está autorizado para este colegio.');
+        _toast(
+          'Acceso denegado: ese Google no está autorizado para este colegio.',
+        );
       } else {
         _toast('Google login falló: ${_friendlyAuthError(e)}');
       }
     } catch (e) {
-      _toast('Google login falló: $e');
+      await _denyAndSignOut();
+      _toast('No se pudo validar tu acceso. Intenta nuevamente.');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -506,14 +768,11 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
   @override
   Widget build(BuildContext context) {
     // Paleta EduPro (azul + naranja)
-    const azul = Color.fromARGB(255, 21, 101, 192);
+    const azul = Color(0xFF1A237E);
+    const azulDark = Color(0xFF1A237E);
     const naranja = Color.fromARGB(255, 255, 193, 7);
 
     final schoolName = '${widget.escuela.nombre}'.trim();
-
-    final rawAdminEmail = (_schoolData?['adminEmail'] ?? '').toString().trim();
-    final adminEmail = _looksLikeEmail(rawAdminEmail) ? rawAdminEmail : '';
-    final configured = adminEmail.isNotEmpty;
 
     final String statusTitle;
     final String statusText;
@@ -531,25 +790,16 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
       statusBorder = Colors.grey.shade300;
     } else if (!_schoolDocFound) {
       statusTitle = 'Colegio no encontrado';
-      statusText =
-          'No existe este colegio en Firestore.\n'
+      statusText = 'Solo Personal Autorizado';
+      'No existe este colegio en Firestore.\n'
           'Abre este login desde la lista de Colegios.';
       statusIcon = Icons.error_outline_rounded;
       statusBg = Colors.red.shade50;
       statusFg = Colors.red.shade900;
       statusBorder = Colors.red.shade200;
-    } else if (!configured) {
-      statusTitle = 'Sin correo principal';
-      statusText =
-          'No hay adminEmail configurado.\n'
-          'Aún así, pueden entrar admins autorizados por lista.';
-      statusIcon = Icons.info_outline_rounded;
-      statusBg = Colors.orange.shade50;
-      statusFg = Colors.orange.shade900;
-      statusBorder = Colors.orange.shade200;
     } else {
-      statusTitle = 'Autorización lista';
-      statusText = 'Correo Autorizado: $adminEmail';
+      statusTitle = 'Cuenta xxx Verificada';
+      statusText = 'Solo Personal Autorizado';
       statusIcon = Icons.verified_rounded;
       statusBg = Colors.green.shade50;
       statusFg = Colors.green.shade900;
@@ -605,7 +855,10 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
           SafeArea(
             child: Center(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 18,
+                ),
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 520),
                   child: ClipRRect(
@@ -613,84 +866,322 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
                     child: Material(
                       elevation: 14,
                       shadowColor: Colors.black.withOpacity(0.18),
-                      color: Colors.white.withOpacity(0.96),
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            // Header compacto (logo + título)
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.center,
-                              children: [
-                                Container(
-                                  width: 54,
-                                  height: 54,
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(16),
-                                    color: azul.withOpacity(0.08),
-                                    border: Border.all(color: azul.withOpacity(0.18)),
+                      color: Colors.transparent,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [
+                              Colors.white.withOpacity(0.90),
+                              Colors.white.withOpacity(0.84),
+                              azulDark.withOpacity(0.12),
+                            ],
+                          ),
+                          border: Border.all(
+                            color: Colors.white.withOpacity(0.45),
+                          ),
+                          borderRadius: BorderRadius.circular(26),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              // Header compacto (logo + título)
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  Container(
+                                    width: 66,
+                                    height: 66,
+                                    decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(20),
+                                      color: azul,
+                                      border: Border.all(
+                                        color: Colors.white.withOpacity(0.22),
+                                      ),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          blurRadius: 18,
+                                          offset: const Offset(0, 10),
+                                          color: azul.withOpacity(0.28),
+                                        ),
+                                      ],
+                                    ),
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(10),
+                                      child: Image.asset(
+                                        'assets/logo.png',
+                                        fit: BoxFit.contain,
+                                        semanticLabel: 'Logotipo de EduPro',
+                                        errorBuilder:
+                                            (_, __, ___) => const Icon(
+                                              Icons.school,
+                                              size: 34,
+                                              color: Colors.white,
+                                            ),
+                                      ),
+                                    ),
                                   ),
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(8),
-                                    child: Image.asset(
-                                      'assets/LogoAdmin.png',
-                                      fit: BoxFit.contain,
-                                      errorBuilder: (_, __, ___) =>
-                                          const Icon(Icons.school, size: 30),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          schoolName.isEmpty
+                                              ? 'Colegio'
+                                              : schoolName,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            fontSize: 18,
+                                            fontWeight: FontWeight.w900,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Row(
+                                          children: [
+                                            Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 10,
+                                                    vertical: 5,
+                                                  ),
+                                              decoration: BoxDecoration(
+                                                color: azul.withOpacity(0.10),
+                                                borderRadius:
+                                                    BorderRadius.circular(999),
+                                                border: Border.all(
+                                                  color: azul.withOpacity(0.20),
+                                                ),
+                                              ),
+                                              child: const Text(
+                                                'Reservado Para La Administración Escolar',
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  fontWeight: FontWeight.w800,
+                                                  color: azul,
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            if (!_schoolLoading &&
+                                                _schoolDocFound &&
+                                                !_schoolActive())
+                                              Container(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 10,
+                                                      vertical: 5,
+                                                    ),
+                                                decoration: BoxDecoration(
+                                                  color: Colors.red.shade50,
+                                                  borderRadius:
+                                                      BorderRadius.circular(
+                                                        999,
+                                                      ),
+                                                  border: Border.all(
+                                                    color: Colors.red.shade200,
+                                                  ),
+                                                ),
+                                                child: Text(
+                                                  'INACTIVO',
+                                                  style: TextStyle(
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.w900,
+                                                    color: Colors.red.shade800,
+                                                  ),
+                                                ),
+                                              ),
+                                          ],
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+
+                              const SizedBox(height: 14),
+
+                              // Selector modo (más fino y compacto)
+                              Container(
+                                padding: const EdgeInsets.all(6),
+                                decoration: BoxDecoration(
+                                  color: Colors.grey.shade50,
+                                  borderRadius: BorderRadius.circular(18),
+                                  border: Border.all(
+                                    color: Colors.grey.shade300,
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: _ModeChip(
+                                        active: _mode == _AuthMode.login,
+                                        label: 'Administracíon Escolar',
+                                        activeColor: azul,
+                                        onTap:
+                                            () => _switchMode(_AuthMode.login),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                      child: _ModeChip(
+                                        active: _mode == _AuthMode.register,
+                                        label: 'Registro De Alumnos',
+                                        activeColor: azul,
+                                        onTap:
+                                            () =>
+                                                _switchMode(_AuthMode.register),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+
+                              const SizedBox(height: 12),
+
+                              // Estado del colegio
+                              Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: statusBg,
+                                  borderRadius: BorderRadius.circular(16),
+                                  border: Border.all(color: statusBorder),
+                                ),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Icon(statusIcon, color: statusFg),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            statusTitle,
+                                            style: TextStyle(
+                                              fontWeight: FontWeight.w900,
+                                              color: statusFg,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            statusText,
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w700,
+                                              color: statusFg.withOpacity(0.95),
+                                              height: 1.2,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+
+                              const SizedBox(height: 14),
+
+                              // MODO LOGIN (SOLO GOOGLE)
+                              if (_mode == _AuthMode.login) ...[
+                                SizedBox(
+                                  width: double.infinity,
+                                  child: ElevatedButton(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: azul,
+                                      foregroundColor: Colors.white,
+                                      elevation: 0,
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 14,
+                                      ),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(16),
+                                      ),
+                                    ),
+                                    onPressed:
+                                        canInteract ? _loginGoogle : null,
+                                    child: Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        Container(
+                                          width: 28,
+                                          height: 28,
+                                          decoration: BoxDecoration(
+                                            color: Colors.white.withOpacity(
+                                              0.18,
+                                            ),
+                                            borderRadius: BorderRadius.circular(
+                                              10,
+                                            ),
+                                          ),
+                                          alignment: Alignment.center,
+                                          child: const Icon(
+                                            Icons.g_mobiledata,
+                                            size: 26,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 10),
+                                        Text(
+                                          _loading
+                                              ? 'Conectando…'
+                                              : 'Continuar con Google',
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.w900,
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ),
-                                const SizedBox(width: 12),
-                                Expanded(
+                                const SizedBox(height: 10),
+                                Text(
+                                  '',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.black.withOpacity(0.65),
+                                  ),
+                                ),
+
+                                // DEV bypass solo en login
+                                Visibility(
+                                  visible: _devBypassEnabled,
                                   child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      Text(
-                                        schoolName.isEmpty ? 'Colegio' : schoolName,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.w900,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 2),
-                                      Row(
-                                        children: [
-                                          Container(
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 10,
-                                              vertical: 5,
-                                            ),
-                                            decoration: BoxDecoration(
-                                              color: azul.withOpacity(0.10),
-                                              borderRadius: BorderRadius.circular(999),
-                                              border: Border.all(color: azul.withOpacity(0.20)),
-                                            ),
-                                            child: const Text(
-                                              'Administración Escolar',
-                                              style: TextStyle(
-                                                fontSize: 12,
-                                                fontWeight: FontWeight.w800,
-                                                color: azul,
-                                              ),
-                                            ),
+                                      const SizedBox(height: 12),
+                                      Container(
+                                        width: double.infinity,
+                                        padding: const EdgeInsets.all(12),
+                                        decoration: BoxDecoration(
+                                          color: Colors.red.shade50,
+                                          borderRadius: BorderRadius.circular(
+                                            16,
                                           ),
-                                          const SizedBox(width: 8),
-                                          if (!_schoolLoading && _schoolDocFound && !_schoolActive())
-                                            Container(
-                                              padding: const EdgeInsets.symmetric(
-                                                horizontal: 10,
-                                                vertical: 5,
-                                              ),
-                                              decoration: BoxDecoration(
-                                                color: Colors.red.shade50,
-                                                borderRadius: BorderRadius.circular(999),
-                                                border: Border.all(color: Colors.red.shade200),
-                                              ),
+                                          border: Border.all(
+                                            color: Colors.red.shade200,
+                                          ),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            const Icon(
+                                              Icons.warning_amber_rounded,
+                                              size: 18,
+                                              color: Colors.red,
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Expanded(
                                               child: Text(
-                                                'INACTIVO',
+                                                'Modo DEV: acceso rápido habilitado',
                                                 style: TextStyle(
                                                   fontSize: 12,
                                                   fontWeight: FontWeight.w900,
@@ -698,300 +1189,164 @@ class _AdminLoginEscolarScreenState extends State<AdminLoginEscolarScreen> {
                                                 ),
                                               ),
                                             ),
-                                        ],
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(height: 10),
+                                      SizedBox(
+                                        width: double.infinity,
+                                        child: OutlinedButton.icon(
+                                          style: OutlinedButton.styleFrom(
+                                            padding: const EdgeInsets.symmetric(
+                                              vertical: 14,
+                                            ),
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(16),
+                                            ),
+                                          ),
+                                          onPressed:
+                                              _loading ? null : _devQuickAccess,
+                                          icon: const Icon(Icons.bolt),
+                                          label: const Text(
+                                            'Acceso rápido (DEV)',
+                                            style: TextStyle(
+                                              fontWeight: FontWeight.w900,
+                                            ),
+                                          ),
+                                        ),
                                       ),
                                     ],
                                   ),
                                 ),
                               ],
-                            ),
 
-                            const SizedBox(height: 14),
-
-                            // Selector modo (más fino y compacto)
-                            Container(
-                              padding: const EdgeInsets.all(6),
-                              decoration: BoxDecoration(
-                                color: Colors.grey.shade50,
-                                borderRadius: BorderRadius.circular(18),
-                                border: Border.all(color: Colors.grey.shade300),
-                              ),
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    child: _ModeChip(
-                                      active: _mode == _AuthMode.login,
-                                      label: 'Iniciar sesión',
-                                      activeColor: azul,
-                                      onTap: () => _switchMode(_AuthMode.login),
+                              // MODO REGISTRO (SE MANTIENE INTACTO)
+                              if (_mode == _AuthMode.register) ...[
+                                Container(
+                                  width: double.infinity,
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: Colors.blueGrey.shade50,
+                                    borderRadius: BorderRadius.circular(16),
+                                    border: Border.all(
+                                      color: Colors.blueGrey.shade100,
                                     ),
                                   ),
-                                  const SizedBox(width: 6),
-                                  Expanded(
-                                    child: _ModeChip(
-                                      active: _mode == _AuthMode.register,
-                                      label: 'Registro',
-                                      activeColor: azul,
-                                      onTap: () => _switchMode(_AuthMode.register),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-
-                            const SizedBox(height: 12),
-
-                            // Estado del colegio
-                            Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color: statusBg,
-                                borderRadius: BorderRadius.circular(16),
-                                border: Border.all(color: statusBorder),
-                              ),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Icon(statusIcon, color: statusFg),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          statusTitle,
-                                          style: TextStyle(
-                                            fontWeight: FontWeight.w900,
-                                            color: statusFg,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 2),
-                                        Text(
-                                          statusText,
+                                  child: Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      const SizedBox(width: 10),
+                                      const Expanded(
+                                        child: Text(
+                                          'Ingrese el CÓDIGO que le proporcionó la administración',
                                           style: TextStyle(
                                             fontSize: 12,
-                                            fontWeight: FontWeight.w700,
-                                            color: statusFg.withOpacity(0.95),
+                                            fontWeight: FontWeight.w800,
                                             height: 1.2,
                                           ),
                                         ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-
-                            const SizedBox(height: 14),
-
-                            // MODO LOGIN (SOLO GOOGLE)
-                            if (_mode == _AuthMode.login) ...[
-                              SizedBox(
-                                width: double.infinity,
-                                child: ElevatedButton(
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: azul,
-                                    foregroundColor: Colors.white,
-                                    elevation: 0,
-                                    padding: const EdgeInsets.symmetric(vertical: 14),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(16),
-                                    ),
-                                  ),
-                                  onPressed: canInteract ? _loginGoogle : null,
-                                  child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Container(
-                                        width: 28,
-                                        height: 28,
-                                        decoration: BoxDecoration(
-                                          color: Colors.white.withOpacity(0.18),
-                                          borderRadius: BorderRadius.circular(10),
-                                        ),
-                                        alignment: Alignment.center,
-                                        child: const Icon(Icons.g_mobiledata, size: 26),
-                                      ),
-                                      const SizedBox(width: 10),
-                                      Text(
-                                        _loading ? 'Conectando…' : 'Continuar con Google',
-                                        style: const TextStyle(fontWeight: FontWeight.w900),
                                       ),
                                     ],
                                   ),
                                 ),
-                              ),
-                              const SizedBox(height: 10),
-                              Text(
-                                'Solo personal autorizado.',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w700,
-                                  color: Colors.black.withOpacity(0.65),
-                                ),
-                              ),
-
-                              // DEV bypass solo en login
-                              Visibility(
-                                visible: _devBypassEnabled,
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    const SizedBox(height: 12),
-                                    Container(
-                                      width: double.infinity,
-                                      padding: const EdgeInsets.all(12),
-                                      decoration: BoxDecoration(
-                                        color: Colors.red.shade50,
-                                        borderRadius: BorderRadius.circular(16),
-                                        border: Border.all(color: Colors.red.shade200),
-                                      ),
-                                      child: Row(
-                                        children: [
-                                          const Icon(Icons.warning_amber_rounded,
-                                              size: 18, color: Colors.red),
-                                          const SizedBox(width: 8),
-                                          Expanded(
-                                            child: Text(
-                                              'Modo DEV: acceso rápido habilitado',
-                                              style: TextStyle(
-                                                fontSize: 12,
-                                                fontWeight: FontWeight.w900,
-                                                color: Colors.red.shade800,
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    const SizedBox(height: 10),
-                                    SizedBox(
-                                      width: double.infinity,
-                                      child: OutlinedButton.icon(
-                                        style: OutlinedButton.styleFrom(
-                                          padding: const EdgeInsets.symmetric(vertical: 14),
-                                          shape: RoundedRectangleBorder(
-                                            borderRadius: BorderRadius.circular(16),
-                                          ),
-                                        ),
-                                        onPressed: _loading ? null : _devQuickAccess,
-                                        icon: const Icon(Icons.bolt),
-                                        label: const Text(
-                                          'Acceso rápido (DEV)',
-                                          style: TextStyle(fontWeight: FontWeight.w900),
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-
-                            // MODO REGISTRO (SE MANTIENE INTACTO)
-                            if (_mode == _AuthMode.register) ...[
-                              Container(
-                                width: double.infinity,
-                                padding: const EdgeInsets.all(12),
-                                decoration: BoxDecoration(
-                                  color: Colors.blueGrey.shade50,
-                                  borderRadius: BorderRadius.circular(16),
-                                  border: Border.all(color: Colors.blueGrey.shade100),
-                                ),
-                                child: Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Icon(Icons.vpn_key_rounded,
-                                        color: Colors.blueGrey.shade700),
-                                    const SizedBox(width: 10),
-                                    const Expanded(
-                                      child: Text(
-                                        'Ingrese el CÓDIGO que le proporcionó la administración\n'
-                                        'para continuar al registro.',
-                                        style: TextStyle(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w800,
-                                          height: 1.2,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(height: 12),
-                              TextField(
-                                controller: _codeCtrl,
-                                textInputAction: TextInputAction.done,
-                                decoration: InputDecoration(
-                                  labelText: 'Código del colegio',
-                                  prefixIcon: const Icon(Icons.vpn_key),
-                                  filled: true,
-                                  fillColor: Colors.grey.shade50,
-                                  border: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(16),
-                                  ),
-                                  enabledBorder: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(16),
-                                    borderSide: BorderSide(color: Colors.grey.shade300),
-                                  ),
-                                  focusedBorder: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(16),
-                                    borderSide: const BorderSide(color: azul, width: 1.6),
-                                  ),
-                                ),
-                                onSubmitted: (_) {
-                                  if (!_loading) _goToRegistro();
-                                },
-                              ),
-                              const SizedBox(height: 12),
-                              SizedBox(
-                                width: double.infinity,
-                                child: ElevatedButton(
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: azul,
-                                    foregroundColor: Colors.white,
-                                    elevation: 0,
-                                    padding: const EdgeInsets.symmetric(vertical: 14),
-                                    shape: RoundedRectangleBorder(
+                                const SizedBox(height: 12),
+                                TextField(
+                                  controller: _codeCtrl,
+                                  textInputAction: TextInputAction.done,
+                                  decoration: InputDecoration(
+                                    labelText: 'Ingrese el CÓDIGO',
+                                    prefixIcon: const Icon(Icons.vpn_key),
+                                    filled: true,
+                                    fillColor: Colors.grey.shade50,
+                                    border: OutlineInputBorder(
                                       borderRadius: BorderRadius.circular(16),
                                     ),
+                                    enabledBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                      borderSide: BorderSide(
+                                        color: Colors.grey.shade300,
+                                      ),
+                                    ),
+                                    focusedBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                      borderSide: const BorderSide(
+                                        color: azul,
+                                        width: 1.6,
+                                      ),
+                                    ),
                                   ),
-                                  onPressed: canInteract ? _goToRegistro : null,
-                                  child: Text(
-                                    _loading ? 'Verificando…' : 'Continuar a registro',
-                                    style: const TextStyle(fontWeight: FontWeight.w900),
-                                  ),
+                                  onSubmitted: (_) {
+                                    if (!_loading) _goToRegistro();
+                                  },
                                 ),
-                              ),
-                            ],
-
-                            const SizedBox(height: 12),
-
-                            // Footer chiquito, elegante
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Container(
-                                  width: 8,
-                                  height: 8,
-                                  decoration: BoxDecoration(
-                                    color: naranja,
-                                    borderRadius: BorderRadius.circular(99),
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                Text(
-                                  'Powered by EduPro',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w800,
-                                    color: Colors.black.withOpacity(0.55),
+                                const SizedBox(height: 12),
+                                SizedBox(
+                                  width: double.infinity,
+                                  child: ElevatedButton(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: azul,
+                                      foregroundColor: Colors.white,
+                                      elevation: 0,
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 14,
+                                      ),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(16),
+                                      ),
+                                    ),
+                                    onPressed:
+                                        canInteract ? _goToRegistro : null,
+                                    child: Text(
+                                      _loading
+                                          ? 'Verificando…'
+                                          : 'Continuar a registro',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w900,
+                                      ),
+                                    ),
                                   ),
                                 ),
                               ],
-                            ),
-                          ],
+
+                              const SizedBox(height: 12),
+
+                              // Footer chiquito, elegante
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Container(
+                                    width: 8,
+                                    height: 8,
+                                    decoration: BoxDecoration(
+                                      color: naranja,
+                                      borderRadius: BorderRadius.circular(99),
+                                    ),
+                                  ),
+                                  Row(
+                                    children: [
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        'Creado Por EduPro',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w800,
+                                          color: Colors.black.withOpacity(0.55),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 4),
+                                      const Icon(
+                                        Icons.verified,
+                                        size: 16,
+                                        color: Colors.blue,
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ),

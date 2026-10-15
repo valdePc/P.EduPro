@@ -1,0 +1,169 @@
+{
+  "generatedAt": "2026-10-05T22:12:36.240Z",
+  "productionApproved": false,
+  "deployedDuringAudit": false,
+  "studentRecordsReadFromProduction": false,
+  "backend": {
+    "status": "passed",
+    "tests": 13,
+    "pass": 13,
+    "fail": 0,
+    "cancelled": 0,
+    "log": "audit-backend-tests.log"
+  },
+  "rules": {
+    "status": "passed",
+    "tests": 20,
+    "pass": 20,
+    "fail": 0,
+    "cancelled": 0,
+    "log": "audit-rules-tests.log"
+  },
+  "flutterTests": {
+    "passed": true,
+    "tests": 4,
+    "scope": "Validators and one entry form; no end-to-end login."
+  },
+  "webBuild": {
+    "passed": true,
+    "appCheckProductionConfigurationValidated": false
+  },
+  "flutterAnalysis": {
+    "passed": false,
+    "errors": 215,
+    "issues": 1179,
+    "log": "audit-flutter-analyze-final.log"
+  },
+  "dependencies": {
+    "root": {
+      "info": 0,
+      "low": 0,
+      "moderate": 12,
+      "high": 0,
+      "critical": 0,
+      "total": 12
+    },
+    "functionsAll": {
+      "info": 0,
+      "low": 0,
+      "moderate": 14,
+      "high": 0,
+      "critical": 0,
+      "total": 14
+    },
+    "functionsProduction": {
+      "info": 0,
+      "low": 0,
+      "moderate": 12,
+      "high": 0,
+      "critical": 0,
+      "total": 12
+    }
+  },
+  "secrets": {
+    "inspected": 781,
+    "historicalFiles": 475,
+    "patternMatches": 4,
+    "syntheticFixtures": 4,
+    "requiresReview": 0,
+    "limitation": "Heuristic patterns; ignored files other than the named env files, binary and historical blobs over 2 MiB are excluded."
+  },
+  "configurationObservedAt": "2026-10-05T11:56:39.343Z",
+  "cloud": {
+    "location": "nam5",
+    "pitr": "POINT_IN_TIME_RECOVERY_DISABLED",
+    "deleteProtection": "DELETE_PROTECTION_DISABLED",
+    "scheduledBackups": 0,
+    "nativeMfa": "DISABLED",
+    "appCheck": [
+      {
+        "name": "projects/876132148030/services/firebasedataconnect.googleapis.com",
+        "enforcementMode": "UNENFORCED"
+      },
+      {
+        "name": "projects/876132148030/services/firebaseml.googleapis.com",
+        "enforcementMode": "UNENFORCED"
+      },
+      {
+        "name": "projects/876132148030/services/firebasestorage.googleapis.com",
+        "enforcementMode": "UNENFORCED"
+      },
+      {
+        "name": "projects/876132148030/services/firestore.googleapis.com",
+        "enforcementMode": "UNENFORCED"
+      },
+      {
+        "name": "projects/876132148030/services/identitytoolkit.googleapis.com",
+        "enforcementMode": "UNENFORCED"
+      },
+      {
+        "name": "projects/876132148030/services/maps-backend.googleapis.com",
+        "enforcementMode": "UNENFORCED"
+      },
+      {
+        "name": "projects/876132148030/services/oauth2.googleapis.com",
+        "enforcementMode": "UNENFORCED"
+      },
+      {
+        "name": "projects/876132148030/services/places.googleapis.com",
+        "enforcementMode": "UNENFORCED"
+      }
+    ],
+    "deployedFunctions": 16,
+    "functionsWithLegacyMfaBypassVariable": 16,
+    "applicationRestrictions": [
+      {
+        "name": "iOS key (auto created by Firebase)",
+        "ios": {}
+      },
+      {
+        "name": "Android key (auto created by Firebase)",
+        "android": {}
+      },
+      {
+        "name": "Browser key (auto created by Firebase)",
+        "browser": {}
+      }
+    ],
+    "rulesAtInspection": [
+      {
+        "release": "projects/edupro-8c4fd/releases/firebase.storage/edupro-8c4fd.firebasestorage.app",
+        "updatedAt": "2026-04-07T01:45:58.887696Z",
+        "files": [
+          {
+            "name": "storage.rules",
+            "sha256": "c2109ed0d153081a4d848f78cc4fe820fc37acc259fb23961c6d4660ecb9c909",
+            "matchesLocal": false,
+            "changedKeysOccurrences": 0,
+            "unconditionalAllow": false
+          }
+        ]
+      },
+      {
+        "release": "projects/edupro-8c4fd/releases/cloud.firestore",
+        "updatedAt": "2026-05-10T16:10:14.915452Z",
+        "files": [
+          {
+            "name": "firestore.rules",
+            "sha256": "6ebd39edf33a0a2af8ed7256a9852c6b5e6293a2097a92c90a1f921f7cb4f16a",
+            "matchesLocal": false,
+            "changedKeysOccurrences": 18,
+            "unconditionalAllow": false
+          }
+        ]
+      }
+    ]
+  },
+  "currentLocalRules": {
+    "firestore.rules": "cc4f75a5c397aa0bafce70ea8ae9f110cfdc45d3194abc50e6c3c401a0b1d79f",
+    "storage.rules": "1b2cceb78f36606d4e20fdc61c7f70cdb3ca3c817c389d10b88b6888f695b6fb"
+  },
+  "limitations": [
+    "No full authentication E2E",
+    "No national-scale load test",
+    "No backup restoration",
+    "No complete IAM/monitoring audit",
+    "No accessibility or legal certification",
+    "Outstanding critical findings documented in security-audit-2026-10-05.md"
+  ]
+}

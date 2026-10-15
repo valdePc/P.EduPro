@@ -1,13 +1,15 @@
- // lib/admin_escolar/screens/crear_cuenta_docente.dart
+﻿ // lib/admin_escolar/screens/crear_cuenta_docente.dart
 import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:crypto/crypto.dart';
 import 'package:edupro/admin_escolar/widgets/asignaturas.dart'
     show sharedSubjectsService;
 import 'package:edupro/models/escuela.dart';
 import 'package:edupro/utils/school_utils.dart' show normalizeSchoolIdFromEscuela;
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/services.dart';
 
 typedef OnCreateRequest = Future<void> Function(Map<String, dynamic> request);
@@ -34,6 +36,8 @@ class CrearCuentaDocentesScreen extends StatefulWidget {
 class _CrearCuentaDocentesScreenState extends State<CrearCuentaDocentesScreen> {
   final _formKey = GlobalKey<FormState>();
   final _db = FirebaseFirestore.instance;
+  final FirebaseFunctions _fn =
+      FirebaseFunctions.instanceFor(region: 'us-central1');
 
   final TextEditingController _nombreCtrl = TextEditingController();
   final TextEditingController _emailCtrl = TextEditingController();
@@ -53,6 +57,14 @@ class _CrearCuentaDocentesScreenState extends State<CrearCuentaDocentesScreen> {
   ];
   String _dialCode = '+1';
   final TextEditingController _phoneLocalCtrl = TextEditingController();
+
+  // Tandas multi
+  static const List<String> _availableTandas = <String>[
+    'Mañana',
+    'Tarde',
+    'Noche',
+  ];
+  final List<String> _tandasSeleccionadas = [];
 
   // Asignaturas multi
   final List<String> _asignaturasSeleccionadas = [];
@@ -79,15 +91,36 @@ class _CrearCuentaDocentesScreenState extends State<CrearCuentaDocentesScreen> {
   late final String _schoolId;
   late final String _schoolDocId;
 
+  void _logSignup(String message) {
+    if (!kDebugMode) return;
+    debugPrint('[DOCENTE_SIGNUP] $message');
+  }
+
+  Future<Map<String, dynamic>> _precheckTeacherSignup({
+    required String schoolId,
+    required String emailLower,
+    required String phoneHash,
+  }) async {
+    final callable = _fn.httpsCallable('precheckTeacherSignup');
+    final response = await callable.call(<String, dynamic>{
+      'schoolId': schoolId,
+      'emailLower': emailLower,
+      if (phoneHash.isNotEmpty) 'phoneHash': phoneHash,
+    });
+    final data = response.data;
+    if (data is Map) {
+      return data.map((key, value) => MapEntry('$key', value));
+    }
+    return const <String, dynamic>{};
+  }
+
   @override
   void initState() {
     super.initState();
 
     final rawId = normalizeSchoolIdFromEscuela(widget.escuela);
-    _schoolDocId =
-        rawId.startsWith('eduproapp_admin_') ? rawId : 'eduproapp_admin_$rawId';
-
-    _schoolId = _schoolDocId;
+    _schoolDocId = rawId;
+    _schoolId = rawId;
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _refreshGrades();
@@ -155,20 +188,42 @@ class _CrearCuentaDocentesScreenState extends State<CrearCuentaDocentesScreen> {
     required String schoolId,
     required String base,
   }) async {
-    var candidate = base;
+    final normalizedBase = base.trim().isEmpty ? 'docente' : base.trim();
+    var candidate = normalizedBase;
+    _logSignup(
+      'makeUniqueLoginKey start',
+    );
     for (int i = 0; i < 20; i++) {
-      final snap = await _db
-          .collection('schools')
-          .doc(schoolId)
-          .collection('teachers')
-          .where('loginKey', isEqualTo: candidate)
-          .limit(1)
-          .get();
-      if (snap.docs.isEmpty) return candidate;
-      final n = (DateTime.now().millisecondsSinceEpoch % 90) + 10; // 10..99
-      candidate = '$base.$n';
+      try {
+        final snap = await _db
+            .collection('schools')
+            .doc(schoolId)
+            .collection('teachers')
+            .where('loginKey', isEqualTo: candidate)
+            .limit(1)
+            .get();
+        _logSignup(
+          'makeUniqueLoginKey checked',
+        );
+        if (snap.docs.isEmpty) return candidate;
+        final n = (DateTime.now().millisecondsSinceEpoch % 90) + 10; // 10..99
+        candidate = '$normalizedBase.$n';
+      } on FirebaseException catch (e) {
+        if (e.code == 'permission-denied') {
+          final fallback =
+              '$normalizedBase.${DateTime.now().millisecondsSinceEpoch % 100000}';
+          _logSignup(
+            'makeUniqueLoginKey fallback permissionDenied',
+          );
+          return fallback;
+        }
+        _logSignup(
+          'makeUniqueLoginKey firestoreError',
+        );
+        rethrow;
+      }
     }
-    return '${base}.${DateTime.now().millisecondsSinceEpoch % 10000}';
+    return '$normalizedBase.${DateTime.now().millisecondsSinceEpoch % 10000}';
   }
 
   // ----------------------------
@@ -643,6 +698,10 @@ class _CrearCuentaDocentesScreenState extends State<CrearCuentaDocentesScreen> {
       _snack('Selecciona al menos un grado');
       return;
     }
+    if (_tandasSeleccionadas.isEmpty) {
+      _snack('Selecciona al menos una tanda');
+      return;
+    }
     if (_asignaturasSeleccionadas.isEmpty) {
       _snack('Selecciona al menos una asignatura');
       return;
@@ -661,70 +720,49 @@ class _CrearCuentaDocentesScreenState extends State<CrearCuentaDocentesScreen> {
     final grados = List<String>.from(_gradosSeleccionados);
     final gradosLower = grados.map((g) => g.toLowerCase()).toList();
     final gradosKeys = grados.map(_toKey).toList();
+    final tandas = List<String>.from(_tandasSeleccionadas);
+    final tandasLower = tandas.map((t) => t.toLowerCase()).toList();
+
+    _logSignup(
+      'submit start',
+    );
 
     setState(() => _loading = true);
 
     try {
-      // ✅ Anti-duplicados: revisa teachers y teacher_directory
-      final dup1 = await _db
-          .collection('schools')
-          .doc(schoolId)
-          .collection('teachers')
-          .where('emailLower', isEqualTo: emailLower)
-          .limit(1)
-          .get();
-
-      final dup2 = await _db
-          .collection('schools')
-          .doc(schoolId)
-          .collection('login_docentes')
-          .where('emailLower', isEqualTo: emailLower)
-          .limit(1)
-          .get();
-
-      if (dup1.docs.isNotEmpty || dup2.docs.isNotEmpty) {
-        _snack('Ya existe una solicitud o cuenta con ese correo.');
+      final precheck = await _precheckTeacherSignup(
+        schoolId: schoolId,
+        emailLower: emailLower,
+        phoneHash: phoneHash,
+      );
+      _logSignup('precheckTeacherSignup completed');
+      if (precheck['allowed'] != true) {
+        final message = (precheck['message'] ?? '').toString().trim();
+        _snack(
+          message.isNotEmpty
+              ? message
+              : 'No se pudo procesar la solicitud docente en este momento.',
+        );
         setState(() => _loading = false);
         return;
-      }
-
-      if (phoneHash.isNotEmpty) {
-        final dupP1 = await _db
-            .collection('schools')
-            .doc(schoolId)
-            .collection('teachers')
-            .where('phoneHash', isEqualTo: phoneHash)
-            .limit(1)
-            .get();
-
-        final dupP2 = await _db
-            .collection('schools')
-            .doc(schoolId)
-            .collection('teacher_directory')
-            .where('phoneHash', isEqualTo: phoneHash)
-            .limit(1)
-            .get();
-
-        if (dupP1.docs.isNotEmpty || dupP2.docs.isNotEmpty) {
-          _snack('Ya existe una solicitud o cuenta con ese teléfono.');
-          setState(() => _loading = false);
-          return;
-        }
       }
 
       // loginKey único
       final baseLoginKey = _normalizeTeacherLoginKey(name);
       final loginKey =
           await _makeUniqueLoginKey(schoolId: schoolId, base: baseLoginKey);
+      _logSignup('loginKey generated');
 
       // ✅ mismo teacherId para teachers / teacher_directory / teachers_public
       final teacherRef =
           _db.collection('schools').doc(schoolId).collection('teachers').doc();
       final teacherId = teacherRef.id;
+      _logSignup('teacher document allocated');
 
       final now = FieldValue.serverTimestamp();
 
       // teachers (privado)
+      _logSignup('writing teacher profile');
       await teacherRef.set({
         'teacherId': teacherId,
         'schoolId': schoolId,
@@ -740,16 +778,20 @@ class _CrearCuentaDocentesScreenState extends State<CrearCuentaDocentesScreen> {
         'grados': grados,
         'gradosLower': gradosLower,
         'gradosKeys': gradosKeys,
+        'tandas': tandas,
+        'tandasLower': tandasLower,
         'subjects': List<String>.from(_asignaturasSeleccionadas),
-      'status': 'pending',
-'statusLower': 'pending',
-'statusLabel': 'Pendiente',
+        'status': 'pending',
+        'statusLower': 'pending',
+        'statusLabel': 'Pendiente',
         'createdFrom': 'self_signup_google',
         'createdAt': now,
         'updatedAt': now,
       }, SetOptions(merge: true));
+      _logSignup('teacher profile written');
 
       // teacher_directory (privado: verificación real)
+      _logSignup('writing teacher directory');
       await _db
           .collection('schools')
           .doc(schoolId)
@@ -765,44 +807,48 @@ class _CrearCuentaDocentesScreenState extends State<CrearCuentaDocentesScreen> {
         'grados': grados,
         'gradosLower': gradosLower,
         'gradosKeys': gradosKeys,
+        'tandas': tandas,
+        'tandasLower': tandasLower,
         'status': 'blocked',
         'statusLower': 'blocked',
         'statusLabel': 'Bloqueado',
         'updatedAt': now,
         'createdAt': now,
       }, SetOptions(merge: true));
+      _logSignup('teacher directory written');
 
-// ✅ teachers_public (para autocomplete / selección antes del login)
-await _db
-    .collection('schools')
-    .doc(schoolId)
-    .collection('teachers_public')
-    .doc(teacherId)
-    .set({
-  'teacherId': teacherId,
-  'schoolId': schoolId,
-  'loginKey': loginKey,
-  'name': name,
-  'emailLower': emailLower,
-  if (phoneHash.isNotEmpty) 'phoneHash': phoneHash,
-
-  // 🔥 SINCRONIZACIÓN COMPLETA
-  'grades': grados,
-  'gradesLower': gradosLower,
-  'gradesKeys': gradosKeys,
-  'subjects': List<String>.from(_asignaturasSeleccionadas),
-
-  'status': 'blocked',
-  'statusLower': 'blocked',
-  'statusLabel': 'Bloqueado',
-  'isActive': false,
-
-  'updatedAt': now,
-  'createdAt': now,
-}, SetOptions(merge: true));
+      // ✅ teachers_public (para autocomplete / selección antes del login)
+      _logSignup('writing public teacher profile');
+      await _db
+          .collection('schools')
+          .doc(schoolId)
+          .collection('teachers_public')
+          .doc(teacherId)
+          .set({
+        'teacherId': teacherId,
+        'schoolId': schoolId,
+        'loginKey': loginKey,
+        'name': name,
+        'emailLower': emailLower,
+        if (phoneHash.isNotEmpty) 'phoneHash': phoneHash,
+        'grades': grados,
+        'gradesLower': gradosLower,
+        'gradesKeys': gradosKeys,
+        'tandas': tandas,
+        'tandasLower': tandasLower,
+        'subjects': List<String>.from(_asignaturasSeleccionadas),
+        'status': 'blocked',
+        'statusLower': 'blocked',
+        'statusLabel': 'Bloqueado',
+        'isActive': false,
+        'updatedAt': now,
+        'createdAt': now,
+      }, SetOptions(merge: true));
+      _logSignup('public teacher profile written');
 
       // limpiar UI
       _gradosSeleccionados.clear();
+      _tandasSeleccionadas.clear();
       _asignaturasSeleccionadas.clear();
       _nombreCtrl.clear();
       _emailCtrl.clear();
@@ -829,6 +875,7 @@ await _db
 
       setState(() => _loading = false);
     } catch (e) {
+      _logSignup('submit failed');
       if (!mounted) return;
       setState(() => _loading = false);
       _snack('Error al crear la solicitud: $e');
@@ -976,6 +1023,48 @@ await _db
                               ),
                             ),
                           ),
+                        ],
+                      ),
+                      const SizedBox(height: 18),
+
+                      // -----------------------
+                      // TANDAS
+                      // -----------------------
+                      const Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'Tandas',
+                          style: TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final tanda in _availableTandas)
+                            FilterChip(
+                              label: Text(tanda),
+                              selected: _tandasSeleccionadas.contains(tanda),
+                              onSelected: _loading
+                                  ? null
+                                  : (selected) {
+                                      setState(() {
+                                        if (selected) {
+                                          if (!_tandasSeleccionadas.contains(tanda)) {
+                                            _tandasSeleccionadas.add(tanda);
+                                          }
+                                        } else {
+                                          _tandasSeleccionadas.remove(tanda);
+                                        }
+                                        _tandasSeleccionadas.sort(
+                                          (a, b) => _availableTandas
+                                              .indexOf(a)
+                                              .compareTo(_availableTandas.indexOf(b)),
+                                        );
+                                      });
+                                    },
+                            ),
                         ],
                       ),
                       const SizedBox(height: 18),

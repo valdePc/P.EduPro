@@ -1,5 +1,6 @@
 // lib/alumnos/screens/alumnos.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
@@ -55,6 +56,7 @@ class AlumnosScreen extends StatefulWidget {
 
 class _AlumnosScreenState extends State<AlumnosScreen> {
   late final String _schoolId;
+  final FirebaseFunctions _fn = FirebaseFunctions.instanceFor(region: 'us-central1');
 
   // ----- UI / estados -----
   bool _loading = false; // botón principal (google / entrar)
@@ -98,18 +100,17 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
     super.initState();
     final raw = normalizeSchoolIdFromEscuela(widget.escuela);
     _schoolId = _ensureSchoolDocId(raw);
+    if (kDebugMode) {
+}
 
     // Carga catálogo SOLO para mapear nivel por grado (no para mostrar al tutor).
     _cargarCatalogoGrados();
   }
 
   // ---------------- Helpers ----------------
-  String _ensureSchoolDocId(String rawId) {
-    final id = rawId.trim();
-    if (id.isEmpty) return id;
-    return id.startsWith('eduproapp_admin_') ? id : 'eduproapp_admin_$id';
-  }
-
+String _ensureSchoolDocId(String rawId) {
+  return rawId.trim(); // ✅ ID real, sin prefijos
+}
   String _key(String s) {
     return s
         .toLowerCase()
@@ -151,15 +152,74 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
     setState(() => _errorText = msg);
   }
 
+  Future<Map<String, dynamic>> _callSchoolAccessIp({
+    required String operation,
+    String? reason,
+  }) async {
+    final callable = _fn.httpsCallable('schoolAccessIpPing');
+    final resp = await callable.call(<String, dynamic>{
+      'operation': operation,
+      'schoolId': _schoolId,
+      'audience': 'alumnos',
+      if (reason != null && reason.trim().isNotEmpty) 'reason': reason.trim(),
+    });
+    final raw = resp.data;
+    if (raw is Map) {
+      return raw.map((key, value) => MapEntry('$key', value));
+    }
+    return const <String, dynamic>{};
+  }
+
+  String _accessIpMessage(Map<String, dynamic> data) {
+    final message = (data['message'] ?? '').toString().trim();
+    if (message.isNotEmpty) return message;
+    return 'Esta IP no puede entrar en este momento.';
+  }
+
+  Future<bool> _precheckSchoolAccessIp() async {
+    try {
+      final result = await _callSchoolAccessIp(operation: 'precheck');
+      if (result['allowed'] == true) return true;
+      await _setError(_accessIpMessage(result));
+      return false;
+    } catch (e) {
+      await _setError('No se pudo validar el acceso por IP: $e');
+      return false;
+    }
+  }
+
+  Future<void> _recordSchoolAccessIpFailure(String reason) async {
+    try {
+      final result = await _callSchoolAccessIp(
+        operation: 'failure',
+        reason: reason,
+      );
+      if (result['blocked'] == true) {
+        await _setError(_accessIpMessage(result));
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _recordSchoolAccessIpSuccess() async {
+    try {
+      await _callSchoolAccessIp(operation: 'success');
+    } catch (_) {}
+  }
+
   Set<String> _extractStudentIds(Map<String, dynamic> data) {
     dynamic raw = data['studentIds'] ??
         data['studentsIds'] ??
         data['alumnoIds'] ??
         data['alumnosIds'];
+    final ids = <String>{};
     if (raw is List) {
-      return raw.map((e) => e.toString().trim()).where((x) => x.isNotEmpty).toSet();
+      ids.addAll(raw.map((e) => e.toString().trim()).where((x) => x.isNotEmpty));
     }
-    return <String>{};
+
+    final singleAlumnoId = (data['alumnoId'] ?? '').toString().trim();
+    if (singleAlumnoId.isNotEmpty) ids.add(singleAlumnoId);
+
+    return ids;
   }
 
   // ---------------- Cargar grados (para mapa de nivel) ----------------
@@ -361,26 +421,41 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
   // ---------------- Paso 1: Google + permisos + cargar lista ----------------
   Future<void> _continuarConGoogle() async {
     FocusScope.of(context).unfocus();
+    bool accessGranted = false;
     setState(() {
       _errorText = null;
       _loading = true;
+      _accessReady = false;
+      _alumnosAll = [];
+      _allowedIds = <String>{};
+      _gradoSel = null;
+      _alumnoSel = null;
     });
 
     try {
+      final ipAllowed = await _precheckSchoolAccessIp();
+      if (!ipAllowed) return;
+
       // 1) Google sign-in
       final cred = await _signInWithGoogle();
       final user = cred.user;
       if (user == null) {
+        await _recordSchoolAccessIpFailure('google_no_user');
         await _setError('No se pudo completar el inicio de sesión.');
         return;
       }
 
       final email = (user.email ?? '').trim();
       if (email.isEmpty) {
+        await _recordSchoolAccessIpFailure('google_missing_email');
         await _setError('Tu cuenta de Google no tiene email disponible.');
         return;
       }
       final emailLower = email.toLowerCase().trim();
+
+
+    if (kDebugMode) {
+}
 
       // 2) validar acceso por email
       final loginSnap = await _guard(
@@ -389,7 +464,20 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
       );
 
       if (!loginSnap.exists) {
+        await _recordSchoolAccessIpFailure('student_login_missing');
         if (mounted) {
+
+          if (kDebugMode) {
+  try {
+    final ref = _alumnosLoginCol.doc(emailLower);
+    final s = await ref.get();
+    if (s.exists) {
+      final d = s.data() ?? {};
+      final ids = d['studentIds'];
+    }
+  } on FirebaseException catch (e) {
+  }
+}
           setState(() {
             _accessReady = false;
             _alumnosAll = [];
@@ -410,6 +498,7 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
       _allowedIds = _extractStudentIds(data);
 
       if (_allowedIds.isEmpty) {
+        await _recordSchoolAccessIpFailure('student_without_assignments');
         await _setError('Tu acceso existe, pero no tiene alumnos asignados.');
         return;
       }
@@ -418,6 +507,7 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
       await _cargarAlumnosPermitidos(_allowedIds);
 
       if (_alumnosAll.isEmpty) {
+        await _recordSchoolAccessIpFailure('student_records_missing');
         await _setError('No se encontraron alumnos para este acceso.');
         return;
       }
@@ -430,7 +520,10 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
         _alumnoSel = null;
         _nameCtrl?.clear();
       });
+      await _recordSchoolAccessIpSuccess();
+      accessGranted = true;
     } on FirebaseException catch (e) {
+      await _recordSchoolAccessIpFailure('student_firebase_exception');
       if (e.code == 'permission-denied') {
         await _setError(
           'Permiso denegado.\n'
@@ -443,8 +536,20 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
         await _setError('Error: ${e.code}\nPaso: $_step');
       }
     } catch (e) {
+      await _recordSchoolAccessIpFailure('student_login_exception');
       await _setError('Error: $e\nPaso: $_step');
     } finally {
+      if (!accessGranted) {
+        await FirebaseAuth.instance.signOut();
+        if (mounted) {
+          setState(() {
+            _accessReady = false;
+            _alumnosAll = [];
+            _allowedIds = <String>{};
+            _alumnoSel = null;
+          });
+        }
+      }
       if (mounted) setState(() => _loading = false);
     }
   }
@@ -542,6 +647,18 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
       final nombreAlumno = ('$nombres $apellidos').trim().isEmpty
           ? selFinal.displayName
           : ('$nombres $apellidos').trim();
+
+      final emailLower = (user.email ?? '').trim().toLowerCase();
+      if (emailLower.isNotEmpty) {
+        try {
+          await _alumnosLoginCol.doc(emailLower).update({
+            'selectedAlumnoId': selFinal.id,
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+        } catch (_) {
+          // No bloqueamos la entrada si este ajuste auxiliar falla.
+        }
+      }
 
       _irAPerfil(
         nivel: nivel,
@@ -654,8 +771,8 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
   Widget build(BuildContext context) {
     const azul = Color(0xFF0D47A1);
     const azul2 = Color(0xFF1976D2);
+    const azulDark = Color(0xFF0A2D67);
     const naranja = Color(0xFFFFA000);
-    const bg = Color(0xFFF4F7FB);
 
     final escuelaNombre = (widget.escuela.nombre ?? '').toString().trim();
 
@@ -708,7 +825,7 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
     return Theme(
       data: localTheme,
       child: Scaffold(
-        backgroundColor: bg,
+        backgroundColor: Colors.transparent,
         extendBodyBehindAppBar: true,
         appBar: AppBar(
           automaticallyImplyLeading: false,
@@ -716,13 +833,49 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
           elevation: 0,
           title: const Text(''),
         ),
-        body: SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 680),
-                child: Column(
+        body: LayoutBuilder(
+          builder: (context, viewport) => Container(
+            height: double.infinity,
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [azul, azul2, Color(0xFF061736)],
+              ),
+            ),
+            child: SafeArea(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    minHeight: viewport.maxHeight - 36,
+                  ),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 680),
+                      child: Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          Colors.white.withOpacity(0.20),
+                          Colors.white.withOpacity(0.12),
+                          azulDark.withOpacity(0.16),
+                        ],
+                      ),
+                      borderRadius: BorderRadius.circular(26),
+                      border: Border.all(color: Colors.white.withOpacity(0.28)),
+                      boxShadow: [
+                        BoxShadow(
+                          blurRadius: 24,
+                          offset: const Offset(0, 12),
+                          color: Colors.black.withOpacity(0.24),
+                        ),
+                      ],
+                    ),
+                    child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     // HERO HEADER más pro (sin tocar tu lógica)
@@ -776,13 +929,14 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
                             children: [
                               // Logo con borde + sombra
                               GestureDetector(
-                                onLongPress: kDebugMode ? _accesoRapidoDebug : null,
+                                onLongPress: null,
                                 child: Container(
                                   width: 64,
                                   height: 64,
                                   decoration: BoxDecoration(
-                                    color: Colors.white,
+                                    color: azul,
                                     borderRadius: BorderRadius.circular(18),
+                                    border: Border.all(color: Colors.white24),
                                     boxShadow: const [
                                       BoxShadow(
                                         blurRadius: 16,
@@ -792,7 +946,12 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
                                     ],
                                   ),
                                   padding: const EdgeInsets.all(10),
-                                  child: Image.asset('assets/LogoAlumnos.png'),
+                                  child: Image.asset(
+                                    'assets/logo.png',
+                                    semanticLabel: 'Logotipo de EduPro',
+                                    errorBuilder: (_, __, ___) =>
+                                        const Icon(Icons.school, color: Colors.white),
+                                  ),
                                 ),
                               ),
                               const SizedBox(width: 14),
@@ -819,8 +978,8 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
                                         _loadingList
                                             ? 'Cargando alumnos…'
                                             : (!_accessReady
-                                                ? 'Inicia con Google para cargar tus alumnos'
-                                                : 'Elige grado y alumno, luego entra'),
+                                                ? 'Inicia con Google para cargar alumnos'
+                                                : 'Elige grado y alumno para iniciar sesion'),
                                         key: ValueKey('${_loadingList}_${_accessReady}'),
                                         style: TextStyle(
                                           color: Colors.white.withOpacity(0.82),
@@ -857,13 +1016,6 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
                                   ],
                                 ),
                               ),
-
-                              if (kDebugMode)
-                                IconButton(
-                                  tooltip: 'Acceso rápido (DEBUG)',
-                                  onPressed: _accesoRapidoDebug,
-                                  icon: const Icon(Icons.bolt, color: naranja),
-                                ),
                             ],
                           ),
                         ],
@@ -886,7 +1038,7 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
                       ),
                       child: Card(
                         elevation: 0,
-                        color: Colors.white,
+                        color: Colors.white.withOpacity(0.94),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
                         child: Padding(
                           padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
@@ -899,7 +1051,7 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
                                   const SizedBox(width: 10),
                                   Expanded(
                                     child: Text(
-                                      'EduAlumn',
+                                      'Recervado para alumnos',
                                       style: TextStyle(
                                         fontSize: 16,
                                         fontWeight: FontWeight.w900,
@@ -1150,12 +1302,40 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
                               // microcopy final (solo UI)
                               Text(
                                 !_accessReady
-                                    ? '¿No ves tu acceso? Pide a la administración que registre tu correo.'
-                                    : 'Si tienes varios alumnos, asegúrate de elegir el correcto antes de entrar.',
+                                    ? ''
+                                    : '',
                                 textAlign: TextAlign.center,
                                 style: TextStyle(
                                   color: Colors.grey.shade700,
                                   fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                decoration: BoxDecoration(
+                                  color: azul.withOpacity(0.08),
+                                  borderRadius: BorderRadius.circular(14),
+                                  border: Border.all(color: azul.withOpacity(0.12)),
+                                ),
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Text(
+                                      'Creado por EduPro',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w800,
+                                        color: azulDark,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    const Icon(
+                                      Icons.verified,
+                                      size: 16,
+                                      color: azul,
+                                    ),
+                                  ],
                                 ),
                               ),
                             ],
@@ -1165,7 +1345,11 @@ class _AlumnosScreenState extends State<AlumnosScreen> {
                     ),
 
                     const SizedBox(height: 14),
-                  ],
+                    ],
+                      ),
+                    ),
+                  ),
+                ),
                 ),
               ),
             ),

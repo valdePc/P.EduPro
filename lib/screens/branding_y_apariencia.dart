@@ -331,6 +331,7 @@ class _BrandingYAparienciaScreenState extends State<BrandingYAparienciaScreen> {
               Image.network(
                 _logoUrl!,
                 height: 48,
+                semanticLabel: 'Logotipo del centro educativo',
                 errorBuilder: (_, __, ___) => Icon(
                   Icons.image_not_supported,
                   size: 48,
@@ -400,6 +401,7 @@ class _BrandingYAparienciaScreenState extends State<BrandingYAparienciaScreen> {
               : Image.network(
                   _logoUrl!,
                   height: 84,
+                  semanticLabel: 'Vista previa del logotipo del centro educativo',
                   errorBuilder: (_, __, ___) =>
                       Icon(Icons.broken_image, size: 84, color: _primaryColor),
                 ),

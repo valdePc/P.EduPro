@@ -12,7 +12,12 @@
           "package_name": "com.example.edupro"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "876132148030-9t1divkdbop98sdp8i1uf5k4n5atb0id.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyA9RT-c6pmIuLVx8EizFD_a3_82ffRUbTs"
@@ -20,7 +25,55 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "876132148030-9t1divkdbop98sdp8i1uf5k4n5atb0id.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "876132148030-rg1lb1pd5brbf6kln4fetfn5dmfhcg18.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.edupro"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:876132148030:android:89c20f773adec139a3026f",
+        "android_client_info": {
+          "package_name": "com.valmich.edupro"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "876132148030-9t1divkdbop98sdp8i1uf5k4n5atb0id.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA9RT-c6pmIuLVx8EizFD_a3_82ffRUbTs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "876132148030-9t1divkdbop98sdp8i1uf5k4n5atb0id.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "876132148030-rg1lb1pd5brbf6kln4fetfn5dmfhcg18.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.edupro"
+              }
+            }
+          ]
         }
       }
     }

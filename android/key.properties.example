@@ -1,0 +1,7 @@
+# Copy this file to android/key.properties and fill it with your real values.
+# This file is ignored by git.
+
+storeFile=../keystores/valmich-edupro-release.jks
+storePassword=CHANGE_ME
+keyAlias=valmich_edupro_release
+keyPassword=CHANGE_ME

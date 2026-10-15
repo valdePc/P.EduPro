@@ -1,9 +1,9 @@
-// lib/calendario/services/appointments_service.dart
+// Servicio legacy que conserva el filtrado de audiencia y grupos.
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import '../models/appointment_model.dart';
-import '../models/user_role.dart';
+import '../calendario/models/user_role.dart';
 
 class AppointmentsService {
   final FirebaseFirestore _db;
@@ -101,10 +101,6 @@ class AppointmentsService {
         .where('start', isGreaterThanOrEqualTo: Timestamp.fromDate(startDay))
         .where('start', isLessThanOrEqualTo: Timestamp.fromDate(endDay))
         .orderBy('start');
-
-    // ⚠️ Firestore limit: arrayContainsAny admite máx 10 valores.
-    // Si tienes más de 10, hacemos fallback a filtrar en memoria.
-    final canUseArrayContainsAny = normGroups.isNotEmpty && normGroups.length <= 10;
 
     // Para teacher/student, intentamos reducir desde Firestore:
     // - Traer eventos "globales" (sin groups) NO se puede filtrar directo.

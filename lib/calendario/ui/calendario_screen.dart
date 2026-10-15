@@ -9,7 +9,7 @@ import 'package:edupro/calendario/services/appointments_service.dart';
 
 class CalendarioScreen extends StatefulWidget {
   final String schoolId;
-  final UserRole role;
+ final UserRole role; // ✅ no-null
 
   /// UID del usuario autenticado (o id del estudiante/docente si así lo manejas).
   final String userUid;
@@ -20,14 +20,14 @@ class CalendarioScreen extends StatefulWidget {
   /// Opcional: si vienes desde un Scaffold con AppBar propio y quieres ocultar el AppBar del calendario.
   final bool hideAppBar;
 
-  const CalendarioScreen({
-    super.key,
-    required this.schoolId,
-    required this.role,
-    required this.userUid,
-    this.userGroups = const [],
-    this.hideAppBar = false,
-  });
+const CalendarioScreen({
+  super.key,
+  required this.schoolId,
+  this.role = UserRole.student, // ✅ default (no necesitas pasarlo desde alumnos)
+  required this.userUid,
+  required this.userGroups,
+  this.hideAppBar = false, // ✅ default
+});
 
   @override
   State<CalendarioScreen> createState() => _CalendarioScreenState();
@@ -36,55 +36,75 @@ class CalendarioScreen extends StatefulWidget {
 class _CalendarioScreenState extends State<CalendarioScreen> {
   final AppointmentsService _svc = AppointmentsService();
 
+  bool get _canWrite => widget.role == UserRole.admin || widget.role == UserRole.teacher;
+
   DateTime _focusedDay = DateTime.now();
   DateTime _selectedDay = DateTime.now();
-
-  bool get _canWrite => widget.role == UserRole.admin;
 
   @override
   Widget build(BuildContext context) {
     final azul = const Color.fromARGB(255, 21, 101, 192);
+    final monthStart = DateTime(_focusedDay.year, _focusedDay.month, 1, 0, 0, 0);
+    final monthEnd = DateTime(_focusedDay.year, _focusedDay.month + 1, 0, 23, 59, 59);
 
-    final body = LayoutBuilder(
-      builder: (context, c) {
-        final isWide = c.maxWidth >= 900;
-
-        final calendar = _CalendarPanel(
-          focusedDay: _focusedDay,
-          selectedDay: _selectedDay,
-          onDaySelected: (selected, focused) {
-            setState(() {
-              _selectedDay = selected;
-              _focusedDay = focused;
-            });
-          },
-        );
-
-        final agenda = _AgendaPanel(
-          schoolId: widget.schoolId,
-          selectedDay: _selectedDay,
-          role: widget.role,
-          userUid: widget.userUid,
-          service: _svc,
-          canWrite: _canWrite,
-        );
-
-        if (isWide) {
-          return Row(
-            children: [
-              Expanded(child: calendar),
-              const VerticalDivider(width: 1),
-              Expanded(child: agenda),
-            ],
-          );
+    final body = StreamBuilder<List<AppointmentModel>>(
+      stream: _svc.watchAppointmentsRange(
+        schoolId: widget.schoolId,
+        from: monthStart,
+        to: monthEnd,
+      ),
+      builder: (context, monthSnap) {
+        final monthItems = monthSnap.data ?? const <AppointmentModel>[];
+        final visible = _filterByRole(widget.role, monthItems);
+        final availableDays = <DateTime>{};
+        for (final a in visible) {
+          if (a.canceled) continue;
+          availableDays.add(DateTime(a.start.year, a.start.month, a.start.day));
         }
 
-        return Column(
-          children: [
-            Expanded(flex: 5, child: calendar),
-            const Divider(height: 1),
-            Expanded(flex: 6, child: agenda),
-          ],
+        return LayoutBuilder(
+          builder: (context, c) {
+            final isWide = c.maxWidth >= 900;
+
+            final calendar = _CalendarPanel(
+              focusedDay: _focusedDay,
+              selectedDay: _selectedDay,
+              availableDays: availableDays,
+              onDaySelected: (selected, focused) {
+                setState(() {
+                  _selectedDay = selected;
+                  _focusedDay = focused;
+                });
+              },
+            );
+
+            final agenda = _AgendaPanel(
+              schoolId: widget.schoolId,
+              selectedDay: _selectedDay,
+              role: widget.role, // ✅ aquí
+              userUid: widget.userUid,
+              service: _svc,
+              canWrite: _canWrite,
+            );
+
+            if (isWide) {
+              return Row(
+                children: [
+                  Expanded(child: calendar),
+                  const VerticalDivider(width: 1),
+                  Expanded(child: agenda),
+                ],
+              );
+            }
+
+            return Column(
+              children: [
+                Expanded(flex: 5, child: calendar),
+                const Divider(height: 1),
+                Expanded(flex: 6, child: agenda),
+              ],
+            );
+          },
         );
       },
     );
@@ -94,27 +114,34 @@ class _CalendarioScreenState extends State<CalendarioScreen> {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: azul,
-        title: const Text('Agenda'),
+        title: const Text('Disponibilidad'),
       ),
       body: body,
     );
   }
 }
-
 class _CalendarPanel extends StatelessWidget {
   final DateTime focusedDay;
   final DateTime selectedDay;
+  final Set<DateTime> availableDays;
   final void Function(DateTime selectedDay, DateTime focusedDay) onDaySelected;
 
   const _CalendarPanel({
     required this.focusedDay,
     required this.selectedDay,
+    required this.availableDays,
     required this.onDaySelected,
   });
 
   @override
   Widget build(BuildContext context) {
     final azul = const Color.fromARGB(255, 21, 101, 192);
+    final naranja = const Color(0xFFFFA000);
+
+    bool hasAvailability(DateTime d) {
+      final key = DateTime(d.year, d.month, d.day);
+      return availableDays.contains(key);
+    }
 
     return Padding(
       padding: const EdgeInsets.all(12),
@@ -148,6 +175,61 @@ class _CalendarPanel extends StatelessWidget {
                 shape: BoxShape.circle,
               ),
             ),
+            calendarBuilders: CalendarBuilders(
+              defaultBuilder: (context, day, focusedDay) {
+                if (!hasAvailability(day)) return null;
+                return Container(
+                  margin: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: naranja.withOpacity(0.18),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: naranja.withOpacity(0.75)),
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    '${day.day}',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                );
+              },
+              todayBuilder: (context, day, focusedDay) {
+                if (!hasAvailability(day)) return null;
+                return Container(
+                  margin: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: naranja.withOpacity(0.24),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: azul, width: 1.4),
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    '${day.day}',
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                );
+              },
+              selectedBuilder: (context, day, focusedDay) {
+                if (!hasAvailability(day)) return null;
+                return Container(
+                  margin: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: azul,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: naranja, width: 2),
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    '${day.day}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                );
+              },
+            ),
           ),
         ),
       ),
@@ -158,20 +240,20 @@ class _CalendarPanel extends StatelessWidget {
 class _AgendaPanel extends StatelessWidget {
   final String schoolId;
   final DateTime selectedDay;
-  final UserRole role;
+  final UserRole role; // ✅ no-null
 
   final String userUid;
   final AppointmentsService service;
   final bool canWrite;
 
-  const _AgendaPanel({
-    required this.schoolId,
-    required this.selectedDay,
-    required this.role,
-    required this.userUid,
-    required this.service,
-    required this.canWrite,
-  });
+const _AgendaPanel({
+  required this.schoolId,
+  required this.selectedDay,
+  required this.role,
+  required this.userUid,
+  required this.service,
+  required this.canWrite,
+});
 
   @override
   Widget build(BuildContext context) {
@@ -190,7 +272,7 @@ class _AgendaPanel extends StatelessWidget {
                 children: [
                   Expanded(
                     child: Text(
-                      'Citas: $dayLabel',
+                      'Disponibilidad: $dayLabel',
                       style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
                     ),
                   ),
@@ -208,7 +290,7 @@ class _AgendaPanel extends StatelessWidget {
                         );
                       },
                       icon: const Icon(Icons.add),
-                      label: const Text('Agendar'),
+                      label: const Text('Definir'),
                     ),
                 ],
               ),
@@ -228,7 +310,7 @@ class _AgendaPanel extends StatelessWidget {
                 final items = _filterByRole(role, snap.data!);
 
                 if (items.isEmpty) {
-                  return const Center(child: Text('No hay citas para este día.'));
+                  return const Center(child: Text('No hay disponibilidad para este día.'));
                 }
 
                 return ListView.separated(
@@ -338,6 +420,8 @@ class _CreateAppointmentDialog extends StatefulWidget {
   State<_CreateAppointmentDialog> createState() => _CreateAppointmentDialogState();
 }
 
+enum _RepeatMode { once, allDays, monFri, weekly, customWeekdays }
+
 class _CreateAppointmentDialogState extends State<_CreateAppointmentDialog> {
   final _title = TextEditingController();
   final _desc = TextEditingController();
@@ -346,7 +430,21 @@ class _CreateAppointmentDialogState extends State<_CreateAppointmentDialog> {
   TimeOfDay _end = const TimeOfDay(hour: 9, minute: 0);
 
   AudienceScope _audience = AudienceScope.adminOnly;
+  _RepeatMode _repeatMode = _RepeatMode.once;
+  late DateTime _fromDate;
+  DateTime? _untilDate;
+  final Set<int> _customWeekdays = <int>{DateTime.monday};
   bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _fromDate = DateTime(
+      widget.selectedDay.year,
+      widget.selectedDay.month,
+      widget.selectedDay.day,
+    );
+  }
 
   @override
   void dispose() {
@@ -356,9 +454,9 @@ class _CreateAppointmentDialogState extends State<_CreateAppointmentDialog> {
   }
 
   DateTime _toDateTime(TimeOfDay t) => DateTime(
-        widget.selectedDay.year,
-        widget.selectedDay.month,
-        widget.selectedDay.day,
+        _fromDate.year,
+        _fromDate.month,
+        _fromDate.day,
         t.hour,
         t.minute,
       );
@@ -369,12 +467,44 @@ class _CreateAppointmentDialogState extends State<_CreateAppointmentDialog> {
     return e.isAfter(s);
   }
 
+  String _mapRepeatMode(_RepeatMode m) {
+    switch (m) {
+      case _RepeatMode.once:
+        return 'once';
+      case _RepeatMode.allDays:
+        return 'all_days';
+      case _RepeatMode.monFri:
+        return 'mon_fri';
+      case _RepeatMode.weekly:
+        return 'weekly';
+      case _RepeatMode.customWeekdays:
+        return 'custom_weekdays';
+    }
+  }
+
+  Widget _weekdayChip(int weekday, String label) {
+    final selected = _customWeekdays.contains(weekday);
+    return FilterChip(
+      label: Text(label),
+      selected: selected,
+      onSelected: (v) {
+        setState(() {
+          if (v) {
+            _customWeekdays.add(weekday);
+          } else {
+            _customWeekdays.remove(weekday);
+          }
+        });
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final azul = const Color.fromARGB(255, 21, 101, 192);
 
     return AlertDialog(
-      title: const Text('Agendar cita'),
+      title: const Text('Definir disponibilidad'),
       content: SizedBox(
         width: 520,
         child: SingleChildScrollView(
@@ -440,6 +570,94 @@ class _CreateAppointmentDialogState extends State<_CreateAppointmentDialog> {
                 ],
                 onChanged: (v) => setState(() => _audience = v ?? AudienceScope.adminOnly),
               ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<_RepeatMode>(
+                value: _repeatMode,
+                decoration: const InputDecoration(
+                  labelText: 'Frecuencia',
+                  border: OutlineInputBorder(),
+                ),
+                items: const [
+                  DropdownMenuItem(value: _RepeatMode.once, child: Text('Una vez')),
+                  DropdownMenuItem(value: _RepeatMode.allDays, child: Text('Todos los días')),
+                  DropdownMenuItem(value: _RepeatMode.monFri, child: Text('Lunes a viernes')),
+                  DropdownMenuItem(value: _RepeatMode.weekly, child: Text('Semanal (mismo día)')),
+                  DropdownMenuItem(value: _RepeatMode.customWeekdays, child: Text('Días específicos')),
+                ],
+                onChanged: (v) => setState(() {
+                  _repeatMode = v ?? _RepeatMode.once;
+                  if (_repeatMode == _RepeatMode.once) _untilDate = null;
+                }),
+              ),
+              if (_repeatMode == _RepeatMode.customWeekdays) ...[
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _weekdayChip(1, 'L'),
+                    _weekdayChip(2, 'M'),
+                    _weekdayChip(3, 'X'),
+                    _weekdayChip(4, 'J'),
+                    _weekdayChip(5, 'V'),
+                    _weekdayChip(6, 'S'),
+                    _weekdayChip(7, 'D'),
+                  ],
+                ),
+              ],
+              const SizedBox(height: 10),
+              InkWell(
+                onTap: () async {
+                  final picked = await showDatePicker(
+                    context: context,
+                    initialDate: _fromDate,
+                    firstDate: DateTime(widget.selectedDay.year - 1),
+                    lastDate: DateTime(widget.selectedDay.year + 2),
+                  );
+                  if (picked != null) {
+                    setState(() {
+                      _fromDate = picked;
+                      if (_untilDate != null && _untilDate!.isBefore(_fromDate)) {
+                        _untilDate = _fromDate;
+                      }
+                    });
+                  }
+                },
+                child: InputDecorator(
+                  decoration: const InputDecoration(
+                    labelText: 'Desde',
+                    border: OutlineInputBorder(),
+                  ),
+                  child: Text(DateFormat('dd/MM/yyyy').format(_fromDate)),
+                ),
+              ),
+              if (_repeatMode != _RepeatMode.once) ...[
+                const SizedBox(height: 10),
+                InkWell(
+                  onTap: () async {
+                    final picked = await showDatePicker(
+                      context: context,
+                      initialDate: _untilDate ?? _fromDate.add(const Duration(days: 28)),
+                      firstDate: _fromDate,
+                      lastDate: DateTime(widget.selectedDay.year + 2),
+                    );
+                    if (picked != null) {
+                      setState(() => _untilDate = picked);
+                    }
+                  },
+                  child: InputDecorator(
+                    decoration: const InputDecoration(
+                      labelText: 'Hasta',
+                      border: OutlineInputBorder(),
+                    ),
+                    child: Text(
+                      _untilDate == null
+                          ? 'Seleccionar fecha límite'
+                          : DateFormat('dd/MM/yyyy').format(_untilDate!),
+                    ),
+                  ),
+                ),
+              ],
               const SizedBox(height: 8),
               if (!_validateTimeRange())
                 const Align(
@@ -463,7 +681,7 @@ class _CreateAppointmentDialogState extends State<_CreateAppointmentDialog> {
           onPressed: _saving
               ? null
               : () async {
-                  final title = _title.text.trim();
+                  final title = _title.text.trim().isEmpty ? 'Disponible' : _title.text.trim();
                   if (title.isEmpty) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text('El título no puede estar vacío.')),
@@ -476,16 +694,33 @@ class _CreateAppointmentDialogState extends State<_CreateAppointmentDialog> {
                     );
                     return;
                   }
+                  if (_repeatMode != _RepeatMode.once && _untilDate == null) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Selecciona hasta qué fecha repetir.')),
+                    );
+                    return;
+                  }
+                  if (_repeatMode == _RepeatMode.customWeekdays &&
+                      _customWeekdays.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Selecciona al menos un día.')),
+                    );
+                    return;
+                  }
 
                   setState(() => _saving = true);
                   try {
-                    await widget.service.createAppointment(
+                    await widget.service.createAvailability(
                       schoolId: widget.schoolId,
                       title: title,
                       description: _desc.text,
                       start: _toDateTime(_start),
                       end: _toDateTime(_end),
                       audience: _audience,
+                      repeatMode: _mapRepeatMode(_repeatMode),
+                      repeatFrom: _fromDate,
+                      repeatUntil: _untilDate,
+                      repeatWeekdays: _customWeekdays.toList(),
                     );
                     if (mounted) Navigator.pop(context);
                   } catch (e) {
@@ -504,6 +739,10 @@ class _CreateAppointmentDialogState extends State<_CreateAppointmentDialog> {
       ],
     );
   }
+}
+
+List<AppointmentModel> _filterByRole(UserRole role, List<AppointmentModel> items) {
+  return _AgendaPanel._filterByRole(role, items);
 }
 
 class _TimePick extends StatelessWidget {
@@ -534,3 +773,4 @@ class _TimePick extends StatelessWidget {
     );
   }
 }
+

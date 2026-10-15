@@ -6,6 +6,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import 'package:edupro/models/escuela.dart';
+import 'package:edupro/admin_escolar/widgets/admin_back_button.dart';
 import 'package:edupro/utils/school_utils.dart' show normalizeSchoolIdFromEscuela;
 
 /// ------------------------------------------------------------
@@ -14,7 +15,7 @@ import 'package:edupro/utils/school_utils.dart' show normalizeSchoolIdFromEscuel
 /// Estructura usada:
 /// schools/{schoolId}
 ///   config_academica/periodos/lista/{periodoId}  (P1..P4)
-///   planificaciones_anuales/{planId}             (por año + grado)
+///   planificaciones_anuales/{planId}             (por ano + grado)
 ///   teachers/{teacherId}
 ///     curricular_progress/{unidadId}
 ///     attendance/{dateId}
@@ -22,7 +23,7 @@ import 'package:edupro/utils/school_utils.dart' show normalizeSchoolIdFromEscuel
 ///     tasks/{taskId} (opcional)
 ///
 /// Nota importante:
-/// Para que el mapeo sea perfecto, cada unidad en planificación anual debería tener:
+/// Para que el mapeo sea perfecto, cada unidad en planificacion anual deberia tener:
 ///   - unidadId (o id) estable
 ///   - periodoId: "P1".."P4"
 ///   - indicadores (lista de ids o lista de objetos con id)
@@ -31,11 +32,13 @@ import 'package:edupro/utils/school_utils.dart' show normalizeSchoolIdFromEscuel
 class AMonitoreoDocentes extends StatefulWidget {
   final Escuela escuela;
   final String? schoolIdOverride;
+  final VoidCallback? onBack;
 
   const AMonitoreoDocentes({
     Key? key,
     required this.escuela,
     this.schoolIdOverride,
+    this.onBack,
   }) : super(key: key);
 
   @override
@@ -81,7 +84,7 @@ class _AMonitoreoDocentesState extends State<AMonitoreoDocentes> {
           : normalizeSchoolIdFromEscuela(widget.escuela);
 
       if (resolved.trim().isEmpty) {
-        throw Exception('schoolId vacío (override y normalización fallaron).');
+        throw Exception('schoolId vacio (override y normalizacion fallaron).');
       }
 
       setState(() {
@@ -102,6 +105,10 @@ class _AMonitoreoDocentesState extends State<AMonitoreoDocentes> {
 
     return Scaffold(
       appBar: AppBar(
+        backgroundColor: Colors.indigo.shade900,
+        foregroundColor: Colors.white,
+        elevation: 0,
+        leading: AdminBackButton(onBack: widget.onBack),
         title: const Text('Monitoreo de Docentes'),
         actions: [
           IconButton(
@@ -183,7 +190,7 @@ class _AMonitoreoDocentesState extends State<AMonitoreoDocentes> {
       floatingActionButton: (_schoolId != null && _selected != null)
           ? FloatingActionButton.extended(
               icon: const Icon(Icons.add_comment_outlined),
-              label: const Text('Agregar observación'),
+              label: const Text('Agregar observacion'),
               onPressed: () => _openAddFeedback(
                 context: context,
                 schoolId: _schoolId!,
@@ -209,7 +216,7 @@ class _AMonitoreoDocentesState extends State<AMonitoreoDocentes> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: Text('Observación para $teacherName'),
+        title: Text('Observacion para $teacherName'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -233,7 +240,7 @@ class _AMonitoreoDocentesState extends State<AMonitoreoDocentes> {
               maxLines: 6,
               decoration: const InputDecoration(
                 labelText: 'Detalles',
-                hintText: 'Describe la observación…',
+                hintText: 'Describe la observacion...',
                 border: OutlineInputBorder(),
               ),
             ),
@@ -248,7 +255,7 @@ class _AMonitoreoDocentesState extends State<AMonitoreoDocentes> {
             onPressed: () {
               if (detailsCtrl.text.trim().length < 5) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Escribe un poco más de detalle.')),
+                  const SnackBar(content: Text('Escribe un poco mas de detalle.')),
                 );
                 return;
               }
@@ -270,7 +277,7 @@ class _AMonitoreoDocentesState extends State<AMonitoreoDocentes> {
         );
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Observación guardada.')),
+            const SnackBar(content: Text('Observacion guardada.')),
           );
         }
       } catch (e) {
@@ -392,8 +399,8 @@ class _TeachersPane extends StatelessWidget {
       children: [
         const _PaneHeader(
           title: 'Docentes',
-          subtitle: 'Semáforo por KPIs + detalle por periodos',
-          trailing: Icon(Icons.school_outlined),
+          subtitle: 'Vista general de carga, planes, chats y seguimiento',
+          trailing: Icon(Icons.manage_accounts_outlined),
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
@@ -403,7 +410,7 @@ class _TeachersPane extends StatelessWidget {
                 controller: searchCtrl,
                 decoration: InputDecoration(
                   prefixIcon: const Icon(Icons.search),
-                  hintText: 'Buscar por nombre, grado o nivel…',
+                  hintText: 'Buscar por nombre, grado, asignatura o nivel...',
                   border: const OutlineInputBorder(),
                   isDense: true,
                   suffixIcon: ValueListenableBuilder<TextEditingValue>(
@@ -429,9 +436,8 @@ class _TeachersPane extends StatelessWidget {
                 ),
                 items: const [
                   DropdownMenuItem(value: 'Todos', child: Text('Todos')),
-                  DropdownMenuItem(value: 'Verde', child: Text('Verde')),
-                  DropdownMenuItem(value: 'Amarillo', child: Text('Amarillo')),
-                  DropdownMenuItem(value: 'Rojo', child: Text('Rojo')),
+                  DropdownMenuItem(value: 'Activos', child: Text('Activos')),
+                  DropdownMenuItem(value: 'Pendientes', child: Text('Pendientes')),
                 ],
                 onChanged: (v) => onStatusFilterChanged(v ?? 'Todos'),
               ),
@@ -455,8 +461,9 @@ class _TeachersPane extends StatelessWidget {
                 list = list.where((t) {
                   final hay = [
                     t.nombreCompleto,
-                    t.gradoAsignado,
                     t.nivelAsignado,
+                    t.gradesLabel,
+                    t.subjectsLabel,
                   ].join(' ').toLowerCase();
                   return hay.contains(q);
                 }).toList();
@@ -464,10 +471,8 @@ class _TeachersPane extends StatelessWidget {
 
               if (statusFilter != 'Todos') {
                 list = list.where((t) {
-                  final s = t.semaforo.name;
-                  if (statusFilter == 'Verde') return s == 'green';
-                  if (statusFilter == 'Amarillo') return s == 'yellow';
-                  if (statusFilter == 'Rojo') return s == 'red';
+                  if (statusFilter == 'Activos') return t.enabled;
+                  if (statusFilter == 'Pendientes') return !t.enabled;
                   return true;
                 }).toList();
               }
@@ -513,47 +518,79 @@ class _TeachersPane extends StatelessWidget {
                           ),
                         ],
                       ),
-                      child: Row(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          _SemaforoDot(status: t.semaforo),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  t.nombreCompleto,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: theme.textTheme.titleMedium?.copyWith(
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  '${t.gradoAsignado} • ${t.nivelAsignado}',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    color: theme.textTheme.bodySmall?.color?.withOpacity(0.75),
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                Wrap(
-                                  spacing: 8,
-                                  runSpacing: 8,
+                          Row(
+                            children: [
+                              _TeacherStateDot(enabled: t.enabled),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    _KpiChip(label: 'Curricular', value: t.kpiCurricular),
-                                    _KpiChip(label: 'Indicadores', value: t.kpiLogro),
-                                    _KpiChip(label: 'Asistencia', value: t.kpiAttendance),
-                                    _KpiChip(label: 'Promedio', value: t.kpiAverage, emphasize: true),
+                                    Text(
+                                      t.nombreCompleto,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: theme.textTheme.titleMedium?.copyWith(
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 3),
+                                    Text(
+                                      t.nivelAsignado,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: theme.textTheme.bodySmall?.copyWith(
+                                        color: theme.textTheme.bodySmall?.color?.withOpacity(0.72),
+                                      ),
+                                    ),
                                   ],
                                 ),
-                              ],
-                            ),
+                              ),
+                              const SizedBox(width: 8),
+                              _TeacherStateChip(enabled: t.enabled),
+                              const SizedBox(width: 6),
+                              Icon(Icons.chevron_right,
+                                  color: theme.iconTheme.color?.withOpacity(0.6)),
+                            ],
                           ),
-                          const SizedBox(width: 8),
-                          Icon(Icons.chevron_right, color: theme.iconTheme.color?.withOpacity(0.6)),
+                          const SizedBox(height: 10),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              _SoftInfoChip(
+                                icon: Icons.groups_2_outlined,
+                                label: t.effectiveGradeNames.length == 1
+                                    ? t.effectiveGradeNames.first
+                                    : '${t.effectiveGradeNames.length} grados',
+                              ),
+                              _SoftInfoChip(
+                                icon: Icons.menu_book_outlined,
+                                label: t.effectiveSubjectNames.isEmpty
+                                    ? 'Sin asignaturas'
+                                    : t.effectiveSubjectNames.length == 1
+                                        ? t.effectiveSubjectNames.first
+                                        : '${t.effectiveSubjectNames.length} asignaturas',
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              _KpiChip(label: 'Curricular', value: t.kpiCurricular),
+                              _KpiChip(label: 'Logro', value: t.kpiLogro),
+                              _KpiChip(label: 'Asistencia', value: t.kpiAttendance),
+                              _KpiChip(
+                                  label: 'Promedio',
+                                  value: t.kpiAverage,
+                                  emphasize: true),
+                            ],
+                          ),
                         ],
                       ),
                     ),
@@ -613,9 +650,9 @@ class _TeacherDetailPane extends StatelessWidget {
     return Column(
       children: [
         _PaneHeader(
-          title: 'Detalle',
-          subtitle: 'Periodos + unidades + indicadores + asistencia',
-          trailing: _SemaforoPill(status: t.semaforo),
+          title: 'Monitoreo completo',
+          subtitle: 'Seguimiento de grados, planes, chats y desempeño del docente',
+          trailing: _TeacherStateChip(enabled: t.enabled),
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
@@ -628,85 +665,282 @@ class _TeacherDetailPane extends StatelessWidget {
           ),
         ),
         Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 18),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _TeacherHeaderCard(theme: theme, t: t),
-                const SizedBox(height: 12),
-
-                FutureBuilder<TeacherCurricularMetrics>(
-                  future: service.getTeacherCurricularMetrics(
-                    schoolId: schoolId,
-                    teacherId: t.teacherId,
-                    anio: anio,
-                    grado: t.gradoAsignado,
-                  ),
-                  builder: (context, snap) {
-                    if (snap.hasError) {
-                      return _CardError(title: 'Avance Curricular', error: snap.error.toString());
-                    }
-                    if (!snap.hasData) return const _LoadingCard(title: 'Avance Curricular');
-                    return _CurricularCard(theme: theme, metrics: snap.data!);
-                  },
-                ),
-
-                const SizedBox(height: 12),
-
-                FutureBuilder<AttendanceSummary>(
-                  future: service.getAttendanceSummary(
-                    schoolId: schoolId,
-                    teacherId: t.teacherId,
-                    month: mes,
-                  ),
-                  builder: (context, snap) {
-                    if (snap.hasError) {
-                      return _CardError(title: 'Asistencia', error: snap.error.toString());
-                    }
-                    if (!snap.hasData) return const _LoadingCard(title: 'Asistencia');
-                    return _AttendanceCard(theme: theme, summary: snap.data!, month: mes);
-                  },
-                ),
-
-                const SizedBox(height: 12),
-
-                StreamBuilder<List<FeedbackItem>>(
-                  stream: service.streamLatestFeedback(
-                    schoolId: schoolId,
-                    teacherId: t.teacherId,
-                    limit: 5,
-                  ),
-                  builder: (context, snap) {
-                    if (snap.hasError) {
-                      return _CardError(title: 'Observaciones', error: snap.error.toString());
-                    }
-                    if (!snap.hasData) return const _LoadingCard(title: 'Observaciones');
-                    return _FeedbackCard(theme: theme, items: snap.data!);
-                  },
-                ),
-
-                const SizedBox(height: 12),
-
-                StreamBuilder<List<TaskItem>>(
-                  stream: service.streamTasks(
-                    schoolId: schoolId,
-                    teacherId: t.teacherId,
-                    limit: 8,
-                  ),
-                  builder: (context, snap) {
-                    if (snap.hasError) {
-                      return _TasksCard(theme: theme, items: const [], hint: 'Tasks no configurado (opcional).');
-                    }
-                    if (!snap.hasData) return const _LoadingCard(title: 'Tareas administrativas');
-                    return _TasksCard(theme: theme, items: snap.data!);
-                  },
-                ),
-              ],
+          child: FutureBuilder<TeacherMonitoringSnapshot>(
+            future: service.getTeacherMonitoringSnapshot(
+              schoolId: schoolId,
+              teacher: t,
+              anio: anio,
             ),
+            builder: (context, monitorSnap) {
+              if (monitorSnap.hasError) {
+                return SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 18),
+                  child: _CardError(
+                    title: 'Monitoreo',
+                    error: monitorSnap.error.toString(),
+                  ),
+                );
+              }
+              if (!monitorSnap.hasData) {
+                return const SingleChildScrollView(
+                  padding: EdgeInsets.fromLTRB(12, 0, 12, 18),
+                  child: _LoadingCard(title: 'Monitoreo del docente'),
+                );
+              }
+
+              final monitoring = monitorSnap.data!;
+
+              return SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 18),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _TeacherOverviewCard(theme: theme, teacher: t, data: monitoring),
+                    const SizedBox(height: 12),
+                    FutureBuilder<TeacherCurricularMetrics>(
+                      future: service.getTeacherCurricularMetrics(
+                        schoolId: schoolId,
+                        teacher: t,
+                        anio: anio,
+                      ),
+                      builder: (context, snap) {
+                        if (snap.hasError) {
+                          return _CardError(
+                              title: 'Avance Curricular', error: snap.error.toString());
+                        }
+                        if (!snap.hasData) {
+                          return const _LoadingCard(title: 'Avance Curricular');
+                        }
+                        return _CurricularCard(theme: theme, metrics: snap.data!);
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    _PlansMonitoringCard(theme: theme, plans: monitoring.plans),
+                    const SizedBox(height: 12),
+                    _ChatsMonitoringCard(
+                      theme: theme,
+                      chats: monitoring.chats,
+                      onOpen: (chat) => _openReadOnlyChat(
+                        context,
+                        theme,
+                        service,
+                        schoolId,
+                        chat,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                     FutureBuilder<AttendanceSummary>(
+                       future: service.getAttendanceSummary(
+                         schoolId: schoolId,
+                         teacher: t,
+                         month: mes,
+                      ),
+                      builder: (context, snap) {
+                        if (snap.hasError) {
+                          return _CardError(title: 'Asistencia', error: snap.error.toString());
+                        }
+                         if (!snap.hasData) return const _LoadingCard(title: 'Asistencia');
+                         return _AttendanceCard(theme: theme, summary: snap.data!, month: mes);
+                       },
+                     ),
+                     const SizedBox(height: 12),
+                     _AttendanceEditAccessCard(
+                       theme: theme,
+                       schoolId: schoolId,
+                       teacher: t,
+                       service: service,
+                     ),
+                     const SizedBox(height: 12),
+                     StreamBuilder<List<FeedbackItem>>(
+                       stream: service.streamLatestFeedback(
+                         schoolId: schoolId,
+                         teacherId: t.teacherId,
+                         limit: 5,
+                      ),
+                      builder: (context, snap) {
+                        if (snap.hasError) {
+                          return _CardError(title: 'Observaciones', error: snap.error.toString());
+                        }
+                        if (!snap.hasData) return const _LoadingCard(title: 'Observaciones');
+                        return _FeedbackCard(theme: theme, items: snap.data!);
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    StreamBuilder<List<TaskItem>>(
+                      stream: service.streamTasks(
+                        schoolId: schoolId,
+                        teacherId: t.teacherId,
+                        limit: 8,
+                      ),
+                      builder: (context, snap) {
+                        if (snap.hasError) {
+                          return _TasksCard(
+                            theme: theme,
+                            items: const [],
+                            hint: 'Tasks no configurado (opcional).',
+                          );
+                        }
+                        if (!snap.hasData) {
+                          return const _LoadingCard(title: 'Tareas administrativas');
+                        }
+                        return _TasksCard(theme: theme, items: snap.data!);
+                      },
+                    ),
+                  ],
+                ),
+              );
+            },
           ),
         ),
       ],
+    );
+  }
+
+  Future<void> _openReadOnlyChat(
+    BuildContext context,
+    ThemeData theme,
+    MonitoreoService service,
+    String schoolId,
+    ChatPreviewItem chat,
+  ) async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => Dialog(
+        insetPadding: const EdgeInsets.all(24),
+        child: SizedBox(
+          width: 760,
+          height: 620,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 12, 12),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            chat.subjectLabel.trim().isEmpty
+                                ? 'Chat del grado ${chat.gradeLabel}'
+                                : '${chat.gradeLabel} • ${chat.subjectLabel}',
+                            style: theme.textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          const Text('Vista de solo lectura para administración escolar'),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: StreamBuilder<List<Map<String, dynamic>>>(
+                  stream: service.streamGradeChatMessages(
+                    schoolId: schoolId,
+                    threadId: chat.threadId,
+                  ),
+                  builder: (context, snap) {
+                    if (snap.hasError) {
+                      return Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: Text(
+                            'No se pudo cargar el chat: ${snap.error}',
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      );
+                    }
+                    if (!snap.hasData) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    final items = snap.data!;
+                    if (items.isEmpty) {
+                      return const Center(child: Text('No hay mensajes registrados.'));
+                    }
+                    return ListView.separated(
+                      padding: const EdgeInsets.all(16),
+                      itemCount: items.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 10),
+                      itemBuilder: (_, index) {
+                        final msg = items[index];
+                        final sender = (msg['senderName'] ??
+                                msg['name'] ??
+                                msg['senderUid'] ??
+                                'Usuario')
+                            .toString();
+                        final role = (msg['senderRole'] ??
+                                msg['role'] ??
+                                msg['rol'] ??
+                                '')
+                            .toString();
+                        final text = (msg['text'] ?? msg['message'] ?? msg['mensaje'] ?? '')
+                            .toString();
+                        final dt = _readDateTimeOrNull(
+                          msg['createdAt'] ?? msg['timestamp'] ?? msg['sentAt'],
+                        );
+                        return Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(16),
+                            color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.45),
+                            border: Border.all(
+                              color: theme.dividerColor.withOpacity(0.25),
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      sender,
+                                      style: theme.textTheme.bodyMedium?.copyWith(
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                    ),
+                                  ),
+                                  if (role.trim().isNotEmpty)
+                                    _SoftInfoChip(
+                                      icon: Icons.badge_outlined,
+                                      label: role,
+                                    ),
+                                ],
+                              ),
+                              if (text.trim().isNotEmpty) ...[
+                                const SizedBox(height: 8),
+                                Text(text),
+                              ],
+                              if (dt != null) ...[
+                                const SizedBox(height: 8),
+                                Text(
+                                  _fmtDateTime(dt),
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: theme.textTheme.bodySmall?.color?.withOpacity(0.65),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -739,7 +973,7 @@ class _FiltersRow extends StatelessWidget {
           child: DropdownButtonFormField<int>(
             value: anio,
             decoration: const InputDecoration(
-              labelText: 'Año escolar',
+              labelText: 'Ano escolar',
               border: OutlineInputBorder(),
               isDense: true,
             ),
@@ -758,7 +992,7 @@ class _FiltersRow extends StatelessWidget {
                       initialDate: mes,
                       firstDate: DateTime(2020, 1, 1),
                       lastDate: DateTime(DateTime.now().year + 1, 12, 31),
-                      helpText: 'Selecciona un día del mes',
+                      helpText: 'Selecciona un dia del mes',
                     );
                     if (picked != null) onChangeMes(DateTime(picked.year, picked.month));
                   },
@@ -854,8 +1088,7 @@ class _CurricularCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final items = metrics.byPeriodo.entries.toList()
-      ..sort((a, b) => a.key.compareTo(b.key));
+    final items = metrics.byPeriodo.entries.toList();
 
     return Card(
       elevation: 0,
@@ -896,7 +1129,7 @@ class _CurricularCard extends StatelessWidget {
             _MiniStat(
               label: 'A tiempo',
               value: metrics.onTimeRate == null
-                  ? '—'
+                  ? '-'
                   : '${(metrics.onTimeRate! * 100).toStringAsFixed(0)}%',
             ),
           ],
@@ -922,10 +1155,9 @@ class _AttendanceCard extends StatelessWidget {
     final total = summary.total;
 
     final values = [
-      _PieSlice(label: 'A tiempo', value: summary.onTime.toDouble()),
-      _PieSlice(label: 'Tarde', value: summary.late.toDouble()),
+      _PieSlice(label: 'Presentes', value: summary.present.toDouble()),
       _PieSlice(label: 'Ausente', value: summary.absent.toDouble()),
-      _PieSlice(label: 'Salida temprana', value: summary.earlyExit.toDouble()),
+      _PieSlice(label: 'Excusas', value: summary.excused.toDouble()),
     ];
 
     return Card(
@@ -938,7 +1170,7 @@ class _AttendanceCard extends StatelessWidget {
           children: [
             _CardTitle(
               title: 'Asistencia',
-              subtitle: 'Mes ${month.year}-${month.month.toString().padLeft(2, '0')} • Total: $total',
+              subtitle: 'Mes ${month.year}-${month.month.toString().padLeft(2, '0')} • Registros: $total',
               icon: Icons.pie_chart_outline,
             ),
             const SizedBox(height: 12),
@@ -947,17 +1179,16 @@ class _AttendanceCard extends StatelessWidget {
                 SizedBox(width: 170, height: 170, child: _PieChart(slices: values)),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _LegendRow(label: 'A tiempo', value: summary.onTime, total: total),
-                      _LegendRow(label: 'Tarde', value: summary.late, total: total),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                      _LegendRow(label: 'Presentes', value: summary.present, total: total),
                       _LegendRow(label: 'Ausente', value: summary.absent, total: total),
-                      _LegendRow(label: 'Salida temprana', value: summary.earlyExit, total: total),
+                      _LegendRow(label: 'Excusas', value: summary.excused, total: total),
                       const SizedBox(height: 10),
                       _MiniStat(
-                        label: 'Puntualidad',
-                        value: total == 0 ? '—' : '${((summary.onTime / total) * 100).toStringAsFixed(0)}%',
+                        label: 'Asistencia efectiva',
+                        value: total == 0 ? '-' : '${((summary.present / total) * 100).toStringAsFixed(0)}%',
                       ),
                     ],
                   ),
@@ -967,6 +1198,224 @@ class _AttendanceCard extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _AttendanceEditAccessCard extends StatefulWidget {
+  final ThemeData theme;
+  final String schoolId;
+  final TeacherSummary teacher;
+  final MonitoreoService service;
+
+  const _AttendanceEditAccessCard({
+    required this.theme,
+    required this.schoolId,
+    required this.teacher,
+    required this.service,
+  });
+
+  @override
+  State<_AttendanceEditAccessCard> createState() => _AttendanceEditAccessCardState();
+}
+
+class _AttendanceEditAccessCardState extends State<_AttendanceEditAccessCard> {
+  bool _saving = false;
+
+  Future<void> _saveDates(Set<String> allowedDateKeys) async {
+    setState(() => _saving = true);
+    try {
+      await widget.service.setAttendanceAllowedPastDates(
+        schoolId: widget.schoolId,
+        teacher: widget.teacher,
+        allowedDateKeys: allowedDateKeys,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Permisos de asistencia actualizados.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo actualizar el permiso: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _pickAndAddDate(AttendanceEditAccess access) async {
+    final today = DateTime.now();
+    final lastEligible = DateTime(today.year, today.month, today.day).subtract(const Duration(days: 2));
+    final firstEligible = DateTime(2020, 1, 1);
+
+    if (lastEligible.isBefore(firstEligible)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Aún no hay fechas pasadas para habilitar.')),
+      );
+      return;
+    }
+
+    final initialDate = access.allowedPastDates.isNotEmpty
+        ? access.allowedPastDates.last
+        : lastEligible;
+
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: initialDate.isAfter(lastEligible) ? lastEligible : initialDate,
+      firstDate: firstEligible,
+      lastDate: lastEligible,
+      helpText: 'Selecciona la fecha pasada a habilitar',
+    );
+
+    if (picked == null) return;
+
+    final next = access.allowedPastDateKeys.toSet()
+      ..add(_attendanceDateKey(picked));
+    await _saveDates(next);
+  }
+
+  Future<void> _removeDate(AttendanceEditAccess access, String dateKey) async {
+    final next = access.allowedPastDateKeys.toSet()..remove(dateKey);
+    await _saveDates(next);
+  }
+
+  Future<void> _clearAll(AttendanceEditAccess access) async {
+    if (access.allowedPastDateKeys.isEmpty) return;
+    await _saveDates(<String>{});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<AttendanceEditAccess>(
+      stream: widget.service.streamAttendanceEditAccess(
+        schoolId: widget.schoolId,
+        teacher: widget.teacher,
+      ),
+      builder: (context, snap) {
+        if (snap.hasError) {
+          return _CardError(
+            title: 'Permisos de asistencia',
+            error: snap.error.toString(),
+          );
+        }
+        if (!snap.hasData) {
+          return const _LoadingCard(title: 'Permisos de asistencia');
+        }
+
+        final access = snap.data!;
+        final hasDates = access.allowedPastDates.isNotEmpty;
+
+        return Card(
+          elevation: 0,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _CardTitle(
+                  title: 'Permiso para asistencia pasada',
+                  subtitle: 'El docente ya puede usar hoy y ayer. Aquí habilitas solo fechas más antiguas y específicas.',
+                  icon: Icons.edit_calendar_outlined,
+                ),
+                const SizedBox(height: 10),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: widget.theme.colorScheme.surfaceContainerHighest.withOpacity(0.35),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: widget.theme.dividerColor.withOpacity(0.22)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        hasDates
+                            ? 'Fechas autorizadas para ${widget.teacher.nombreCompleto}'
+                            : 'No hay fechas pasadas autorizadas.',
+                        style: widget.theme.textTheme.bodyMedium?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      if (!hasDates)
+                        Text(
+                          'Si el docente necesita completar asistencia más allá de la ventana normal, agrega aquí las fechas exactas.',
+                          style: widget.theme.textTheme.bodyMedium,
+                        )
+                      else
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: access.allowedPastDates.map((date) {
+                            final dateKey = _attendanceDateKey(date);
+                            return Chip(
+                              label: Text(_fmtSimpleDate(date)),
+                              deleteIcon: const Icon(Icons.close, size: 18),
+                              onDeleted: _saving ? null : () => _removeDate(access, dateKey),
+                            );
+                          }).toList(),
+                        ),
+                      if (access.updatedAt != null) ...[
+                        const SizedBox(height: 10),
+                        Text(
+                          'Última actualización: ${_fmtDateTime(access.updatedAt!)}',
+                          style: widget.theme.textTheme.bodySmall?.copyWith(
+                            color: widget.theme.textTheme.bodySmall?.color?.withOpacity(0.7),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: _saving ? null : () => _pickAndAddDate(access),
+                      icon: _saving
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.add_circle_outline),
+                      label: const Text('Agregar fecha'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: (_saving || !hasDates) ? null : () => _clearAll(access),
+                      icon: const Icon(Icons.delete_sweep_outlined),
+                      label: const Text('Limpiar permisos'),
+                    ),
+                  ],
+                ),
+                if (access.hasLegacyWideOpenAccess) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.amber.withOpacity(0.28)),
+                    ),
+                    child: Text(
+                      access.legacyWideOpenUntil == null
+                          ? 'Este docente tiene un permiso retroactivo amplio heredado. Al guardar fechas específicas, ese permiso se reemplaza.'
+                          : 'Este docente tiene un permiso retroactivo heredado hasta ${_fmtDateTime(access.legacyWideOpenUntil!)}. Al guardar fechas específicas, ese permiso se reemplaza.',
+                      style: widget.theme.textTheme.bodyMedium,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -988,15 +1437,15 @@ class _FeedbackCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const _CardTitle(
-              title: 'Observaciones de la administración',
-              subtitle: 'Últimas 5',
+              title: 'Observaciones de la administracion',
+              subtitle: 'Ultimas 5',
               icon: Icons.comment_bank_outlined,
             ),
             const SizedBox(height: 10),
             if (items.isEmpty)
               const Padding(
                 padding: EdgeInsets.all(8),
-                child: Text('Aún no hay observaciones registradas.'),
+                child: Text('Aun no hay observaciones registradas.'),
               )
             else
               Column(
@@ -1096,7 +1545,7 @@ class _TasksCard extends StatelessWidget {
           children: [
             _CardTitle(
               title: 'Tareas administrativas',
-              subtitle: hint ?? (pending.isEmpty ? 'Al día' : 'Pendientes'),
+              subtitle: hint ?? (pending.isEmpty ? 'Al dia' : 'Pendientes'),
               icon: Icons.task_alt_outlined,
             ),
             const SizedBox(height: 10),
@@ -1180,6 +1629,458 @@ class _TasksCard extends StatelessWidget {
   }
 }
 
+class _TeacherOverviewCard extends StatelessWidget {
+  final ThemeData theme;
+  final TeacherSummary teacher;
+  final TeacherMonitoringSnapshot data;
+
+  const _TeacherOverviewCard({
+    required this.theme,
+    required this.teacher,
+    required this.data,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final planRate = data.totalPlans == 0 ? null : data.completedPlans / data.totalPlans;
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                CircleAvatar(
+                  radius: 24,
+                  backgroundColor: theme.colorScheme.primary.withOpacity(0.12),
+                  child: Icon(Icons.school_outlined,
+                      color: theme.colorScheme.primary, size: 24),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        teacher.nombreCompleto,
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        teacher.nivelAsignado,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: theme.textTheme.bodyMedium?.color?.withOpacity(0.72),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          _TeacherStateChip(enabled: teacher.enabled),
+                          _SoftInfoChip(
+                            icon: Icons.groups_2_outlined,
+                            label: teacher.gradesLabel,
+                          ),
+                          _SoftInfoChip(
+                            icon: Icons.menu_book_outlined,
+                            label: teacher.subjectsLabel,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            LayoutBuilder(
+              builder: (context, c) {
+                final compact = c.maxWidth < 760;
+                final tiles = [
+                  _MiniStat(label: 'Alumnos', value: '${data.totalStudents}'),
+                  _MiniStat(label: 'Grados', value: '${data.totalGrades}'),
+                  _MiniStat(label: 'Asignaturas', value: '${data.totalSubjects}'),
+                  _MiniStat(
+                    label: 'Planes',
+                    value: data.totalPlans == 0
+                        ? '0'
+                        : '${data.completedPlans}/${data.totalPlans}',
+                    helper: planRate == null
+                        ? 'Sin planes'
+                        : '${(planRate * 100).toStringAsFixed(0)}% completado',
+                  ),
+                ];
+                if (compact) {
+                  return Column(
+                    children: tiles
+                        .map((t) => Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: t,
+                            ))
+                        .toList(),
+                  );
+                }
+                return Row(
+                  children: [
+                    for (int i = 0; i < tiles.length; i++) ...[
+                      Expanded(child: tiles[i]),
+                      if (i != tiles.length - 1) const SizedBox(width: 10),
+                    ]
+                  ],
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PlansMonitoringCard extends StatelessWidget {
+  final ThemeData theme;
+  final List<PlanMonitoringItem> plans;
+
+  const _PlansMonitoringCard({
+    required this.theme,
+    required this.plans,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final completed = plans.where((p) => p.completed).length;
+    final pending = math.max(0, plans.length - completed);
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _CardTitle(
+              title: 'Planificaciones anuales',
+              subtitle: plans.isEmpty
+                  ? 'Sin planes registrados'
+                  : '$completed completadas • $pending pendientes',
+              icon: Icons.edit_note_outlined,
+            ),
+            const SizedBox(height: 12),
+            if (plans.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(8),
+                child: Text('Este docente aún no tiene planificaciones anuales registradas.'),
+              )
+            else
+              Column(
+                children: plans.map((plan) {
+                  final tone = plan.completed
+                      ? _Tone(
+                          bg: Colors.green.withOpacity(0.08),
+                          border: Colors.green.withOpacity(0.22),
+                          fg: Colors.green.shade800,
+                          icon: Icons.check_circle_outline,
+                        )
+                      : _Tone(
+                          bg: Colors.amber.withOpacity(0.10),
+                          border: Colors.amber.withOpacity(0.28),
+                          fg: Colors.brown.shade800,
+                          icon: Icons.schedule_outlined,
+                        );
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 10),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(14),
+                      color: tone.bg,
+                      border: Border.all(color: tone.border),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(tone.icon, color: tone.fg, size: 18),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                plan.subjectLabel,
+                                style: theme.textTheme.bodyLarge?.copyWith(
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                '${plan.gradeLabel} • ${plan.schoolYear}',
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: theme.textTheme.bodyMedium?.color?.withOpacity(0.76),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  _SoftInfoChip(
+                                    icon: Icons.layers_outlined,
+                                    label: '${plan.unitsCount} unidades',
+                                  ),
+                                  _SoftInfoChip(
+                                    icon: Icons.task_alt_outlined,
+                                    label: plan.completed ? 'Completada' : 'En progreso',
+                                  ),
+                                  if (plan.updatedAt != null)
+                                    _SoftInfoChip(
+                                      icon: Icons.update_outlined,
+                                      label: _fmtDateTime(plan.updatedAt!),
+                                    ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ChatsMonitoringCard extends StatelessWidget {
+  final ThemeData theme;
+  final List<ChatPreviewItem> chats;
+  final ValueChanged<ChatPreviewItem> onOpen;
+
+  const _ChatsMonitoringCard({
+    required this.theme,
+    required this.chats,
+    required this.onOpen,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+              const _CardTitle(
+                title: 'Chats por grado y asignatura',
+                subtitle: 'Vista de solo lectura de conversaciones asociadas',
+                icon: Icons.forum_outlined,
+              ),
+            const SizedBox(height: 12),
+            if (chats.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(8),
+                child: Text('No hay chats por grado y asignatura asociados a este docente.'),
+              )
+            else
+              Column(
+                children: chats.map((chat) {
+                  return InkWell(
+                    borderRadius: BorderRadius.circular(14),
+                    onTap: () => onOpen(chat),
+                    child: Container(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(14),
+                        color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.42),
+                        border: Border.all(
+                          color: theme.dividerColor.withOpacity(0.18),
+                        ),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          CircleAvatar(
+                            radius: 18,
+                            backgroundColor: theme.colorScheme.primary.withOpacity(0.10),
+                            child: Icon(Icons.forum_outlined,
+                                color: theme.colorScheme.primary, size: 18),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  chat.subjectLabel.trim().isEmpty
+                                      ? chat.gradeLabel
+                                      : '${chat.gradeLabel} • ${chat.subjectLabel}',
+                                  style: theme.textTheme.bodyLarge?.copyWith(
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  chat.lastMessage?.trim().isNotEmpty == true
+                                      ? chat.lastMessage!
+                                      : 'Sin mensajes recientes',
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: theme.textTheme.bodyMedium?.copyWith(
+                                    color: theme.textTheme.bodyMedium?.color?.withOpacity(0.78),
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                Wrap(
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  children: [
+                                    if ((chat.lastSenderName ?? '').trim().isNotEmpty)
+                                      _SoftInfoChip(
+                                        icon: Icons.person_outline,
+                                        label: chat.lastSenderName!,
+                                      ),
+                                    if (chat.lastAt != null)
+                                      _SoftInfoChip(
+                                        icon: Icons.schedule_outlined,
+                                        label: _fmtDateTime(chat.lastAt!),
+                                      ),
+                                    if (chat.unreadCount > 0)
+                                      _SoftInfoChip(
+                                        icon: Icons.mark_chat_unread_outlined,
+                                        label: '${chat.unreadCount} sin leer',
+                                      ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Icon(Icons.chevron_right,
+                              color: theme.iconTheme.color?.withOpacity(0.58)),
+                        ],
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TeacherStateChip extends StatelessWidget {
+  final bool enabled;
+
+  const _TeacherStateChip({required this.enabled});
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = enabled ? Colors.green.shade800 : Colors.amber.shade900;
+    final bg = enabled ? Colors.green.withOpacity(0.10) : Colors.amber.withOpacity(0.12);
+    final border =
+        enabled ? Colors.green.withOpacity(0.26) : Colors.amber.withOpacity(0.30);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            enabled ? Icons.verified_outlined : Icons.block_outlined,
+            size: 15,
+            color: fg,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            enabled ? 'Activo' : 'Pendiente',
+            style: TextStyle(
+              color: fg,
+              fontWeight: FontWeight.w700,
+              fontSize: 12,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TeacherStateDot extends StatelessWidget {
+  final bool enabled;
+
+  const _TeacherStateDot({required this.enabled});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = enabled ? Colors.green.shade600 : Colors.amber.shade700;
+    return Container(
+      width: 22,
+      height: 22,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: c,
+        boxShadow: [BoxShadow(blurRadius: 10, color: c.withOpacity(0.28))],
+      ),
+    );
+  }
+}
+
+class _SoftInfoChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+
+  const _SoftInfoChip({
+    required this.icon,
+    required this.label,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(999),
+        color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.42),
+        border: Border.all(color: theme.dividerColor.withOpacity(0.18)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 15, color: theme.colorScheme.primary),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              label,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// ------------------------------
 /// Headers / Chips / Stats
 /// ------------------------------
@@ -1196,22 +2097,37 @@ class _PaneHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Colors.indigo.shade900, Colors.indigo.shade700],
+        ),
+        borderRadius: BorderRadius.circular(18),
+      ),
       child: Row(
         children: [
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900)),
-                const SizedBox(height: 2),
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 22,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 4),
                 Text(
                   subtitle,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.textTheme.bodySmall?.color?.withOpacity(0.70),
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.82),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
               ],
@@ -1272,7 +2188,7 @@ class _KpiChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final v = value;
-    final text = v == null ? '—' : '${(v * 100).toStringAsFixed(0)}%';
+    final text = v == null ? '-' : '${(v * 100).toStringAsFixed(0)}%';
 
     final bg = emphasize
         ? theme.colorScheme.primary.withOpacity(0.12)
@@ -1302,8 +2218,9 @@ class _KpiChip extends StatelessWidget {
 class _MiniStat extends StatelessWidget {
   final String label;
   final String value;
+  final String? helper;
 
-  const _MiniStat({required this.label, required this.value});
+  const _MiniStat({required this.label, required this.value, this.helper});
 
   @override
   Widget build(BuildContext context) {
@@ -1316,15 +2233,34 @@ class _MiniStat extends StatelessWidget {
         color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.55),
         border: Border.all(color: theme.dividerColor.withOpacity(0.30)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
           Text('$label: ', style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w700)),
-          Flexible(child: Text(value, style: theme.textTheme.bodySmall)),
+          Text(value, style: theme.textTheme.bodySmall),
+          if (helper != null && helper!.trim().isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              helper!,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.textTheme.bodySmall?.color?.withOpacity(0.72),
+              ),
+            ),
+          ],
         ],
       ),
     );
   }
+}
+
+DateTime? _readDateTimeOrNull(dynamic v) {
+  if (v == null) return null;
+  if (v is Timestamp) return v.toDate();
+  if (v is DateTime) return v;
+  return null;
 }
 
 class _LegendRow extends StatelessWidget {
@@ -1346,7 +2282,7 @@ class _LegendRow extends StatelessWidget {
 }
 
 /// ------------------------------
-/// Semáforo
+/// Semaforo
 /// ------------------------------
 enum SemaforoStatus { green, yellow, red }
 
@@ -1392,8 +2328,8 @@ class _SemaforoPill extends StatelessWidget {
     final label = status == SemaforoStatus.green
         ? 'Alto'
         : status == SemaforoStatus.yellow
-            ? 'Atención'
-            : 'Crítico';
+            ? 'Atencion'
+            : 'Critico';
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -1678,29 +2614,86 @@ class _Tone {
 
 String _cap(String s) => s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
 
+String _fmtDateTime(DateTime d) {
+  final hh = d.hour == 0 ? 12 : (d.hour > 12 ? d.hour - 12 : d.hour);
+  final mm = d.minute.toString().padLeft(2, '0');
+  final ap = d.hour >= 12 ? 'PM' : 'AM';
+  return '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year} $hh:$mm $ap';
+}
+
+String _fmtSimpleDate(DateTime d) =>
+    '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
+
+String _attendanceDateKey(DateTime d) =>
+    '${d.year}${d.month.toString().padLeft(2, '0')}${d.day.toString().padLeft(2, '0')}';
+
+DateTime? _attendanceDateFromKey(String raw) {
+  final value = raw.trim();
+  if (!RegExp(r'^\d{8}$').hasMatch(value)) return null;
+  final year = int.tryParse(value.substring(0, 4));
+  final month = int.tryParse(value.substring(4, 6));
+  final day = int.tryParse(value.substring(6, 8));
+  if (year == null || month == null || day == null) return null;
+  return DateTime(year, month, day);
+}
+
+bool _readBoolish(dynamic value) {
+  if (value is bool) return value;
+  final raw = (value ?? '').toString().trim().toLowerCase();
+  return raw == 'true' || raw == '1' || raw == 'si' || raw == 'sí';
+}
+
 /// ------------------------------
 /// Modelos (UI)
 /// ------------------------------
 class TeacherSummary {
   final String teacherId;
+  final String teacherUid;
   final String nombreCompleto;
   final String nivelAsignado;
   final String gradoAsignado;
+  final List<String> gradeIds;
+  final List<String> gradeNames;
+  final List<String> subjectIds;
+  final List<String> subjectNames;
+  final bool enabled;
 
-  // KPIs agregados (ideal: guardarlos en teachers para lista rápida)
+  // KPIs agregados (ideal: guardarlos en teachers para lista rapida)
   final double? kpiCurricular;
   final double? kpiLogro;
   final double? kpiAttendance;
 
   TeacherSummary({
     required this.teacherId,
+    required this.teacherUid,
     required this.nombreCompleto,
     required this.nivelAsignado,
     required this.gradoAsignado,
+    required this.gradeIds,
+    required this.gradeNames,
+    required this.subjectIds,
+    required this.subjectNames,
+    required this.enabled,
     required this.kpiCurricular,
     required this.kpiLogro,
     required this.kpiAttendance,
   });
+
+  List<String> get effectiveGradeNames {
+    if (gradeNames.isNotEmpty) return gradeNames;
+    if (gradoAsignado.trim().isNotEmpty && gradoAsignado.trim() != '-') {
+      return [gradoAsignado.trim()];
+    }
+    return const [];
+  }
+
+  List<String> get effectiveSubjectNames => subjectNames;
+
+  String get gradesLabel =>
+      effectiveGradeNames.isEmpty ? 'Sin grados asignados' : effectiveGradeNames.join(', ');
+
+  String get subjectsLabel =>
+      effectiveSubjectNames.isEmpty ? 'Sin asignaturas registradas' : effectiveSubjectNames.join(', ');
 
   double? get kpiAverage {
     final vals = <double>[];
@@ -1720,20 +2713,105 @@ class TeacherSummary {
   }
 }
 
+class TeacherMonitoringSnapshot {
+  final int totalStudents;
+  final int totalGrades;
+  final int totalSubjects;
+  final int totalPlans;
+  final int completedPlans;
+  final List<PlanMonitoringItem> plans;
+  final List<ChatPreviewItem> chats;
+
+  const TeacherMonitoringSnapshot({
+    required this.totalStudents,
+    required this.totalGrades,
+    required this.totalSubjects,
+    required this.totalPlans,
+    required this.completedPlans,
+    required this.plans,
+    required this.chats,
+  });
+}
+
+class PlanMonitoringItem {
+  final String id;
+  final String gradeLabel;
+  final String subjectLabel;
+  final String schoolYear;
+  final int unitsCount;
+  final DateTime? updatedAt;
+  final bool completed;
+
+  const PlanMonitoringItem({
+    required this.id,
+    required this.gradeLabel,
+    required this.subjectLabel,
+    required this.schoolYear,
+    required this.unitsCount,
+    required this.updatedAt,
+    required this.completed,
+  });
+}
+
+class ChatPreviewItem {
+  final String threadId;
+  final String gradeId;
+  final String gradeLabel;
+  final String subjectId;
+  final String subjectLabel;
+  final String? lastMessage;
+  final String? lastSenderName;
+  final DateTime? lastAt;
+  final int unreadCount;
+
+  const ChatPreviewItem({
+    required this.threadId,
+    required this.gradeId,
+    required this.gradeLabel,
+    required this.subjectId,
+    required this.subjectLabel,
+    required this.lastMessage,
+    required this.lastSenderName,
+    required this.lastAt,
+    required this.unreadCount,
+  });
+}
+
 class AttendanceSummary {
-  final int onTime;
-  final int late;
+  final int present;
   final int absent;
-  final int earlyExit;
+  final int excused;
 
   AttendanceSummary({
-    required this.onTime,
-    required this.late,
+    required this.present,
     required this.absent,
-    required this.earlyExit,
+    required this.excused,
   });
 
-  int get total => onTime + late + absent + earlyExit;
+  int get total => present + absent + excused;
+}
+
+class AttendanceEditAccess {
+  final List<String> allowedPastDateKeys;
+  final DateTime? updatedAt;
+  final bool hasLegacyWideOpenAccess;
+  final DateTime? legacyWideOpenUntil;
+
+  const AttendanceEditAccess({
+    required this.allowedPastDateKeys,
+    required this.updatedAt,
+    required this.hasLegacyWideOpenAccess,
+    required this.legacyWideOpenUntil,
+  });
+
+  List<DateTime> get allowedPastDates {
+    final list = allowedPastDateKeys
+        .map(_attendanceDateFromKey)
+        .whereType<DateTime>()
+        .toList()
+      ..sort((a, b) => a.compareTo(b));
+    return list;
+  }
 }
 
 class FeedbackItem {
@@ -1790,9 +2868,9 @@ class PeriodoAcademico {
   });
 }
 
-/// Métricas curriculares calculadas uniendo:
+/// Metricas curriculares calculadas uniendo:
 /// - periodos oficiales
-/// - planificación anual (unidades + indicadores esperados)
+/// - planificacion anual (unidades + indicadores esperados)
 /// - curricular_progress del docente (status + indicadores logrados + fechaFinReal)
 class TeacherCurricularMetrics {
   final Map<String, PeriodoMetrics> byPeriodo;
@@ -1865,28 +2943,396 @@ class MonitoreoService {
   CollectionReference<Map<String, dynamic>> _teachersCol(String schoolId) =>
       _schoolDoc(schoolId).collection('teachers');
 
-  /// 1) Lista rápida de docentes (ideal: KPIs ya calculados en teachers).
+  CollectionReference<Map<String, dynamic>> _teacherDirectoryCol(String schoolId) =>
+      _schoolDoc(schoolId).collection('teacher_directory');
+
+  CollectionReference<Map<String, dynamic>> _teachersPublicCol(String schoolId) =>
+      _schoolDoc(schoolId).collection('teachers_public');
+
+  /// 1) Lista rapida de docentes (ideal: KPIs ya calculados en teachers).
   Stream<List<TeacherSummary>> streamTeachers(String schoolId) {
-    return _teachersCol(schoolId)
-        .orderBy('lastActivity', descending: true)
-        .snapshots()
-        .map((qs) => qs.docs.map(_teacherFromDoc).toList());
+    return _teachersCol(schoolId).snapshots().asyncMap((qs) async {
+      final byId = <String, TeacherSummary>{};
+
+      void absorb(TeacherSummary teacher) {
+        if (teacher.teacherId.trim().isEmpty) return;
+        final current = byId[teacher.teacherId];
+        byId[teacher.teacherId] =
+            current == null ? teacher : _mergeTeacherSummary(current, teacher);
+      }
+
+      void absorbMap(String fallbackId, Map<String, dynamic> data) {
+        final teacherId = (data['teacherDocId'] ?? data['teacherId'] ?? fallbackId)
+            .toString()
+            .trim();
+        absorb(_teacherFromMap(teacherId, data));
+      }
+
+      for (final doc in qs.docs) {
+        absorb(_teacherFromDoc(doc));
+      }
+
+      final dirSnap = await _teacherDirectoryCol(schoolId).get();
+      for (final doc in dirSnap.docs) {
+        absorb(_teacherFromDoc(doc));
+      }
+
+      final pubSnap = await _teachersPublicCol(schoolId).get();
+      for (final doc in pubSnap.docs) {
+        absorb(_teacherFromDoc(doc));
+      }
+
+      final membersSnap = await _schoolDoc(schoolId).collection('members').get();
+      for (final d in membersSnap.docs.where((d) {
+        final role = (d.data()['role'] ?? d.data()['rol'] ?? '').toString().trim().toLowerCase();
+        return role == 'teacher' || role == 'docente';
+      })) {
+        final data = Map<String, dynamic>.from(d.data());
+        data['authUid'] = d.id;
+        data['uid'] ??= d.id;
+        data['teacherUid'] ??= d.id;
+        absorbMap(d.id, data);
+      }
+
+      if (byId.isEmpty) {
+        final usersSnap = await _db.collection('users').get();
+        for (final doc in usersSnap.docs.where((d) {
+          final data = d.data();
+          final role = (data['role'] ?? data['rol'] ?? '').toString().trim().toLowerCase();
+          final school = (data['schoolId'] ?? '').toString().trim();
+          return school == schoolId && (role == 'teacher' || role == 'docente');
+        })) {
+          final data = Map<String, dynamic>.from(doc.data());
+          data['authUid'] ??= doc.id;
+          data['uid'] ??= doc.id;
+          data['teacherUid'] ??= doc.id;
+          absorbMap(doc.id, data);
+        }
+      }
+
+      final list = byId.values.toList()
+        ..sort(
+          (a, b) => a.nombreCompleto.toLowerCase().compareTo(b.nombreCompleto.toLowerCase()),
+        );
+      return list;
+    });
   }
 
   TeacherSummary _teacherFromDoc(DocumentSnapshot<Map<String, dynamic>> d) {
-    final data = d.data() ?? {};
+    return _teacherFromMap(d.id, d.data() ?? {});
+  }
+
+  TeacherSummary _mergeTeacherSummary(TeacherSummary current, TeacherSummary incoming) {
+    List<String> mergeList(List<String> a, List<String> b) {
+      final out = <String>[];
+      for (final item in [...a, ...b]) {
+        final v = item.trim();
+        if (v.isEmpty) continue;
+        if (!out.contains(v)) out.add(v);
+      }
+      return out;
+    }
+
+    String preferText(String a, String b, {Set<String> generic = const {}}) {
+      final av = a.trim();
+      final bv = b.trim();
+      final aOk = av.isNotEmpty && !generic.contains(av.toLowerCase());
+      final bOk = bv.isNotEmpty && !generic.contains(bv.toLowerCase());
+      if (aOk && !bOk) return av;
+      if (bOk && !aOk) return bv;
+      if (aOk && bOk) return bv.length > av.length ? bv : av;
+      return bv.isNotEmpty ? bv : av;
+    }
+
+    final mergedGradeNames = mergeList(current.gradeNames, incoming.gradeNames);
+    final mergedSubjectNames = mergeList(current.subjectNames, incoming.subjectNames);
+    final mergedGradeIds = mergeList(current.gradeIds, incoming.gradeIds);
+    final mergedSubjectIds = mergeList(current.subjectIds, incoming.subjectIds);
+
+    final mergedName = preferText(
+      current.nombreCompleto,
+      incoming.nombreCompleto,
+      generic: const {'docente'},
+    );
+
+    final mergedGrade = preferText(
+      current.gradoAsignado,
+      incoming.gradoAsignado,
+      generic: const {'-', 'sin nivel', 'sin grados asignados'},
+    );
+
+    final mergedLevel = preferText(
+      current.nivelAsignado,
+      incoming.nivelAsignado,
+      generic: const {'sin nivel'},
+    );
+
     return TeacherSummary(
-      teacherId: d.id,
-      nombreCompleto: (data['nombreCompleto'] ?? 'Docente').toString(),
-      nivelAsignado: (data['nivelAsignado'] ?? '—').toString(),
-      gradoAsignado: (data['gradoAsignado'] ?? '—').toString(),
+      teacherId: current.teacherId,
+      teacherUid: preferText(current.teacherUid, incoming.teacherUid),
+      nombreCompleto: mergedName.isEmpty ? 'Docente' : mergedName,
+      nivelAsignado: mergedLevel.isEmpty ? 'Sin nivel' : mergedLevel,
+      gradoAsignado: mergedGrade.isEmpty ? '-' : mergedGrade,
+      gradeIds: mergedGradeIds,
+      gradeNames: mergedGradeNames,
+      subjectIds: mergedSubjectIds,
+      subjectNames: mergedSubjectNames,
+      enabled: current.enabled || incoming.enabled,
+      kpiCurricular: incoming.kpiCurricular ?? current.kpiCurricular,
+      kpiLogro: incoming.kpiLogro ?? current.kpiLogro,
+      kpiAttendance: incoming.kpiAttendance ?? current.kpiAttendance,
+    );
+  }
+
+  TeacherSummary _teacherFromMap(String id, Map<String, dynamic> data) {
+    final gradeNames = _extractGradeNames(data);
+    final subjectNames = _extractSubjectNames(data);
+    return TeacherSummary(
+      teacherId: id,
+      teacherUid: (data['authUid'] ?? data['uid'] ?? data['teacherUid'] ?? '').toString(),
+      nombreCompleto: _teacherDisplayName(data),
+      nivelAsignado: _teacherLevel(data),
+      gradoAsignado: gradeNames.isNotEmpty ? gradeNames.first : '-',
+      gradeIds: _extractGradeIds(data),
+      gradeNames: gradeNames,
+      subjectIds: _extractSubjectIds(data),
+      subjectNames: subjectNames,
+      enabled: _teacherEnabled(data),
       kpiCurricular: _asDoubleOrNull(data['kpi_curricular_score']),
       kpiLogro: _asDoubleOrNull(data['kpi_logro_score']),
       kpiAttendance: _asDoubleOrNull(data['kpi_attendance_rate']),
     );
   }
 
-  /// 2) Periodos académicos oficiales
+  String _teacherDisplayName(Map<String, dynamic> data) {
+    final full = (data['nombreCompleto'] ??
+            data['displayName'] ??
+            data['name'] ??
+            data['fullName'] ??
+            data['teacherName'] ??
+            '')
+        .toString()
+        .trim();
+    if (full.isNotEmpty) return full;
+
+    final nombres = (data['nombres'] ?? data['nombre'] ?? data['firstName'] ?? '').toString().trim();
+    final apellidos = (data['apellidos'] ?? data['apellido'] ?? data['lastName'] ?? '').toString().trim();
+    final joined = [nombres, apellidos].where((e) => e.isNotEmpty).join(' ').trim();
+    if (joined.isNotEmpty) return joined;
+
+    final email = (data['email'] ?? '').toString().trim();
+    if (email.isNotEmpty) return email.split('@').first;
+
+    return 'Docente';
+  }
+
+  String _teacherLevel(Map<String, dynamic> data) {
+    final direct = (data['nivelAsignado'] ?? data['nivel'] ?? data['level'] ?? '').toString().trim();
+    if (direct.isNotEmpty) return direct;
+
+    final grades = _extractGradeNames(data);
+    if (grades.isNotEmpty) {
+      final joined = grades.join(' ').toLowerCase();
+      if (joined.contains('inicial')) return 'Inicial';
+      if (joined.contains('primaria')) return 'Primaria';
+      if (joined.contains('secundaria')) return 'Secundaria';
+      return grades.first;
+    }
+    return 'Sin nivel';
+  }
+
+  bool _teacherEnabled(Map<String, dynamic> data) {
+    if (data['enabled'] is bool) return data['enabled'] == true;
+    if (data['active'] is bool) return data['active'] == true;
+    return true;
+  }
+
+  List<String> _extractGradeIds(Map<String, dynamic> data) {
+    final raw = data['gradeIds'] ??
+        data['gradesIds'] ??
+        data['gradoIds'] ??
+        data['gradosIds'] ??
+        data['gradeId'] ??
+        data['gradoId'];
+    return _asStringList(raw);
+  }
+
+  List<String> _extractGradeNames(Map<String, dynamic> data) {
+    final out = <String>{};
+    for (final key in [
+      'gradeNames',
+      'grades',
+      'grados',
+      'gradosAsignados',
+      'grado',
+      'gradoAsignado',
+    ]) {
+      out.addAll(_asStringList(data[key]));
+    }
+    return out.where((e) => e.trim().isNotEmpty).toList();
+  }
+
+  List<String> _extractSubjectIds(Map<String, dynamic> data) {
+    final raw = data['subjectIds'] ?? data['subjectsIds'] ?? data['asignaturaIds'] ?? data['materiaIds'];
+    return _asStringList(raw);
+  }
+
+  List<String> _extractSubjectNames(Map<String, dynamic> data) {
+    final out = <String>{};
+    for (final key in ['subjects', 'subjectNames', 'asignaturas', 'materias']) {
+      out.addAll(_asStringList(data[key]));
+    }
+    return out.where((e) => e.trim().isNotEmpty).toList();
+  }
+
+  Future<TeacherMonitoringSnapshot> getTeacherMonitoringSnapshot({
+    required String schoolId,
+    required TeacherSummary teacher,
+    required int anio,
+  }) async {
+    final gradeIds = teacher.gradeIds.toSet();
+    final gradeNamesNorm = teacher.effectiveGradeNames.map(_norm).toSet();
+    final subjectIds = teacher.subjectIds.toSet();
+    final subjectNamesNorm = teacher.effectiveSubjectNames.map(_norm).toSet();
+
+    final alumnosSnap = await _schoolDoc(schoolId).collection('alumnos').get();
+    final totalStudents = alumnosSnap.docs.where((d) {
+      final data = d.data();
+      final alumnoGradeIds = {
+        ..._asStringList(data['gradeIds']),
+        ..._asStringList(data['gradoIds']),
+        ..._asStringList(data['gradeId']),
+        ..._asStringList(data['gradoId']),
+      };
+      return alumnoGradeIds.any(gradeIds.contains);
+    }).length;
+
+    final plansSnap = await _schoolDoc(schoolId).collection('planificaciones_anuales').get();
+    final plans = plansSnap.docs.where((d) {
+      final data = d.data();
+      final dataYear = (data['anioEscolar'] ?? data['schoolYear'] ?? data['anio'] ?? '').toString();
+      final matchesYear = dataYear.isEmpty || dataYear.contains(anio.toString());
+
+      final dataTeacherDocId = (data['teacherDocId'] ?? '').toString().trim();
+      final dataTeacherUid = (data['teacherUid'] ?? '').toString().trim();
+      final matchesTeacher = dataTeacherDocId == teacher.teacherId ||
+          (teacher.teacherUid.isNotEmpty && dataTeacherUid == teacher.teacherUid);
+
+      final dataGradeId = (data['gradeId'] ?? '').toString().trim();
+      final dataGrade = _norm((data['grado'] ?? data['grade'] ?? '').toString());
+      final matchesGrade = (dataGradeId.isNotEmpty && gradeIds.contains(dataGradeId)) ||
+          (dataGrade.isNotEmpty && gradeNamesNorm.contains(dataGrade));
+
+      final dataSubjectId = (data['asignaturaId'] ?? data['subjectId'] ?? '').toString().trim();
+      final dataSubject = _norm((data['asignatura'] ?? data['materia'] ?? data['subject'] ?? '').toString());
+      final matchesSubject = subjectIds.isEmpty && subjectNamesNorm.isEmpty
+          ? true
+          : (dataSubjectId.isNotEmpty && subjectIds.contains(dataSubjectId)) ||
+              (dataSubject.isNotEmpty && subjectNamesNorm.contains(dataSubject));
+
+      return matchesYear && (matchesTeacher || matchesGrade) && matchesSubject;
+    }).map((d) {
+      final data = d.data();
+      final units = _extractUnidadesFromPlan(data);
+      final updatedAt = _asDateTimeOrNull(data['updatedAt']) ??
+          _asDateTimeOrNull(data['updated_at']) ??
+          _asDateTimeOrNull(data['createdAt']);
+      final completed = units.isNotEmpty &&
+          units.every((u) => ((u['estado'] ?? u['status'] ?? '').toString().toLowerCase() == 'completed'));
+      return PlanMonitoringItem(
+        id: d.id,
+        gradeLabel: (data['grado'] ?? data['grade'] ?? teacher.gradesLabel).toString(),
+        subjectLabel: (data['asignatura'] ?? data['materia'] ?? data['subject'] ?? teacher.subjectsLabel).toString(),
+        schoolYear: (data['anioEscolar'] ?? data['schoolYear'] ?? data['anio'] ?? '').toString(),
+        unitsCount: units.length,
+        updatedAt: updatedAt,
+        completed: completed,
+      );
+    }).toList()
+      ..sort((a, b) => (b.updatedAt ?? DateTime(1900)).compareTo(a.updatedAt ?? DateTime(1900)));
+
+    final chats = <ChatPreviewItem>[];
+    final chatThreadsSnap = await _schoolDoc(schoolId).collection('chat_grados').get();
+    for (final thread in chatThreadsSnap.docs) {
+      final data = thread.data();
+      final gradeId = (data['gradeId'] ?? '').toString().trim();
+      final subjectId = (data['subjectId'] ?? '').toString().trim();
+      final gradeLabel = (data['gradeName'] ?? data['grado'] ?? gradeId).toString().trim();
+      final subjectLabel =
+          (data['subjectName'] ?? data['asignatura'] ?? data['materia'] ?? subjectId)
+              .toString()
+              .trim();
+
+      final matchesGrade = gradeId.isNotEmpty && gradeIds.contains(gradeId);
+      final matchesSubject = subjectIds.isEmpty && subjectNamesNorm.isEmpty
+          ? true
+          : (subjectId.isNotEmpty && subjectIds.contains(subjectId)) ||
+              (subjectLabel.isNotEmpty && subjectNamesNorm.contains(_norm(subjectLabel)));
+
+      if (!matchesGrade || !matchesSubject) continue;
+
+      chats.add(
+        ChatPreviewItem(
+          threadId: thread.id,
+          gradeId: gradeId,
+          gradeLabel: gradeLabel.isEmpty ? gradeId : gradeLabel,
+          subjectId: subjectId,
+          subjectLabel: subjectLabel.isEmpty ? subjectId : subjectLabel,
+          lastMessage: (data['lastMessage'] ?? data['ultimoMensaje'] ?? '').toString(),
+          lastSenderName: (data['lastSenderName'] ?? data['ultimoRemitente'] ?? '').toString(),
+          lastAt: _asDateTimeOrNull(data['updatedAt']) ??
+              _asDateTimeOrNull(data['lastAt']) ??
+              _asDateTimeOrNull(data['timestamp']),
+          unreadCount: (data['unreadCount'] is num) ? (data['unreadCount'] as num).toInt() : 0,
+        ),
+      );
+    }
+    chats.sort((a, b) => (b.lastAt ?? DateTime(1900)).compareTo(a.lastAt ?? DateTime(1900)));
+
+    return TeacherMonitoringSnapshot(
+      totalStudents: totalStudents,
+      totalGrades: teacher.effectiveGradeNames.length,
+      totalSubjects: teacher.effectiveSubjectNames.length,
+      totalPlans: plans.length,
+      completedPlans: plans.where((p) => p.completed).length,
+      plans: plans,
+      chats: chats,
+    );
+  }
+
+  String _norm(String s) => s.trim().toLowerCase();
+
+  Stream<List<Map<String, dynamic>>> streamGradeChatMessages({
+    required String schoolId,
+    required String threadId,
+  }) {
+    return _schoolDoc(schoolId)
+        .collection('chat_grados')
+        .doc(threadId)
+        .collection('mensajes')
+        .snapshots()
+        .map((qs) {
+          final list = qs.docs.map((d) {
+            final m = Map<String, dynamic>.from(d.data());
+            m['id'] = d.id;
+            return m;
+          }).toList();
+          list.sort((a, b) {
+            final ad = _asDateTimeOrNull(a['createdAt']) ??
+                _asDateTimeOrNull(a['timestamp']) ??
+                _asDateTimeOrNull(a['sentAt']) ??
+                DateTime(1900);
+            final bd = _asDateTimeOrNull(b['createdAt']) ??
+                _asDateTimeOrNull(b['timestamp']) ??
+                _asDateTimeOrNull(b['sentAt']) ??
+                DateTime(1900);
+            return ad.compareTo(bd);
+          });
+          return list;
+        });
+  }
+
+  /// 2) Periodos academicos oficiales
   Future<List<PeriodoAcademico>> getPeriodos(String schoolId) async {
     final col = _schoolDoc(schoolId)
         .collection('config_academica')
@@ -1907,12 +3353,16 @@ class MonitoreoService {
 
     final list = snap.docs.map((d) {
       final data = d.data();
-      final id = (data['id'] ?? d.id).toString().toUpperCase().trim();
-      final nombre = (data['nombre'] ?? id).toString();
-      final orden = (data['orden'] is num) ? (data['orden'] as num).toInt() : _guessOrdenFromId(id);
+      final id = d.id.toString().toUpperCase().trim();
+      final code = (data['id'] ?? data['codigo'] ?? '').toString().toUpperCase().trim();
+      final nombre = (data['nombre'] ?? '').toString().trim();
+      final displayName = nombre.isNotEmpty ? nombre : (code.isNotEmpty ? code : id);
+      final ordenSource = code.isNotEmpty ? code : displayName;
+      final orden =
+          (data['orden'] is num) ? (data['orden'] as num).toInt() : _guessOrdenFromId(ordenSource);
       final inicio = _asDateTimeOrNull(data['inicio']) ?? _asDateTimeOrNull(data['fechaInicio']);
       final fin = _asDateTimeOrNull(data['fin']) ?? _asDateTimeOrNull(data['fechaFin']);
-      return PeriodoAcademico(id: id, nombre: nombre, inicio: inicio, fin: fin, orden: orden);
+      return PeriodoAcademico(id: id, nombre: displayName, inicio: inicio, fin: fin, orden: orden);
     }).toList();
 
     list.sort((a, b) => a.orden.compareTo(b.orden));
@@ -1927,7 +3377,7 @@ class MonitoreoService {
     return 99;
   }
 
-  /// 3) Trae planificación anual del año/grado
+  /// 3) Trae planificacion anual del ano/grado
   Future<Map<String, dynamic>?> getPlanificacionAnual({
     required String schoolId,
     required int anio,
@@ -1944,10 +3394,10 @@ class MonitoreoService {
           .get();
       if (qs.docs.isNotEmpty) return qs.docs.first.data();
     } catch (_) {
-      // Si no hay índices o campos, no rompemos.
+      // Si no hay indices o campos, no rompemos.
     }
 
-    // Intento B: docId convención "anio_grado" o "anio-grado"
+    // Intento B: docId convencion "anio_grado" o "anio-grado"
     final candidates = [
       '$anio-$grado',
       '${anio}_$grado',
@@ -1962,32 +3412,44 @@ class MonitoreoService {
     return null;
   }
 
-  /// 4) MÉTRICAS CURRICULARES:
-  /// - planeado: unidades + indicadores desde planificación anual
+  /// 4) METRICAS CURRICULARES:
+  /// - planeado: unidades + indicadores desde planificacion anual
   /// - realizado: curricular_progress del docente
   /// - a tiempo: usando fechaFinReal <= fechaFin del periodo (si existe)
   Future<TeacherCurricularMetrics> getTeacherCurricularMetrics({
     required String schoolId,
-    required String teacherId,
+    required TeacherSummary teacher,
     required int anio,
-    required String grado,
   }) async {
     final periodos = await getPeriodos(schoolId);
-    final plan = await getPlanificacionAnual(schoolId: schoolId, anio: anio, grado: grado);
+    final plan = await _findBestTeacherPlanForCurricularMetrics(
+      schoolId: schoolId,
+      teacher: teacher,
+      anio: anio,
+    );
+    final firstPeriodoKey = periodos.isNotEmpty ? _periodoStorageKey(periodos.first.id) : 'P1';
 
     if (plan == null) {
-      // fallback: aún puede mostrar algo con curricular_progress solo, pero sin “planeado”
+      // fallback: aun puede mostrar algo con curricular_progress solo, pero sin "planeado"
       return TeacherCurricularMetrics(
-        byPeriodo: {for (final p in periodos) p.id: PeriodoMetrics(unidadesPlaneadas: 0, unidadesCompletadas: 0, indicadoresTotales: 0, indicadoresLogrados: 0)},
+        byPeriodo: {
+          for (final p in periodos)
+            _periodoDisplayLabel(p): PeriodoMetrics(
+              unidadesPlaneadas: 0,
+              unidadesCompletadas: 0,
+              indicadoresTotales: 0,
+              indicadoresLogrados: 0,
+            ),
+        },
         onTimeRate: null,
-        note: 'No se encontró planificación anual para $anio / $grado.',
+        note: 'No se encontro una planificacion anual vinculada a ${teacher.nombreCompleto} para este ciclo.',
       );
     }
 
     final unidades = _extractUnidadesFromPlan(plan); // lista de maps
     final Set<String> unidadIdsPlaneadas = {};
     final Map<String, PeriodoMetricsBuilder> builders = {
-      for (final p in periodos) p.id: PeriodoMetricsBuilder(),
+      for (final p in periodos) _periodoStorageKey(p.id): PeriodoMetricsBuilder(),
     };
 
     // 4.1 Planeado (unidades + indicadores esperados) por periodo
@@ -1996,8 +3458,11 @@ class MonitoreoService {
       final unidadId = _unidadId(u, i);
       unidadIdsPlaneadas.add(unidadId);
 
-      final periodoId = _periodoIdFromUnidad(u);
-      final key = builders.containsKey(periodoId) ? periodoId : (periodos.isNotEmpty ? periodos.first.id : 'P1');
+      final periodoId = _resolvePeriodoStorageKey(
+        periodos: periodos,
+        raw: u['periodoId'] ?? u['periodo'] ?? u['periodoAcademico'],
+      );
+      final key = builders.containsKey(periodoId) ? periodoId : firstPeriodoKey;
 
       builders[key]!.unidadesPlaneadas += 1;
 
@@ -2009,36 +3474,35 @@ class MonitoreoService {
     }
 
     // 4.2 Real (curricular_progress del docente)
-    final progCol = _teachersCol(schoolId).doc(teacherId).collection('curricular_progress');
-
-    // intentamos filtrar por anio si existe, si no, leemos todo
-    Query<Map<String, dynamic>> q = progCol;
-    try {
-      q = progCol.where('anio', isEqualTo: anio);
-      await q.limit(1).get();
-    } catch (_) {
-      q = progCol;
-    }
-
-    final progSnap = await q.get();
+    final progCol = _teachersCol(schoolId).doc(teacher.teacherId).collection('curricular_progress');
+    final progSnap = await progCol.get();
 
     int onTimeCount = 0;
     int onTimeBase = 0;
 
-    final periodoById = {for (final p in periodos) p.id: p};
+    final periodoById = {for (final p in periodos) _periodoStorageKey(p.id): p};
 
     for (final d in progSnap.docs) {
       final data = d.data();
       final unidadId = d.id;
 
-      // Solo consideramos unidades que están dentro de la planificación de ese año/grado
+      if (_hasAcademicYearMetadata(data) && !_matchesAcademicYearInMap(data, anio)) {
+        continue;
+      }
+
+      // Solo consideramos unidades que estan dentro de la planificacion de ese ano/grado
       if (unidadIdsPlaneadas.isNotEmpty && !unidadIdsPlaneadas.contains(unidadId)) continue;
 
       final status = (data['status'] ?? 'planned').toString();
       final isCompleted = status == 'completed';
 
-      final periodoId = _periodoIdFromProgress(data) ?? _periodoIdGuessByUnidad(builders, unidadId) ?? (periodos.isNotEmpty ? periodos.first.id : 'P1');
-      final key = builders.containsKey(periodoId) ? periodoId : (periodos.isNotEmpty ? periodos.first.id : 'P1');
+      final periodoId = _resolvePeriodoStorageKey(
+            periodos: periodos,
+            raw: data['periodoId'] ?? data['periodo'] ?? data['periodoAcademico'],
+          ) ??
+          _periodoIdGuessByUnidad(builders, unidadId) ??
+          firstPeriodoKey;
+      final key = builders.containsKey(periodoId) ? periodoId : firstPeriodoKey;
 
       if (isCompleted) builders[key]!.unidadesCompletadas += 1;
 
@@ -2064,13 +3528,21 @@ class MonitoreoService {
 
     final byPeriodo = <String, PeriodoMetrics>{};
     for (final p in periodos) {
-      final b = builders[p.id] ?? PeriodoMetricsBuilder();
-      byPeriodo[p.id] = b.build();
+      final key = _periodoStorageKey(p.id);
+      final b = builders[key] ?? PeriodoMetricsBuilder();
+      byPeriodo[_periodoDisplayLabel(p)] = b.build();
     }
 
     final onTimeRate = onTimeBase == 0 ? null : (onTimeCount / onTimeBase);
 
-    final note = 'Basado en periodos oficiales + planificación anual ($anio/$grado) + curricular_progress.'
+    final planGrade = (plan['grado'] ?? plan['grade'] ?? teacher.gradesLabel).toString().trim();
+    final planSubject =
+        (plan['asignatura'] ?? plan['materia'] ?? plan['subject'] ?? teacher.subjectsLabel)
+            .toString()
+            .trim();
+    final planSummary = [planGrade, planSubject].where((e) => e.isNotEmpty).join(' / ');
+    final note = 'Basado en periodos oficiales + planificacion anual'
+        '${planSummary.isEmpty ? '' : ' ($planSummary)'} + curricular_progress.'
         '${onTimeRate == null ? " (A tiempo requiere fechas fin en periodos + fechaFinReal)" : ""}';
 
     return TeacherCurricularMetrics(byPeriodo: byPeriodo, onTimeRate: onTimeRate, note: note);
@@ -2083,44 +3555,357 @@ class MonitoreoService {
     return null;
   }
 
-  /// 5) Asistencia (igual que antes)
+  Future<Map<String, dynamic>?> _findBestTeacherPlanForCurricularMetrics({
+    required String schoolId,
+    required TeacherSummary teacher,
+    required int anio,
+  }) async {
+    final plansSnap = await _schoolDoc(schoolId).collection('planificaciones_anuales').get();
+
+    final matches = plansSnap.docs.where((d) {
+      return _matchesPlanForCurricularMetrics(
+        data: d.data(),
+        teacher: teacher,
+        anio: anio,
+      );
+    }).toList();
+
+    if (matches.isEmpty) return null;
+
+    matches.sort((a, b) {
+      final scoreA = _planMatchScoreForTeacher(a.data(), teacher);
+      final scoreB = _planMatchScoreForTeacher(b.data(), teacher);
+      if (scoreA != scoreB) return scoreB.compareTo(scoreA);
+
+      final updatedA = _extractPlanUpdatedAt(a.data()) ?? DateTime(1900);
+      final updatedB = _extractPlanUpdatedAt(b.data()) ?? DateTime(1900);
+      return updatedB.compareTo(updatedA);
+    });
+
+    return matches.first.data();
+  }
+
+  bool _matchesPlanForCurricularMetrics({
+    required Map<String, dynamic> data,
+    required TeacherSummary teacher,
+    required int anio,
+  }) {
+    if (!_matchesAcademicYearInMap(data, anio)) return false;
+
+    final sameTeacher = _planMatchesTeacherIdentity(data, teacher);
+    final sameGrade = _planMatchesTeacherGrade(data, teacher);
+    final sameSubject = _planMatchesTeacherSubject(data, teacher);
+    final hasTeacherRef = _planHasTeacherIdentity(data);
+
+    if (!sameSubject) return false;
+    if (sameTeacher) return true;
+    if (hasTeacherRef) return false;
+    return sameGrade;
+  }
+
+  int _planMatchScoreForTeacher(Map<String, dynamic> data, TeacherSummary teacher) {
+    var score = 0;
+    if (_planMatchesTeacherIdentity(data, teacher)) score += 100;
+    if (_planMatchesTeacherGrade(data, teacher)) score += 20;
+    if (_planMatchesTeacherSubject(data, teacher)) score += 20;
+    if (_planHasTeacherIdentity(data)) score += 5;
+    return score;
+  }
+
+  bool _planHasTeacherIdentity(Map<String, dynamic> data) {
+    final teacherDocId = (data['teacherDocId'] ?? data['teacherId'] ?? '').toString().trim();
+    final teacherUid = (data['teacherUid'] ?? data['createdByUid'] ?? '').toString().trim();
+    return teacherDocId.isNotEmpty || teacherUid.isNotEmpty;
+  }
+
+  bool _planMatchesTeacherIdentity(Map<String, dynamic> data, TeacherSummary teacher) {
+    final teacherDocId = (data['teacherDocId'] ?? data['teacherId'] ?? '').toString().trim();
+    final teacherUid = (data['teacherUid'] ?? data['createdByUid'] ?? '').toString().trim();
+    return teacherDocId == teacher.teacherId ||
+        (teacher.teacherUid.trim().isNotEmpty && teacherUid == teacher.teacherUid.trim());
+  }
+
+  bool _planMatchesTeacherGrade(Map<String, dynamic> data, TeacherSummary teacher) {
+    final gradeIds = teacher.gradeIds.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet();
+    final gradeNamesNorm = teacher.effectiveGradeNames.map(_norm).toSet();
+    final dataGradeId = (data['gradeId'] ?? data['gradoId'] ?? '').toString().trim();
+    final dataGrade = _norm((data['grado'] ?? data['grade'] ?? '').toString());
+    return (dataGradeId.isNotEmpty && gradeIds.contains(dataGradeId)) ||
+        (dataGrade.isNotEmpty && gradeNamesNorm.contains(dataGrade));
+  }
+
+  bool _planMatchesTeacherSubject(Map<String, dynamic> data, TeacherSummary teacher) {
+    final subjectIds = teacher.subjectIds.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet();
+    final subjectNamesNorm = teacher.effectiveSubjectNames.map(_norm).toSet();
+    final dataSubjectId = (data['asignaturaId'] ?? data['subjectId'] ?? '').toString().trim();
+    final dataSubject = _norm((data['asignatura'] ?? data['materia'] ?? data['subject'] ?? '').toString());
+    if (subjectIds.isEmpty && subjectNamesNorm.isEmpty) return true;
+    return (dataSubjectId.isNotEmpty && subjectIds.contains(dataSubjectId)) ||
+        (dataSubject.isNotEmpty && subjectNamesNorm.contains(dataSubject));
+  }
+
+  DateTime? _extractPlanUpdatedAt(Map<String, dynamic> data) {
+    return _asDateTimeOrNull(data['updatedAt']) ??
+        _asDateTimeOrNull(data['updated_at']) ??
+        _asDateTimeOrNull(data['createdAt']) ??
+        _asDateTimeOrNull(data['created_at']);
+  }
+
+  bool _matchesAcademicYearInMap(Map<String, dynamic> data, int anio) {
+    final candidates = [
+      data['anioEscolar'],
+      data['schoolYear'],
+      data['year'],
+      data['anio'],
+    ];
+
+    for (final value in candidates) {
+      if (_matchesAcademicYearValue(value, anio)) return true;
+    }
+    return false;
+  }
+
+  bool _hasAcademicYearMetadata(Map<String, dynamic> data) {
+    for (final value in [data['anioEscolar'], data['schoolYear'], data['year'], data['anio']]) {
+      if (value == null) continue;
+      if (value is String && value.trim().isEmpty) continue;
+      return true;
+    }
+    return false;
+  }
+
+  bool _matchesAcademicYearValue(dynamic value, int anio) {
+    if (value == null) return false;
+    if (value is num) {
+      final year = value.toInt();
+      return year == anio || year == (anio - 1);
+    }
+
+    final raw = value.toString().trim();
+    if (raw.isEmpty) return false;
+
+    final schoolYearMatch = RegExp(r'^(\d{4})\s*[-/]\s*(\d{4})$').firstMatch(raw);
+    if (schoolYearMatch != null) {
+      final start = int.tryParse(schoolYearMatch.group(1)!);
+      final end = int.tryParse(schoolYearMatch.group(2)!);
+      return start == anio || end == anio || start == (anio - 1) || end == (anio - 1);
+    }
+
+    final single = int.tryParse(raw);
+    if (single != null) return single == anio || single == (anio - 1);
+
+    return raw.contains(anio.toString()) || raw.contains((anio - 1).toString());
+  }
+
+  String _periodoStorageKey(String raw) => raw.trim().toUpperCase();
+
+  String _periodoDisplayLabel(PeriodoAcademico periodo) {
+    final nombre = periodo.nombre.trim();
+    if (nombre.isNotEmpty) return nombre;
+    final id = periodo.id.trim();
+    return id.isEmpty ? 'Periodo' : id;
+  }
+
+  String? _resolvePeriodoStorageKey({
+    required List<PeriodoAcademico> periodos,
+    required dynamic raw,
+  }) {
+    final rawText = raw?.toString().trim() ?? '';
+    if (rawText.isEmpty) return null;
+
+    final rawToken = _periodoToken(rawText);
+
+    for (final periodo in periodos) {
+      if (_periodoTokenMatches(rawToken, _periodoToken(periodo.id))) {
+        return _periodoStorageKey(periodo.id);
+      }
+    }
+
+    for (final periodo in periodos) {
+      if (_periodoTokenMatches(rawToken, _periodoToken(periodo.nombre))) {
+        return _periodoStorageKey(periodo.id);
+      }
+    }
+
+    return _periodoStorageKey(rawText);
+  }
+
+  String _periodoToken(String value) =>
+      value.trim().toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]+'), '');
+
+  bool _periodoTokenMatches(String left, String right) {
+    if (left.isEmpty || right.isEmpty) return false;
+    if (left == right) return true;
+
+    final shortPeriodo = RegExp(r'^P\d+$');
+    if (shortPeriodo.hasMatch(left) && right.startsWith(left)) return true;
+    if (shortPeriodo.hasMatch(right) && left.startsWith(right)) return true;
+    return false;
+  }
+
+  /// 5) Asistencia del alumnado registrada por el docente
   Future<AttendanceSummary> getAttendanceSummary({
     required String schoolId,
-    required String teacherId,
+    required TeacherSummary teacher,
     required DateTime month,
   }) async {
     final start = DateTime(month.year, month.month, 1);
     final end = DateTime(month.year, month.month + 1, 1);
+    final monthKey = '${month.year}${month.month.toString().padLeft(2, '0')}';
+    final asistenciaCol = _schoolDoc(schoolId).collection('asistencia');
+    final sheetsSnap = await asistenciaCol.where('monthKey', isEqualTo: monthKey).get();
+    final gradeIds = teacher.gradeIds.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet();
+    final gradeNamesNorm = teacher.effectiveGradeNames.map(_norm).toSet();
+    final teacherUid = teacher.teacherUid.trim();
+    final teacherId = teacher.teacherId.trim();
+    final teacherNameNorm = _norm(teacher.nombreCompleto);
 
-    final col = _teachersCol(schoolId).doc(teacherId).collection('attendance');
+    int present = 0, absent = 0, excused = 0;
 
-    final snap = await col
-        .where('fecha', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
-        .where('fecha', isLessThan: Timestamp.fromDate(end))
-        .get();
+    bool matchesTeacherSheet(Map<String, dynamic> data) {
+      final dataTeacherUid = (data['teacherUid'] ?? '').toString().trim();
+      final dataTeacherDocId = (data['teacherDocId'] ?? '').toString().trim();
+      final dataTeacherId = (data['teacherId'] ?? '').toString().trim();
+      final dataTeacherName = _norm(
+        (data['teacherName'] ?? data['docente'] ?? data['teacher'] ?? '').toString(),
+      );
+      final dataGradeId = (data['gradeId'] ?? '').toString().trim();
+      final dataGrade = _norm((data['gradeLabel'] ?? data['grado'] ?? data['grade'] ?? '').toString());
 
-    int onTime = 0, late = 0, absent = 0, earlyExit = 0;
+      final sameTeacher = (teacherUid.isNotEmpty &&
+              (dataTeacherUid == teacherUid ||
+                  dataTeacherDocId == teacherUid ||
+                  dataTeacherId == teacherUid)) ||
+          (teacherId.isNotEmpty &&
+              (dataTeacherDocId == teacherId ||
+                  dataTeacherId == teacherId ||
+                  dataTeacherUid == teacherId)) ||
+          (teacherNameNorm.isNotEmpty && dataTeacherName == teacherNameNorm);
+      final sameGrade = gradeIds.isEmpty && gradeNamesNorm.isEmpty
+          ? true
+          : (dataGradeId.isNotEmpty && gradeIds.contains(dataGradeId)) ||
+              (dataGrade.isNotEmpty && gradeNamesNorm.contains(dataGrade));
+      return sameTeacher || sameGrade;
+    }
 
-    for (final d in snap.docs) {
-      final data = d.data();
-      final status = (data['status'] ?? '').toString();
-      switch (status) {
-        case 'on_time':
-          onTime++;
-          break;
-        case 'late':
-          late++;
-          break;
-        case 'absent':
-          absent++;
-          break;
-        case 'early_exit':
-          earlyExit++;
-          break;
+    for (final sheet in sheetsSnap.docs) {
+      final data = sheet.data();
+      if (!matchesTeacherSheet(data)) continue;
+
+      final rowsSnap = await sheet.reference.collection('rows').get();
+      for (final row in rowsSnap.docs) {
+        final rowData = row.data();
+        rowData.forEach((key, value) {
+          if (!key.startsWith('m_')) return;
+          final dateKey = key.substring(2);
+          if (dateKey.length != 8) return;
+          final year = int.tryParse(dateKey.substring(0, 4));
+          final monthNum = int.tryParse(dateKey.substring(4, 6));
+          final day = int.tryParse(dateKey.substring(6, 8));
+          if (year == null || monthNum == null || day == null) return;
+          final dayDate = DateTime(year, monthNum, day);
+          if (dayDate.isBefore(start) || !dayDate.isBefore(end)) return;
+
+          final mark = (value ?? '').toString().trim().toUpperCase();
+          switch (mark) {
+            case 'P':
+              present++;
+              break;
+            case 'A':
+              absent++;
+              break;
+            case 'E':
+              excused++;
+              break;
+          }
+        });
       }
     }
 
-    return AttendanceSummary(onTime: onTime, late: late, absent: absent, earlyExit: earlyExit);
+    return AttendanceSummary(present: present, absent: absent, excused: excused);
+  }
+
+  Stream<AttendanceEditAccess> streamAttendanceEditAccess({
+    required String schoolId,
+    required TeacherSummary teacher,
+  }) {
+    return _teachersCol(schoolId).doc(teacher.teacherId).snapshots().map((doc) {
+      final data = doc.data() ?? <String, dynamic>{};
+      final allowedPastDateKeys = <String>{
+        ..._asStringList(data['attendanceAllowedPastDates']),
+        ..._asStringList(data['attendancePastAllowedDates']),
+        ..._asStringList(data['attendanceEditAllowedDates']),
+      }.where((value) => RegExp(r'^\d{8}$').hasMatch(value)).toList()
+        ..sort();
+
+      final legacyWideOpenAccess = _readBoolish(
+            data['allowPastAttendanceEdit'] ??
+                data['attendancePastAccess'] ??
+                data['attendanceLateEntryEnabled'] ??
+                data['canEditPastAttendance'] ??
+                data['attendanceRetroactiveEnabled'],
+          ) ||
+          _asDateTimeOrNull(
+                data['attendancePastAccessUntil'] ??
+                    data['attendanceLateEntryUntil'] ??
+                    data['pastAttendanceEditUntil'] ??
+                    data['attendanceRetroactiveUntil'],
+              ) !=
+              null;
+
+      return AttendanceEditAccess(
+        allowedPastDateKeys: allowedPastDateKeys,
+        updatedAt: _asDateTimeOrNull(data['attendanceAccessUpdatedAt']) ??
+            _asDateTimeOrNull(data['updatedAt']),
+        hasLegacyWideOpenAccess: legacyWideOpenAccess,
+        legacyWideOpenUntil: _asDateTimeOrNull(
+          data['attendancePastAccessUntil'] ??
+              data['attendanceLateEntryUntil'] ??
+              data['pastAttendanceEditUntil'] ??
+              data['attendanceRetroactiveUntil'],
+        ),
+      );
+    });
+  }
+
+  Future<void> setAttendanceAllowedPastDates({
+    required String schoolId,
+    required TeacherSummary teacher,
+    required Set<String> allowedDateKeys,
+  }) async {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) throw Exception('Debes estar autenticado.');
+
+    final cleaned = allowedDateKeys
+        .map((e) => e.trim())
+        .where((e) => RegExp(r'^\d{8}$').hasMatch(e))
+        .toList()
+      ..sort();
+
+    final teacherRef = _teachersCol(schoolId).doc(teacher.teacherId);
+    final payload = <String, dynamic>{
+      'attendanceAllowedPastDates':
+          cleaned.isEmpty ? FieldValue.delete() : cleaned,
+      'attendancePastAllowedDates': FieldValue.delete(),
+      'attendanceEditAllowedDates': FieldValue.delete(),
+      'allowPastAttendanceEdit': FieldValue.delete(),
+      'attendancePastAccess': FieldValue.delete(),
+      'attendanceLateEntryEnabled': FieldValue.delete(),
+      'canEditPastAttendance': FieldValue.delete(),
+      'attendanceRetroactiveEnabled': FieldValue.delete(),
+      'attendancePastAccessUntil': FieldValue.delete(),
+      'attendanceLateEntryUntil': FieldValue.delete(),
+      'pastAttendanceEditUntil': FieldValue.delete(),
+      'attendanceRetroactiveUntil': FieldValue.delete(),
+      'attendanceAccessUpdatedAt': FieldValue.serverTimestamp(),
+      'attendanceAccessUpdatedBy': uid,
+    };
+
+    if (teacher.teacherUid.trim().isNotEmpty) {
+      payload['authUid'] = teacher.teacherUid.trim();
+    }
+
+    await teacherRef.set(payload, SetOptions(merge: true));
   }
 
   /// 6) Observaciones admin
@@ -2191,7 +3976,7 @@ class MonitoreoService {
     );
   }
 
-  /// ---------------- Helpers: Planificación ----------------
+  /// ---------------- Helpers: Planificacion ----------------
   List<Map<String, dynamic>> _extractUnidadesFromPlan(Map<String, dynamic> plan) {
     final raw = plan['unidades'] ?? plan['unidadesDidacticas'] ?? plan['listaUnidades'];
     if (raw is List) {
@@ -2248,7 +4033,7 @@ class MonitoreoService {
     return const [];
   }
 
-// Helpers genéricos (DEJA SOLO ESTE BLOQUE)
+// Helpers genericos (DEJA SOLO ESTE BLOQUE)
 double? _asDoubleOrNull(dynamic v) {
   if (v == null) return null;
   if (v is num) return v.toDouble();
@@ -2259,6 +4044,8 @@ DateTime? _asDateTimeOrNull(dynamic v) {
   if (v == null) return null;
   if (v is Timestamp) return v.toDate();
   if (v is DateTime) return v;
+  if (v is int) return DateTime.fromMillisecondsSinceEpoch(v);
+  if (v is String) return DateTime.tryParse(v.trim());
   return null;
 }
 

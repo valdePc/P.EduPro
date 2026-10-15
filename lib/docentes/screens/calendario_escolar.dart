@@ -1,8 +1,10 @@
+
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-
+import 'package:edupro/docentes/widgets/docente_app_bar.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:edupro/models/escuela.dart';
 
 class CalendarioEscolarDocenteScreen extends StatefulWidget {
@@ -44,6 +46,56 @@ class _CalendarioEscolarDocenteScreenState
   CollectionReference<Map<String, dynamic>> get _gradesCol =>
       _db.collection('schools').doc(widget.schoolId).collection('grados');
 
+// =======================
+// DEBUG LOGS (no spam)
+// =======================
+final Set<String> _logged = <String>{};
+
+void _logOnce(String key, String msg) {
+  if (_logged.contains(key)) return;
+  _logged.add(key);
+}
+
+void _logAlways(String msg) {
+}
+
+Future<void> _debugCheckMemberDoc() async {
+  try {
+    final u = FirebaseAuth.instance.currentUser;
+    if (u == null) {
+      _logOnce('docente_member_nullUser', '❌ Docente Calendario: currentUser == null');
+      return;
+    }
+
+    final ref = _db
+        .collection('schools')
+        .doc(widget.schoolId)
+        .collection('members')
+        .doc(u.uid);
+
+    _logOnce('docente_member_ref',
+        '🔎 memberRef => schools/${widget.schoolId}/members/${u.uid}');
+
+    final snap = await ref.get();
+
+    if (!snap.exists) {
+      _logOnce('docente_member_not_exists',
+          '❌ member doc NO existe (esto casi seguro bloquea isTeacherForSchool)');
+      return;
+    }
+
+    final d = snap.data() ?? <String, dynamic>{};
+    final role = (d['role'] ?? d['rol'] ?? d['enrol'] ?? '').toString();
+    final enabled = d['enabled'];
+
+    _logOnce(
+      'docente_member_data',
+      '✅ member doc OK | role=$role | enabled=$enabled | teacherDocId=${d['teacherDocId']} | keys=${d.keys.toList()}',
+    );
+  } catch (e) {
+    _logOnce('docente_member_error', '❌ Error leyendo member doc: $e');
+  }
+}
   CollectionReference<Map<String, dynamic>> get _itemsCol => _db
       .collection('schools')
       .doc(widget.schoolId)
@@ -80,8 +132,10 @@ class _CalendarioEscolarDocenteScreenState
 
   @override
   void initState() {
-    super.initState();
-
+      super.initState();
+  final u = FirebaseAuth.instance.currentUser;
+// ✅ Verifica members/{uid} (clave para permisos)
+_debugCheckMemberDoc();
     _todayDay = _clampToSchoolWeek(DateTime.now().weekday);
     _nextDay = _calcNextDay(_todayDay);
     _selectedDay = _todayDay;
@@ -227,11 +281,7 @@ class _CalendarioEscolarDocenteScreenState
 
     return Scaffold(
       backgroundColor: const Color(0xFFF7F9FC),
-      appBar: AppBar(
-        backgroundColor: _blue,
-        foregroundColor: Colors.white,
-        title: const Text(''),
-      ),
+      appBar: buildDocenteBackAppBar(context),
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
         stream: _gradesCol.snapshots(),
         builder: (_, snap) {

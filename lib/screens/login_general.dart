@@ -1,9 +1,19 @@
 // lib/screens/login_general.dart
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:edupro/services/app_check_bootstrap.dart';
+import 'package:edupro/services/edupro_two_factor_service.dart';
+import 'package:edupro/services/edupro_trusted_device_service.dart';
+import 'package:edupro/utils/equipo_edupro_access.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+Future<void> _openPublicPage(String file) async {
+  final base = kIsWeb ? Uri.base.origin : 'https://edupro-8c4fd.web.app';
+  final uri = Uri.parse('$base/$file');
+  await launchUrl(uri, mode: LaunchMode.externalApplication);
+}
 
 class LoginGeneralScreen extends StatefulWidget {
   const LoginGeneralScreen({super.key});
@@ -31,8 +41,20 @@ class _LoginGeneralScreenState extends State<LoginGeneralScreen> {
     super.dispose();
   }
 
-  bool _isSuperAdminRole(String role) {
-    return role.trim().toLowerCase() == 'superadmin'; // ✅ solo minúscula
+  Future<void> _signOutCurrentSession() async {
+    try {
+      await FirebaseAuth.instance.signOut();
+    } catch (_) {}
+
+    if (!kIsWeb) {
+      try {
+        final gs = GoogleSignIn.instance;
+        try {
+          await gs.initialize();
+        } catch (_) {}
+        await gs.signOut();
+      } catch (_) {}
+    }
   }
 
   Future<void> _finishAuthAndEnter(User? user) async {
@@ -44,41 +66,92 @@ class _LoginGeneralScreenState extends State<LoginGeneralScreen> {
       return;
     }
 
-    final fs = FirebaseFirestore.instance;
-
-    // ✅ intenta /users primero
-    DocumentSnapshot<Map<String, dynamic>> doc =
-        await fs.collection('users').doc(uid).get();
-
-    // ✅ fallback: /Users (U mayúscula)
-    if (!doc.exists) {
-      doc = await fs.collection('Users').doc(uid).get();
-    }
-
-    if (!doc.exists) {
-      await FirebaseAuth.instance.signOut();
+    final teamRole = await EquipoEduProAccess.currentTeamRole(user!);
+    if (!EquipoEduProRoles.all.contains(teamRole)) {
+      await _signOutCurrentSession();
       if (!mounted) return;
-      setState(() => _error =
-          'Tu usuario no tiene perfil en /users/$uid ni en /Users/$uid');
+      setState(
+        () =>
+            _error =
+                'Tu cuenta no está autorizada o está fuera de su horario de acceso.',
+      );
       return;
     }
 
-    final data = doc.data()!;
-    final enabled = data['enabled'] == true;
-    final role = (data['role'] ?? '').toString().trim();
+    final bypassTrustedDevice = teamRole == EquipoEduProRoles.superAdmin;
 
-    if (!enabled || !_isSuperAdminRole(role)) {
-      await FirebaseAuth.instance.signOut();
+    if (!bypassTrustedDevice) {
+      try {
+        final deviceCheck = await EduProTrustedDeviceService.checkAccess(
+          audience: 'admin_general',
+        );
+        if (!deviceCheck.allowed) {
+          await _signOutCurrentSession();
+          if (!mounted) return;
+          setState(
+            () =>
+                _error =
+                    deviceCheck.message.isNotEmpty
+                        ? deviceCheck.message
+                        : 'Este dispositivo no está autorizado para entrar.',
+          );
+          return;
+        }
+      } catch (_) {
+        await _signOutCurrentSession();
+        if (!mounted) return;
+        setState(
+          () =>
+              _error =
+                  'No se pudo validar el dispositivo actual. Intenta nuevamente.',
+        );
+        return;
+      }
+    }
+
+    bool twoFactorOk = false;
+    try {
+      twoFactorOk = await EduProTwoFactorService.ensureVerified(
+        context,
+        audience: 'admin_general',
+      );
+    } on StateError catch (e) {
+      await _signOutCurrentSession();
       if (!mounted) return;
-
-      // ✅ mensaje más útil para depurar
-      setState(() => _error =
-          'Sin permisos. enabled=$enabled, role="$role" (requiere superadmin).');
+      setState(
+        () =>
+            _error =
+                e.message == AppCheckBootstrap.authorizationError
+                    ? AppCheckBootstrap.authorizationError
+                    : 'No se pudo completar la verificación en dos pasos. Recarga la página e intenta nuevamente.',
+      );
+      return;
+    } catch (_) {
+      await _signOutCurrentSession();
+      if (!mounted) return;
+      setState(
+        () =>
+            _error =
+                'No se pudo completar la verificación en dos pasos. Recarga la página e intenta nuevamente.',
+      );
       return;
     }
+    if (!twoFactorOk) {
+      await _signOutCurrentSession();
+      if (!mounted) return;
+      setState(
+        () =>
+            _error =
+                'Debes completar la verificación en dos pasos para continuar.',
+      );
+      return;
+    }
+
+    await EquipoEduProAccess.registerLogin(user);
+    final destination = EquipoEduProRoles.defaultRoute(teamRole);
 
     if (!mounted) return;
-    Navigator.pushReplacementNamed(context, '/panel');
+    Navigator.pushReplacementNamed(context, destination);
   }
 
   Future<void> _loginEmailPass() async {
@@ -102,10 +175,20 @@ class _LoginGeneralScreenState extends State<LoginGeneralScreen> {
       );
 
       await _finishAuthAndEnter(cred.user);
-    } on FirebaseAuthException catch (e) {
-      setState(() => _error = e.message ?? 'Error de autenticación');
+    } on FirebaseAuthException {
+      await _signOutCurrentSession();
+      if (!mounted) return;
+      setState(
+        () =>
+            _error =
+                'No se pudo iniciar sesion. Revisa tus credenciales e intenta nuevamente.',
+      );
     } catch (e) {
-      setState(() => _error = 'Error: $e');
+      await _signOutCurrentSession();
+      if (!mounted) return;
+      setState(
+        () => _error = 'No se pudo validar tu acceso. Intenta nuevamente.',
+      );
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -142,10 +225,20 @@ class _LoginGeneralScreenState extends State<LoginGeneralScreen> {
       }
 
       await _finishAuthAndEnter(cred.user);
-    } on FirebaseAuthException catch (e) {
-      setState(() => _error = e.message ?? 'Error con Google Sign-In');
+    } on FirebaseAuthException {
+      await _signOutCurrentSession();
+      if (!mounted) return;
+      setState(
+        () =>
+            _error =
+                'No se pudo iniciar sesion con Google. Intenta nuevamente.',
+      );
     } catch (e) {
-      setState(() => _error = 'Error: $e');
+      await _signOutCurrentSession();
+      if (!mounted) return;
+      setState(
+        () => _error = 'No se pudo validar tu acceso. Intenta nuevamente.',
+      );
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -219,30 +312,34 @@ class _LoginGeneralScreenState extends State<LoginGeneralScreen> {
                     final wide = constraints.maxWidth >= 880;
 
                     return Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-                      child: wide
-                          ? Row(
-                              children: [
-                                Expanded(
-                                  child: _LeftBrandPanel(
-                                    blue: _blue,
-                                    orange: _orange,
-                                  ),
-                                ),
-                                const SizedBox(width: 18),
-                                Expanded(child: card),
-                              ],
-                            )
-                          : SingleChildScrollView(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 18,
+                        vertical: 14,
+                      ),
+                      child:
+                          wide
+                              ? Row(
                                 children: [
-                                  _TopMiniBrand(blue: _blue, orange: _orange),
-                                  const SizedBox(height: 12),
-                                  card,
+                                  Expanded(
+                                    child: _LeftBrandPanel(
+                                      blue: _blue,
+                                      orange: _orange,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 18),
+                                  Expanded(child: card),
                                 ],
+                              )
+                              : SingleChildScrollView(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    _TopMiniBrand(blue: _blue, orange: _orange),
+                                    const SizedBox(height: 12),
+                                    card,
+                                  ],
+                                ),
                               ),
-                            ),
                     );
                   },
                 ),
@@ -336,10 +433,12 @@ class _LoginCard extends StatelessWidget {
                         child: Image.asset(
                           'assets/logo.png', // ✅ tu logo de EduPro
                           fit: BoxFit.contain,
-                          errorBuilder: (_, __, ___) => const Icon(
-                            Icons.school_rounded,
-                            color: Colors.white,
-                          ),
+                          semanticLabel: 'Logotipo de EduPro',
+                          errorBuilder:
+                              (_, __, ___) => const Icon(
+                                Icons.school_rounded,
+                                color: Colors.white,
+                              ),
                         ),
                       ),
                     ),
@@ -351,7 +450,7 @@ class _LoginCard extends StatelessWidget {
                           Text('EduPro', style: titleStyle),
                           const SizedBox(height: 2),
                           Text(
-                            'Acceso Administración',
+                            '', // texto dentro del login de acceso a administración
                             style: TextStyle(
                               fontSize: 12.5,
                               fontWeight: FontWeight.w600,
@@ -406,7 +505,9 @@ class _LoginCard extends StatelessWidget {
 
                 Row(
                   children: [
-                    Expanded(child: Divider(color: Colors.black.withOpacity(0.12))),
+                    Expanded(
+                      child: Divider(color: Colors.black.withOpacity(0.12)),
+                    ),
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 10),
                       child: Text(
@@ -418,7 +519,9 @@ class _LoginCard extends StatelessWidget {
                         ),
                       ),
                     ),
-                    Expanded(child: Divider(color: Colors.black.withOpacity(0.12))),
+                    Expanded(
+                      child: Divider(color: Colors.black.withOpacity(0.12)),
+                    ),
                   ],
                 ),
 
@@ -429,7 +532,7 @@ class _LoginCard extends StatelessWidget {
                   keyboardType: TextInputType.emailAddress,
                   decoration: InputDecoration(
                     labelText: 'Correo',
-                    hintText: 'tu@correo.com',
+                    hintText: 'tu@ejemplo.com',
                     prefixIcon: const Icon(Icons.mail_outline),
                     filled: true,
                     fillColor: Colors.black.withOpacity(0.03),
@@ -458,7 +561,9 @@ class _LoginCard extends StatelessWidget {
                     ),
                     suffixIcon: IconButton(
                       onPressed: loading ? null : onToggleObscure,
-                      icon: Icon(obscure ? Icons.visibility : Icons.visibility_off),
+                      icon: Icon(
+                        obscure ? Icons.visibility : Icons.visibility_off,
+                      ),
                     ),
                   ),
                 ),
@@ -466,37 +571,44 @@ class _LoginCard extends StatelessWidget {
                 AnimatedSize(
                   duration: const Duration(milliseconds: 180),
                   curve: Curves.easeOut,
-                  child: (error == null)
-                      ? const SizedBox(height: 0)
-                      : Padding(
-                          padding: const EdgeInsets.only(top: 12),
-                          child: Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: Colors.red.withOpacity(0.08),
-                              borderRadius: BorderRadius.circular(14),
-                              border: Border.all(color: Colors.red.withOpacity(0.18)),
-                            ),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Icon(Icons.error_outline, color: Colors.red, size: 18),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    error!,
-                                    style: const TextStyle(
-                                      color: Colors.red,
-                                      fontWeight: FontWeight.w600,
-                                      fontSize: 12.5,
+                  child:
+                      (error == null)
+                          ? const SizedBox(height: 0)
+                          : Padding(
+                            padding: const EdgeInsets.only(top: 12),
+                            child: Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.red.withOpacity(0.08),
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(
+                                  color: Colors.red.withOpacity(0.18),
+                                ),
+                              ),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Icon(
+                                    Icons.error_outline,
+                                    color: Colors.red,
+                                    size: 18,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      error!,
+                                      style: const TextStyle(
+                                        color: Colors.red,
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 12.5,
+                                      ),
                                     ),
                                   ),
-                                ),
-                              ],
+                                ],
+                              ),
                             ),
                           ),
-                        ),
                 ),
 
                 const SizedBox(height: 14),
@@ -516,18 +628,21 @@ class _LoginCard extends StatelessWidget {
                     ),
                     child: AnimatedSwitcher(
                       duration: const Duration(milliseconds: 160),
-                      child: loading
-                          ? const SizedBox(
-                              key: ValueKey('loading'),
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Text(
-                              'Iniciar sesión',
-                              key: ValueKey('text'),
-                              style: TextStyle(fontWeight: FontWeight.w900),
-                            ),
+                      child:
+                          loading
+                              ? const SizedBox(
+                                key: ValueKey('loading'),
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                              : const Text(
+                                'Iniciar sesión',
+                                key: ValueKey('text'),
+                                style: TextStyle(fontWeight: FontWeight.w900),
+                              ),
                     ),
                   ),
                 ),
@@ -535,12 +650,51 @@ class _LoginCard extends StatelessWidget {
                 const SizedBox(height: 10),
 
                 Text(
-                  'Solo usuarios con rol superadmin',
+                  'Solo usuarios Autorizados',
                   style: TextStyle(
                     fontSize: 11.5,
                     color: Colors.black.withOpacity(0.45),
                     fontWeight: FontWeight.w600,
                   ),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: const [
+                    Text(
+                      'Creado por EduPro',
+                      style: TextStyle(
+                        color: Colors.black54,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    SizedBox(width: 4),
+                    Icon(
+                      Icons.verified,
+                      size: 16,
+                      color: Colors.lightBlueAccent,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 4,
+                  children: [
+                    TextButton(
+                      onPressed: () => _openPublicPage('aviso-legal.html'),
+                      child: const Text('Aviso legal'),
+                    ),
+                    TextButton(
+                      onPressed: () => _openPublicPage('privacidad.html'),
+                      child: const Text('Privacidad'),
+                    ),
+                    TextButton(
+                      onPressed: () => _openPublicPage('cookies.html'),
+                      child: const Text('Cookies'),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -591,7 +745,10 @@ class _LeftBrandPanel extends StatelessWidget {
               child: Image.asset(
                 'assets/logo.png',
                 fit: BoxFit.contain,
-                errorBuilder: (_, __, ___) => const Icon(Icons.school_rounded, color: Colors.white),
+                semanticLabel: 'Logotipo de EduPro',
+                errorBuilder:
+                    (_, __, ___) =>
+                        const Icon(Icons.school_rounded, color: Colors.white),
               ),
             ),
           ),
@@ -605,7 +762,7 @@ class _LeftBrandPanel extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            'Gestión escolar moderna, clara y segura.\nAccede con tu cuenta autorizada.',
+            'GRACIAS POR FORMAR PARTE DE EduPro.\nAccede con tu cuenta autorizada.',
             style: t.bodyMedium?.copyWith(
               color: Colors.white.withOpacity(0.82),
               height: 1.35,
@@ -639,7 +796,11 @@ class _ChipInfo extends StatelessWidget {
   final IconData icon;
   final Color color;
 
-  const _ChipInfo({required this.label, required this.icon, required this.color});
+  const _ChipInfo({
+    required this.label,
+    required this.icon,
+    required this.color,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -699,8 +860,10 @@ class _TopMiniBrand extends StatelessWidget {
             child: Image.asset(
               'assets/logo.png',
               fit: BoxFit.contain,
-              errorBuilder: (_, __, ___) =>
-                  const Icon(Icons.school_rounded, color: Colors.white),
+              semanticLabel: 'Logotipo de EduPro',
+              errorBuilder:
+                  (_, __, ___) =>
+                      const Icon(Icons.school_rounded, color: Colors.white),
             ),
           ),
         ),
@@ -714,7 +877,7 @@ class _TopMiniBrand extends StatelessWidget {
         ),
         const SizedBox(height: 4),
         Text(
-          'Acceso Administración',
+          '', // TEXTI DEBAJO DEL LOGO FUERA
           style: t.bodyMedium?.copyWith(
             color: Colors.white.withOpacity(0.78),
             fontWeight: FontWeight.w600,
@@ -739,13 +902,7 @@ class _GlowBlob extends StatelessWidget {
       decoration: BoxDecoration(
         color: color,
         shape: BoxShape.circle,
-        boxShadow: [
-          BoxShadow(
-            blurRadius: 80,
-            spreadRadius: 10,
-            color: color,
-          ),
-        ],
+        boxShadow: [BoxShadow(blurRadius: 80, spreadRadius: 10, color: color)],
       ),
     );
   }

@@ -1,0 +1,128 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "alumnos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "nombresKey", "order": "ASCENDING" },
+        { "fieldPath": "apellidosKey", "order": "ASCENDING" },
+        { "fieldPath": "fechaNacimiento", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "alumnos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "matricula", "order": "ASCENDING" },
+        { "fieldPath": "gradoKey", "order": "ASCENDING" },
+        { "fieldPath": "tanda", "order": "ASCENDING" },
+        { "fieldPath": "nivel", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "calendario_escolar_items",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "day",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "enabled",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "gradeId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "startMin",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "notificaciones_alumnos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "targetType",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "DESCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "team_school_catalog",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "provinceKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "searchTokens",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "team_school_catalog",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "activeCount",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "draftCount",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "suspendedCount",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "team_school_catalog",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "activeCount",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "draftCount",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "locatedCount",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "suspendedCount",
+          "order": "ASCENDING"
+        }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

@@ -1,8 +1,16 @@
 {
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "storage": {
+    "rules": "storage.rules"
+  },
   "hosting": {
     "public": "build/web",
     "ignore": [
       "firebase.json",
+      "appcheck-local-setup.html",
       "**/.*",
       "**/node_modules/**"
     ],
@@ -12,8 +20,161 @@
         "destination": "/index.html"
       },
       {
-        "source": "**",
+        "source": "/eduproapp/**",
         "destination": "/index.html"
+      },
+      {
+        "source": "/admin/**",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/login",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/panel",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/colegios",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/analisis-general",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/red-escolar",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/facturacion",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/configuracion",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/pagos-facturacion",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/gestion-accesos",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/seguridad",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/coleAdmin",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/docentes",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/alumnos",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/admincole",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/asistencia",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/evaluaciones",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/calendario",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/planificaciones",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/tarea",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/estrategias",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/curriculo",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/estudiantes",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/chat",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/planificacionDocente",
+        "destination": "/index.html"
+      },
+      {
+        "source": "/colocarCalificaciones",
+        "destination": "/index.html"
+      }
+    ],
+    "headers": [
+      {
+        "source": "**",
+        "headers": [
+          {
+            "key": "Cross-Origin-Opener-Policy",
+            "value": "same-origin-allow-popups"
+          },
+          {
+            "key": "X-Content-Type-Options",
+            "value": "nosniff"
+          },
+          {
+            "key": "X-Frame-Options",
+            "value": "DENY"
+          },
+          {
+            "key": "Referrer-Policy",
+            "value": "strict-origin-when-cross-origin"
+          },
+          {
+            "key": "Content-Security-Policy",
+            "value": "object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+          },
+          {
+            "key": "Strict-Transport-Security",
+            "value": "max-age=31536000"
+          }
+        ]
+      },
+      {
+        "source": "**/*.html",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      },
+      {
+        "source": "/icons/**",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=604800"
+          }
+        ]
       }
     ]
   },

@@ -16,8 +16,6 @@ class SessionService {
         return '/maestro';
       case 'estudiante':
         return '/estudiante';
-      case 'freelancer':
-        return '/freelancer';
       default:
         return '/login';
     }

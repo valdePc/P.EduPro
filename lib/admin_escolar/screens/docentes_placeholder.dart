@@ -9,7 +9,6 @@ class DocentesPlaceholder extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // ignore: avoid_print
-    print('BUILD: DocentesPlaceholder for ${escuela?.nombre ?? 'sin-escuela'}');
     return Scaffold(
       appBar: AppBar(title: const Text('Docentes (placeholder)')),
       body: const Center(

@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /acerca.html
+Disallow: /alum/
+Disallow: /eduproapp/
+Disallow: /appcheck-local-setup.html
+
+Sitemap: https://edupro-8c4fd.web.app/sitemap.xml
